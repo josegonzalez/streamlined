@@ -24,6 +24,7 @@ HAVE_LIBRETRODB=yes        # Libretrodb support
 HAVE_MENU=yes              # Enable menu drivers
 HAVE_GFX_WIDGETS=yes       # Enable graphics widgets
 HAVE_RGUI=auto             # RGUI menu
+HAVE_CANNOLI=auto          # Cannoli menu
 HAVE_MATERIALUI=auto       # MaterialUI menu
 HAVE_XMB=auto              # XMB menu
 HAVE_OZONE=auto            # Ozone menu

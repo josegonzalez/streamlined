@@ -1389,6 +1389,10 @@ MENU
 #include "../menu/drivers/rgui.c"
 #endif
 
+#ifdef HAVE_CANNOLI
+#include "../menu/drivers/cannoli.c"
+#endif
+
 #ifdef HAVE_XMB
 #include "../menu/drivers/xmb.c"
 #endif

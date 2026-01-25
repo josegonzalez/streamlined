@@ -1056,6 +1056,11 @@ ifeq ($(HAVE_MENU), 1)
       DEFINES += -DHAVE_RGUI
    endif
 
+   ifeq ($(HAVE_CANNOLI), 1)
+      OBJ += menu/drivers/cannoli.o
+      DEFINES += -DHAVE_CANNOLI
+   endif
+
    ifeq ($(HAVE_MATERIALUI), 1)
       OBJ += menu/drivers/materialui.o
       DEFINES += -DHAVE_MATERIALUI
