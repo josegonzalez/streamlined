@@ -74,6 +74,10 @@
 #include "JITSupport.h"
 #endif
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 #ifdef HAVE_CDROM
 #include <vfs/vfs_implementation_cdrom.h>
 #include <media/media_detect_cd.h>
@@ -4483,6 +4487,7 @@ static unsigned menu_displaylist_parse_playlists(
       bool show_add_content  = (settings->uints.menu_content_show_add_entry ==
             MENU_ADD_CONTENT_ENTRY_DISPLAY_PLAYLISTS_TAB);
       bool show_history      = !string_is_equal(menu_ident, "rgui")
+            && !string_is_equal(menu_ident, "cannoli")
             && !(string_is_equal(menu_ident, "glui")
             && !settings->bools.menu_materialui_show_nav_bar);
 
@@ -15455,6 +15460,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
                bool show_settings            = settings->bools.menu_content_show_settings
                      && !settings->bools.kiosk_mode_enable
                      && (  (string_is_equal(menu_ident, "rgui"))
+                        || (string_is_equal(menu_ident, "cannoli"))
                         || (string_is_equal(menu_ident, "glui")
                      &&    !settings->bools.menu_materialui_show_nav_bar));
 
@@ -15523,6 +15529,7 @@ bool menu_displaylist_ctl(enum menu_displaylist_ctl_state type,
 
                /* Show History and Favorites in menus without sidebar/tabs */
                if (     (string_is_equal(menu_ident, "rgui"))
+                     || (string_is_equal(menu_ident, "cannoli"))
                      || (string_is_equal(menu_ident, "glui")
                      && !settings->bools.menu_materialui_show_nav_bar))
                {
