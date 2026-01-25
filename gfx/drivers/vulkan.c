@@ -58,6 +58,7 @@
 #define VK_REMAP_TO_TEXFMT(fmt) ((fmt == VK_FORMAT_R5G6B5_UNORM_PACK16) ? VK_FORMAT_R8G8B8A8_UNORM : fmt)
 
 #ifdef VULKAN_HDR_SWAPCHAIN
+/* Purely for HDR read back */
 #ifndef VKALIGN
 #ifdef _MSC_VER
 #define VKALIGN(x) __declspec(align(x))
@@ -69,9 +70,24 @@
 typedef struct VKALIGN(16)
 {
    math_matrix_4x4   mvp;
-   float             contrast;         /* 2.0f    */
+   struct 
+   {
+      float width;
+      float height;
+      float pad0;
+      float pad1;
+   } not_used1;
+   struct 
+   {
+      float width;
+      float height;
+      float pad0;
+      float pad1;
+   } not_used2;
    float             paper_white_nits; /* 200.0f  */
    float             max_nits;         /* 1000.0f */
+   unsigned          not_used3;        /* 0       */
+   float             not_used4;        /* 1.0f    */
    float             expand_gamut;     /* 1.0f    */
    float             inverse_tonemap;  /* 1.0f    */
    float             hdr10;            /* 1.0f    */
@@ -163,7 +179,6 @@ typedef struct vk
    struct vk_image *backbuffer;
 #ifdef VULKAN_HDR_SWAPCHAIN
    VkRenderPass readback_render_pass;
-   struct vk_image main_buffer;
    struct vk_image readback_image;
 #endif /* VULKAN_HDR_SWAPCHAIN */
 
@@ -215,7 +230,6 @@ typedef struct vk
       VkPipeline font;
       VkPipeline rgb565_to_rgba8888;
 #ifdef VULKAN_HDR_SWAPCHAIN
-      VkPipeline hdr;
       VkPipeline hdr_to_sdr; /* for readback */
 #endif /* VULKAN_HDR_SWAPCHAIN */
       VkDescriptorSetLayout set_layout;
@@ -2403,9 +2417,6 @@ static void vulkan_init_pipeline_layout(
 static void vulkan_init_pipelines(vk_t *vk)
 {
 #ifdef VULKAN_HDR_SWAPCHAIN
-   static const uint32_t hdr_frag[] =
-#include "vulkan_shaders/hdr.frag.inc"
-      ;
    static const uint32_t hdr_tonemap_frag[] =
 #include "vulkan_shaders/hdr_tonemap.frag.inc"
       ;
@@ -2631,27 +2642,6 @@ static void vulkan_init_pipelines(vk_t *vk)
 if (vk->context->flags & VK_CTX_FLAG_HDR_SUPPORT)
 {
    blend_attachment.blendEnable = VK_FALSE;
-
-   /* HDR pipeline. */
-   module_info.codeSize         = sizeof(hdr_frag);
-   module_info.pCode            = hdr_frag;
-   shader_stages[1].stage       = VK_SHADER_STAGE_FRAGMENT_BIT;
-   shader_stages[1].pName       = "main";
-   vkCreateShaderModule(vk->context->device,
-         &module_info, NULL, &shader_stages[1].module);
-
-   vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
-         1, &pipe, NULL, &vk->pipelines.hdr);
-
-   /* Build display hdr pipelines. */
-   for (i = 4; i < 6; i++)
-   {
-      input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-      vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
-            1, &pipe, NULL, &vk->display.pipelines[i]);
-   }
-
-   vkDestroyShaderModule(vk->context->device, shader_stages[1].module, NULL);
 
    /* HDR->SDR tonemapping readback pipeline. */
    module_info.codeSize         = sizeof(hdr_tonemap_frag);
@@ -2959,8 +2949,6 @@ static void vulkan_deinit_pipelines(vk_t *vk)
 if (vk->context->flags & VK_CTX_FLAG_HDR_SUPPORT)
 {
    vkDestroyPipeline(vk->context->device,
-         vk->pipelines.hdr, NULL);
-   vkDestroyPipeline(vk->context->device,
          vk->pipelines.hdr_to_sdr, NULL);
 }
 #endif /* VULKAN_HDR_SWAPCHAIN */
@@ -3000,22 +2988,36 @@ static void vulkan_set_hdr_max_nits(void* data, float max_nits)
 
    vk->hdr.max_output_nits             = max_nits;
    mapped_ubo->max_nits                = max_nits;
+
+   if(vk->filter_chain)
+   {
+      vulkan_filter_chain_set_max_nits(
+            vk->filter_chain, max_nits);
+   }
+   if(vk->filter_chain_default)
+   {
+      vulkan_filter_chain_set_max_nits(
+            vk->filter_chain_default, max_nits);
+   }
 }
 
 static void vulkan_set_hdr_paper_white_nits(void* data, float paper_white_nits)
 {
    vk_t *vk                            = (vk_t*)data;
    vulkan_hdr_uniform_t* mapped_ubo    = (vulkan_hdr_uniform_t*)vk->hdr.ubo.mapped;
-
+   
    mapped_ubo->paper_white_nits = paper_white_nits;
-}
 
-static void vulkan_set_hdr_contrast(void* data, float contrast)
-{
-   vk_t *vk                            = (vk_t*)data;
-   vulkan_hdr_uniform_t* mapped_ubo    = (vulkan_hdr_uniform_t*)vk->hdr.ubo.mapped;
-
-   mapped_ubo->contrast                = contrast;
+   if(vk->filter_chain)
+   {
+      vulkan_filter_chain_set_paper_white_nits(
+         vk->filter_chain, paper_white_nits);
+   }
+   if(vk->filter_chain_default)
+   {
+      vulkan_filter_chain_set_paper_white_nits(
+         vk->filter_chain_default, paper_white_nits);
+   }
 }
 
 static void vulkan_set_hdr_expand_gamut(void* data, bool expand_gamut)
@@ -3024,25 +3026,74 @@ static void vulkan_set_hdr_expand_gamut(void* data, bool expand_gamut)
    vulkan_hdr_uniform_t* mapped_ubo    = (vulkan_hdr_uniform_t*)vk->hdr.ubo.mapped;
 
    mapped_ubo->expand_gamut     = expand_gamut ? 1.0f : 0.0f;
+
+   if(vk->filter_chain)
+   {
+      vulkan_filter_chain_set_expand_gamut(
+         vk->filter_chain, expand_gamut);
+   }
+   if(vk->filter_chain_default)
+   {
+      vulkan_filter_chain_set_expand_gamut(
+         vk->filter_chain_default, expand_gamut);
+   }
 }
 
-static void vulkan_set_hdr_inverse_tonemap(vk_t* vk, bool inverse_tonemap)
+static void vulkan_set_hdr_scanlines(void* data, bool scanlines)
+{
+   vk_t *vk                            = (vk_t*)data;
+
+   if(vk->filter_chain)
+   {
+      vulkan_filter_chain_set_scanlines(
+            vk->filter_chain, scanlines ? 1.0f : 0.0f);
+   }
+   if(vk->filter_chain_default)
+   {
+      vulkan_filter_chain_set_scanlines(
+            vk->filter_chain_default, scanlines ? 1.0f : 0.0f);
+   }
+}
+
+static void vulkan_set_hdr_subpixel_layout(void* data, unsigned subpixel_layout)
+{
+   vk_t *vk                            = (vk_t*)data;
+
+   if(vk->filter_chain)
+   {
+      vulkan_filter_chain_set_subpixel_layout(
+            vk->filter_chain, subpixel_layout);
+   }
+   if(vk->filter_chain_default)
+   {
+      vulkan_filter_chain_set_subpixel_layout(
+            vk->filter_chain_default, subpixel_layout);
+   }
+}
+
+static void vulkan_set_hdr_inverse_tonemap(vk_t* vk, vulkan_filter_chain_t* filter_chain, bool inverse_tonemap)
 {
    vulkan_hdr_uniform_t* mapped_ubo = (vulkan_hdr_uniform_t*)vk->hdr.ubo.mapped;
 
    mapped_ubo->inverse_tonemap      = inverse_tonemap ? 1.0f : 0.0f;
+
+   vulkan_filter_chain_set_inverse_tonemap(
+         filter_chain, inverse_tonemap ? 1.0f : 0.0f);
 }
 
-static void vulkan_set_hdr10(vk_t* vk, bool hdr10)
+static void vulkan_set_hdr10(vk_t* vk, vulkan_filter_chain_t* filter_chain, bool hdr10)
 {
    vulkan_hdr_uniform_t* mapped_ubo = (vulkan_hdr_uniform_t*)vk->hdr.ubo.mapped;
 
    mapped_ubo->hdr10                = hdr10 ? 1.0f : 0.0f;
+
+   vulkan_filter_chain_set_hdr10(
+         filter_chain, hdr10 ? 1.0f : 0.0f);
 }
 #endif /* VULKAN_HDR_SWAPCHAIN */
 
 static bool vulkan_init_default_filter_chain(vk_t *vk)
-{
+{  
    struct vulkan_filter_chain_create_info info;
 
    if (!vk->context)
@@ -3050,6 +3101,8 @@ static bool vulkan_init_default_filter_chain(vk_t *vk)
 
    if (vk->filter_chain_default)
       return true;
+
+   settings_t *settings       = config_get_ptr(); 
 
    info.device                = vk->context->device;
    info.gpu                   = vk->context->gpu;
@@ -3065,6 +3118,9 @@ static bool vulkan_init_default_filter_chain(vk_t *vk)
    info.swapchain.format      = vk->context->swapchain_format;
    info.swapchain.render_pass = vk->render_pass;
    info.swapchain.num_indices = vk->context->num_swapchain_images;
+#ifdef VULKAN_HDR_SWAPCHAIN
+   info.hdr_enabled           = settings->bools.video_hdr_enable;
+#endif /* VULKAN_HDR_SWAPCHAIN */ 
 
    vk->filter_chain_default   = vulkan_filter_chain_create_default(
          &info,
@@ -3088,6 +3144,12 @@ static bool vulkan_init_default_filter_chain(vk_t *vk)
          : VK_FORMAT_UNDEFINED;
       bool emits_hdr10 = shader_preset && shader_preset->passes && vulkan_filter_chain_emits_hdr10(vk->filter_chain_default);
 
+      vulkan_filter_chain_set_max_nits(vk->filter_chain_default, settings->floats.video_hdr_max_nits);
+      vulkan_filter_chain_set_paper_white_nits(vk->filter_chain_default, settings->floats.video_hdr_paper_white_nits);
+      vulkan_filter_chain_set_expand_gamut(vk->filter_chain_default, settings->bools.video_hdr_expand_gamut ? 1.0f : 0.0f);
+      vulkan_filter_chain_set_scanlines(vk->filter_chain_default, settings->bools.video_hdr_scanlines ? 1.0f : 0.0f);
+      vulkan_filter_chain_set_subpixel_layout(vk->filter_chain_default, settings->uints.video_hdr_subpixel_layout);
+
       if (vulkan_is_hdr10_format(rt_format))
       {
          /* If the last shader pass uses a RGB10A2 back buffer
@@ -3095,8 +3157,8 @@ static bool vulkan_init_default_filter_chain(vk_t *vk)
           * the inverse tonemapper and HDR10 conversion.
           * If we just inherited HDR10 format based on backbuffer,
           * we would have used RGBA8, and thus we should do inverse tonemap as expected. */
-         vulkan_set_hdr_inverse_tonemap(vk, !emits_hdr10);
-         vulkan_set_hdr10(vk, !emits_hdr10);
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain_default, !emits_hdr10);
+         vulkan_set_hdr10(vk, vk->filter_chain_default, !emits_hdr10);
          vk->flags |= VK_FLAG_SHOULD_RESIZE;
       }
       else if (rt_format == VK_FORMAT_R16G16B16A16_SFLOAT)
@@ -3104,16 +3166,25 @@ static bool vulkan_init_default_filter_chain(vk_t *vk)
          /* If the last shader pass uses a RGBA16 backbuffer
           * and HDR has been enabled, assume we want to
           * skip the inverse tonemapper */
-         vulkan_set_hdr_inverse_tonemap(vk, false);
-         vulkan_set_hdr10(vk, true);
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain_default, false);
+         vulkan_set_hdr10(vk, vk->filter_chain_default, true);
+         vk->flags |= VK_FLAG_SHOULD_RESIZE;
+      }
+      else if (rt_format == VK_FORMAT_R8G8B8A8_UNORM)
+      {
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain_default, true);
+         vulkan_set_hdr10(vk, vk->filter_chain_default, true);
+         vulkan_filter_chain_set_subpixel_layout(vk->filter_chain_default, 0.0f);
+         settings->bools.video_hdr_scanlines = false;
          vk->flags |= VK_FLAG_SHOULD_RESIZE;
       }
       else
       {
-         vulkan_set_hdr_inverse_tonemap(vk, true);
-         vulkan_set_hdr10(vk, true);
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain_default, true);
+         vulkan_set_hdr10(vk, vk->filter_chain_default, true);
       }
-   }
+
+   }  
 #endif /* VULKAN_HDR_SWAPCHAIN */
 
    return true;
@@ -3125,6 +3196,8 @@ static bool vulkan_init_filter_chain_preset(vk_t *vk, const char *shader_path)
 
    if (!vk->context)
       return false;
+
+   settings_t* settings       = config_get_ptr();
 
    info.device                = vk->context->device;
    info.gpu                   = vk->context->gpu;
@@ -3140,6 +3213,9 @@ static bool vulkan_init_filter_chain_preset(vk_t *vk, const char *shader_path)
    info.swapchain.format      = vk->context->swapchain_format;
    info.swapchain.render_pass = vk->render_pass;
    info.swapchain.num_indices = vk->context->num_swapchain_images;
+#ifdef VULKAN_HDR_SWAPCHAIN
+   info.hdr_enabled           = settings->bools.video_hdr_enable;
+#endif /* VULKAN_HDR_SWAPCHAIN */ 
 
    vk->filter_chain           = vulkan_filter_chain_create_from_preset(
          &info, shader_path,
@@ -3162,6 +3238,12 @@ static bool vulkan_init_filter_chain_preset(vk_t *vk, const char *shader_path)
          : VK_FORMAT_UNDEFINED;
       bool emits_hdr10 = shader_preset && shader_preset->passes && vulkan_filter_chain_emits_hdr10(vk->filter_chain);
 
+      vulkan_filter_chain_set_max_nits(vk->filter_chain, settings->floats.video_hdr_max_nits);
+      vulkan_filter_chain_set_paper_white_nits(vk->filter_chain, settings->floats.video_hdr_paper_white_nits);
+      vulkan_filter_chain_set_expand_gamut(vk->filter_chain, settings->bools.video_hdr_expand_gamut ? 1.0f : 0.0f);
+      vulkan_filter_chain_set_scanlines(vk->filter_chain, settings->bools.video_hdr_scanlines ? 1.0f : 0.0f);
+      vulkan_filter_chain_set_subpixel_layout(vk->filter_chain, settings->uints.video_hdr_subpixel_layout);
+
       if (vulkan_is_hdr10_format(rt_format))
       {
          /* If the last shader pass uses a RGB10A2 back buffer
@@ -3169,8 +3251,8 @@ static bool vulkan_init_filter_chain_preset(vk_t *vk, const char *shader_path)
           * the inverse tonemapper and HDR10 conversion.
           * If we just inherited HDR10 format based on backbuffer,
           * we would have used RGBA8, and thus we should do inverse tonemap as expected. */
-         vulkan_set_hdr_inverse_tonemap(vk, !emits_hdr10);
-         vulkan_set_hdr10(vk, !emits_hdr10);
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain, !emits_hdr10);
+         vulkan_set_hdr10(vk, vk->filter_chain, !emits_hdr10);
          vk->flags |= VK_FLAG_SHOULD_RESIZE;
       }
       else if (rt_format == VK_FORMAT_R16G16B16A16_SFLOAT)
@@ -3178,14 +3260,22 @@ static bool vulkan_init_filter_chain_preset(vk_t *vk, const char *shader_path)
          /* If the last shader pass uses a RGBA16 backbuffer
           * and HDR has been enabled, assume we want to
           * skip the inverse tonemapper */
-         vulkan_set_hdr_inverse_tonemap(vk, false);
-         vulkan_set_hdr10(vk, true);
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain, false);
+         vulkan_set_hdr10(vk, vk->filter_chain, true);
+         vk->flags |= VK_FLAG_SHOULD_RESIZE;
+      }
+      else if (rt_format == VK_FORMAT_R8G8B8A8_UNORM)
+      {
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain, true);
+         vulkan_set_hdr10(vk, vk->filter_chain, true);
+         vulkan_filter_chain_set_subpixel_layout(vk->filter_chain, 0.0f);
+         settings->bools.video_hdr_scanlines = false;
          vk->flags |= VK_FLAG_SHOULD_RESIZE;
       }
       else
       {
-         vulkan_set_hdr_inverse_tonemap(vk, true);
-         vulkan_set_hdr10(vk, true);
+         vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain, true);
+         vulkan_set_hdr10(vk, vk->filter_chain, true);
       }
    }
 #endif /* VULKAN_HDR_SWAPCHAIN */
@@ -3201,6 +3291,23 @@ static bool vulkan_init_filter_chain(vk_t *vk)
    if (string_is_empty(shader_path))
    {
       RARCH_LOG("[Vulkan] Loading stock shader.\n");
+
+#ifdef VULKAN_HDR_SWAPCHAIN
+      if (vk->context->flags & VK_CTX_FLAG_HDR_ENABLE)
+      {
+         if(vk->filter_chain)
+         {
+            vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain, true);
+            vulkan_set_hdr10(vk, vk->filter_chain, true);
+         }
+         if(vk->filter_chain_default)
+         {
+            vulkan_set_hdr_inverse_tonemap(vk, vk->filter_chain_default, true);
+            vulkan_set_hdr10(vk, vk->filter_chain_default, true);
+         }
+      }
+#endif /* VULKAN_HDR_SWAPCHAIN */
+
       return vulkan_init_default_filter_chain(vk);
    }
 
@@ -3338,7 +3445,6 @@ static void vulkan_free(void *data)
       if (vk->context->flags & VK_CTX_FLAG_HDR_SUPPORT)
       {
          vulkan_destroy_buffer(vk->context->device, &vk->hdr.ubo);
-         vulkan_destroy_hdr_buffer(vk->context->device, &vk->main_buffer);
          vulkan_destroy_hdr_buffer(vk->context->device, &vk->readback_image);
          vulkan_deinit_hdr_readback_render_pass(vk);
          video_driver_unset_hdr_support();
@@ -3677,7 +3783,6 @@ static void *vulkan_init(const video_info_t *video,
    mapped_ubo->mvp              = vk->mvp_no_rot;
    mapped_ubo->max_nits         = settings->floats.video_hdr_max_nits;
    mapped_ubo->paper_white_nits = settings->floats.video_hdr_paper_white_nits;
-   mapped_ubo->contrast         = VIDEO_HDR_MAX_CONTRAST - settings->floats.video_hdr_display_contrast;
    mapped_ubo->expand_gamut     = settings->bools.video_hdr_expand_gamut;
    mapped_ubo->inverse_tonemap  = 1.0f;     /* Use this to turn on/off the inverse tonemap */
    mapped_ubo->hdr10            = 1.0f;     /* Use this to turn on/off the hdr10 */
@@ -4052,39 +4157,13 @@ static void vulkan_set_video_mode(void *data,
 static void vulkan_set_viewport(void *data, unsigned vp_width,
       unsigned vp_height, bool force_full, bool allow_rotate)
 {
-   float device_aspect       = (float)vp_width / vp_height;
    struct video_ortho ortho  = {0, 1, 0, 1, -1, 1};
-   bool video_scale_integer  = config_get_ptr()->bools.video_scale_integer;
    vk_t *vk                  = (vk_t*)data;
 
-   if (vk->ctx_driver->translate_aspect)
-      device_aspect         = vk->ctx_driver->translate_aspect(
-            vk->ctx_data, vp_width, vp_height);
-
-   if (video_scale_integer && !force_full)
-   {
-      video_viewport_get_scaled_integer(&vk->vp,
-            vp_width, vp_height,
-            video_driver_get_aspect_ratio(),
-            vk->flags & VK_FLAG_KEEP_ASPECT,
-            true);
-      vp_width  = vk->vp.width;
-      vp_height = vk->vp.height;
-   }
-   else if ((vk->flags & VK_FLAG_KEEP_ASPECT) && !force_full)
-   {
-      video_viewport_get_scaled_aspect2(&vk->vp, vp_width, vp_height,
-            true, device_aspect, video_driver_get_aspect_ratio());
-      vp_width        = vk->vp.width;
-      vp_height       = vk->vp.height;
-   }
-   else
-   {
-      vk->vp.x        = 0;
-      vk->vp.y        = 0;
-      vk->vp.width    = vp_width;
-      vk->vp.height   = vp_height;
-   }
+   vk->vp.full_width  = vp_width;
+   vk->vp.full_height = vp_height;
+   video_driver_update_viewport(&vk->vp, force_full,
+         (vk->flags & VK_FLAG_KEEP_ASPECT) ? true : false, true);
 
    if (vk->vp.x < 0)
    {
@@ -4107,8 +4186,8 @@ static void vulkan_set_viewport(void *data, unsigned vp_width,
    /* Set last backbuffer viewport. */
    if (!force_full)
    {
-      vk->out_vp_width  = vp_width;
-      vk->out_vp_height = vp_height;
+      vk->out_vp_width  = vk->vp.width;
+      vk->out_vp_height = vk->vp.height;
    }
 
    vk->vk_vp.x          = (float)vk->vp.x;
@@ -4833,6 +4912,11 @@ static bool vulkan_frame(void *data, const void *frame,
    vulkan_filter_chain_set_core_aspect_rot(
          (vulkan_filter_chain_t*)filter_chain, core_aspect_rot);
 
+#ifdef VULKAN_HDR_SWAPCHAIN
+   vulkan_filter_chain_set_enable_hdr(
+         (vulkan_filter_chain_t*)filter_chain, (vk->context->flags & VK_CTX_FLAG_HDR_ENABLE) ? 1.0f : 0.0f);
+#endif /* VULKAN_HDR_SWAPCHAIN */ 
+
    /* Render offscreen filter chain passes. */
    {
       /* Set the source texture in the filter chain */
@@ -4930,11 +5014,6 @@ static bool vulkan_frame(void *data, const void *frame,
    }
 #endif
 
-#ifdef VULKAN_HDR_SWAPCHAIN
-   if (use_main_buffer)
-      backbuffer = &vk->main_buffer;
-#endif /* VULKAN_HDR_SWAPCHAIN */
-
    /* Render to backbuffer. */
    if (     (backbuffer->image != VK_NULL_HANDLE)
          && (vk->context->flags & VK_CTX_FLAG_HAS_ACQUIRED_SWAPCHAIN))
@@ -5028,22 +5107,6 @@ static bool vulkan_frame(void *data, const void *frame,
 
       /* End the render pass. We're done rendering to backbuffer now. */
       vkCmdEndRenderPass(vk->cmd);
-
-#ifdef VULKAN_HDR_SWAPCHAIN
-      /* Copy over back buffer to swap chain render targets */
-      if (use_main_buffer)
-      {
-         backbuffer = &vk->backbuffers[swapchain_index];
-         /* Prepare source buffer for reading */
-         VULKAN_IMAGE_LAYOUT_TRANSITION(vk->cmd, vk->main_buffer.image,
-               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-
-         vulkan_run_hdr_pipeline(vk->pipelines.hdr, vk->render_pass, &vk->main_buffer, backbuffer, vk);
-      }
-#endif /* VULKAN_HDR_SWAPCHAIN */
    }
 
    /* End the filter chain frame.
@@ -5057,20 +5120,19 @@ static bool vulkan_frame(void *data, const void *frame,
       )
    {
       if (     (vk->flags & VK_FLAG_READBACK_PENDING)
-            || (vk->flags & VK_FLAG_READBACK_STREAMED))
+             || (vk->flags & VK_FLAG_READBACK_STREAMED))
       {
          VkImageLayout backbuffer_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 #ifdef VULKAN_HDR_SWAPCHAIN
+         if (use_main_buffer)
+         {
+            backbuffer = &vk->backbuffers[swapchain_index];
+         }
+
          struct vk_image* readback_source = backbuffer;
          if (vk->context->flags & VK_CTX_FLAG_HDR_ENABLE)
          {
-            if (use_main_buffer)
-            {
-               /* Read directly from sdr main buffer instead of tonemapping */
-               readback_source = &vk->main_buffer;
-               /* No need to transition layout, it's already read-only optimal */
-            }
-            else
+            if (!use_main_buffer)
             {
                /* Prepare backbuffer for reading */
                backbuffer_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -5264,7 +5326,6 @@ static bool vulkan_frame(void *data, const void *frame,
 #ifdef HAVE_THREADS
          slock_unlock(vk->context->queue_lock);
 #endif
-         vulkan_destroy_hdr_buffer(vk->context->device, &vk->main_buffer);
          vulkan_destroy_hdr_buffer(vk->context->device, &vk->readback_image);
       }
       else
@@ -5282,9 +5343,6 @@ static bool vulkan_frame(void *data, const void *frame,
 #ifdef VULKAN_HDR_SWAPCHAIN
       if (vk->context->flags & VK_CTX_FLAG_HDR_ENABLE)
       {
-         /* Create intermediary buffer to render filter chain output to */
-         vulkan_init_render_target(&vk->main_buffer, video_width, video_height,
-                                  vk->context->swapchain_format, vk->render_pass, vk->context);
          /* Create image for readback target in bgra8 format */
          vulkan_init_render_target(&vk->readback_image, video_width, video_height,
                                     VK_FORMAT_B8G8R8A8_UNORM, vk->readback_render_pass, vk->context);
@@ -5767,13 +5825,15 @@ static const video_poke_interface_t vulkan_poke_interface = {
 #ifdef VULKAN_HDR_SWAPCHAIN
    vulkan_set_hdr_max_nits,
    vulkan_set_hdr_paper_white_nits,
-   vulkan_set_hdr_contrast,
-   vulkan_set_hdr_expand_gamut
+   vulkan_set_hdr_expand_gamut,
+   vulkan_set_hdr_scanlines,
+   vulkan_set_hdr_subpixel_layout
 #else
    NULL, /* set_hdr_max_nits */
    NULL, /* set_hdr_paper_white_nits */
-   NULL, /* set_hdr_contrast */
-   NULL  /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_scanlines */
+   NULL  /* set_hdr_subpixel_layout */
 #endif /* VULKAN_HDR_SWAPCHAIN */
 };
 

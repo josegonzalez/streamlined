@@ -334,11 +334,10 @@ const struct input_bind_map input_config_bind_map[RARCH_BIND_LIST_END_NULL] = {
    DECLARE_BIND(gun_dpad_right,                RARCH_LIGHTGUN_DPAD_RIGHT,    MENU_ENUM_LABEL_VALUE_INPUT_LIGHTGUN_DPAD_RIGHT),
 
    DECLARE_BIND(turbo,                         RARCH_TURBO_ENABLE,           MENU_ENUM_LABEL_VALUE_INPUT_TURBO),
+   DECLARE_BIND(hold,                          RARCH_HOLD_ENABLE,            MENU_ENUM_LABEL_VALUE_INPUT_HOLD),
 
    DECLARE_META_BIND(2, enable_hotkey,         RARCH_ENABLE_HOTKEY,          MENU_ENUM_LABEL_VALUE_INPUT_META_ENABLE_HOTKEY),
-#ifdef HAVE_MENU
    DECLARE_META_BIND(1, menu_toggle,           RARCH_MENU_TOGGLE,            MENU_ENUM_LABEL_VALUE_INPUT_META_MENU_TOGGLE),
-#endif
 #ifdef HAVE_LAKKA
    DECLARE_META_BIND(2, exit_emulator,         RARCH_QUIT_KEY,               MENU_ENUM_LABEL_VALUE_INPUT_META_RESTART_KEY),
 #else
@@ -1611,6 +1610,15 @@ static struct config_array_setting *populate_settings_array(
    SETTING_ARRAY("ai_service_url",               settings->arrays.ai_service_url, true, DEFAULT_AI_SERVICE_URL, true);
 #endif
 
+#ifdef HAVE_SMBCLIENT
+   SETTING_ARRAY("smb_client_server_address", settings->arrays.smb_client_server_address, false, NULL, true);
+   SETTING_ARRAY("smb_client_share", settings->arrays.smb_client_share, false, NULL, true);
+   SETTING_ARRAY("smb_client_subdir", settings->arrays.smb_client_subdir, false, NULL, true);
+   SETTING_ARRAY("smb_client_username", settings->arrays.smb_client_username, false, NULL, true);
+   SETTING_ARRAY("smb_client_password", settings->arrays.smb_client_password, false, NULL, true);
+   SETTING_ARRAY("smb_client_workgroup", settings->arrays.smb_client_workgroup, false, NULL, true);
+#endif
+
 #ifdef HAVE_LAKKA
    SETTING_ARRAY("cpu_main_gov",                 settings->arrays.cpu_main_gov, false, NULL, true);
    SETTING_ARRAY("cpu_menu_gov",                 settings->arrays.cpu_menu_gov, false, NULL, true);
@@ -1744,7 +1752,6 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("input_descriptor_label_show",   &settings->bools.input_descriptor_label_show, true, DEFAULT_INPUT_DESCRIPTOR_LABEL_SHOW, false);
    SETTING_BOOL("input_descriptor_hide_unbound", &settings->bools.input_descriptor_hide_unbound, true, DEFAULT_INPUT_DESCRIPTOR_HIDE_UNBOUND, false);
    SETTING_BOOL("load_dummy_on_core_shutdown",   &settings->bools.load_dummy_on_core_shutdown, true, DEFAULT_LOAD_DUMMY_ON_CORE_SHUTDOWN, false);
-   SETTING_BOOL("check_firmware_before_loading", &settings->bools.check_firmware_before_loading, true, DEFAULT_CHECK_FIRMWARE_BEFORE_LOADING, false);
    SETTING_BOOL("core_option_category_enable",   &settings->bools.core_option_category_enable, true, DEFAULT_CORE_OPTION_CATEGORY_ENABLE, false);
    SETTING_BOOL("core_info_savestate_bypass",    &settings->bools.core_info_savestate_bypass, true, DEFAULT_CORE_INFO_SAVESTATE_BYPASS, false);
 #if defined(__WINRT__) || defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_PHONE_APP
@@ -1809,7 +1816,9 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("savefiles_in_content_dir",      &settings->bools.savefiles_in_content_dir, true, DEFAULT_SAVEFILES_IN_CONTENT_DIR, false);
    SETTING_BOOL("systemfiles_in_content_dir",    &settings->bools.systemfiles_in_content_dir, true, DEFAULT_SYSTEMFILES_IN_CONTENT_DIR, false);
    SETTING_BOOL("screenshots_in_content_dir",    &settings->bools.screenshots_in_content_dir, true, DEFAULT_SCREENSHOTS_IN_CONTENT_DIR, false);
-   SETTING_BOOL("quit_press_twice",              &settings->bools.quit_press_twice, true, DEFAULT_QUIT_PRESS_TWICE, false);
+   SETTING_BOOL("confirm_quit",                  &settings->bools.confirm_quit, true, DEFAULT_CONFIRM_QUIT, false);
+   SETTING_BOOL("confirm_close",                 &settings->bools.confirm_close, true, DEFAULT_CONFIRM_CLOSE, false);
+   SETTING_BOOL("confirm_reset",                 &settings->bools.confirm_reset, true, DEFAULT_CONFIRM_RESET, false);
    SETTING_BOOL("config_save_on_exit",           &settings->bools.config_save_on_exit, true, DEFAULT_CONFIG_SAVE_ON_EXIT, false);
    SETTING_BOOL("remap_save_on_exit",            &settings->bools.remap_save_on_exit, true, DEFAULT_REMAP_SAVE_ON_EXIT, false);
    SETTING_BOOL("show_hidden_files",             &settings->bools.show_hidden_files, true, DEFAULT_SHOW_HIDDEN_FILES, false);
@@ -1910,6 +1919,7 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("video_fullscreen",              &settings->bools.video_fullscreen, true, DEFAULT_FULLSCREEN, false);
    SETTING_BOOL("video_hdr_enable",              &settings->bools.video_hdr_enable, true, DEFAULT_VIDEO_HDR_ENABLE, false);
    SETTING_BOOL("video_hdr_expand_gamut",        &settings->bools.video_hdr_expand_gamut, true, DEFAULT_VIDEO_HDR_EXPAND_GAMUT, false);
+   SETTING_BOOL("video_hdr_scanlines",           &settings->bools.video_hdr_scanlines, true, DEFAULT_VIDEO_HDR_SCANLINES, false);
    SETTING_BOOL("video_vsync",                   &settings->bools.video_vsync, true, DEFAULT_VSYNC, false);
    SETTING_BOOL("video_adaptive_vsync",          &settings->bools.video_adaptive_vsync, true, DEFAULT_ADAPTIVE_VSYNC, false);
    SETTING_BOOL("video_hard_sync",               &settings->bools.video_hard_sync, true, DEFAULT_HARD_SYNC, false);
@@ -2252,6 +2262,10 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("network_remote_enable",         &settings->bools.network_remote_enable, false, false /* TODO */, false);
 #endif
 #endif
+#ifdef HAVE_SMBCLIENT
+   SETTING_BOOL("settings_show_smb_client",      &settings->bools.settings_show_smb_client, true, DEFAULT_SETTINGS_SHOW_SMB_CLIENT, false);
+   SETTING_BOOL("smb_client_enable",             &settings->bools.smb_client_enable, true, false, false);
+#endif
 #ifdef HAVE_BSV_MOVIE
    SETTING_BOOL("replay_checkpoint_deserialize", &settings->bools.replay_checkpoint_deserialize,  true, DEFAULT_REPLAY_CHECKPOINT_DESERIALIZE, false);
 #endif
@@ -2353,7 +2367,6 @@ static struct config_float_setting *populate_settings_float(
    SETTING_FLOAT("video_msg_bgcolor_opacity",    &settings->floats.video_msg_bgcolor_opacity, true, DEFAULT_MESSAGE_BGCOLOR_OPACITY, false);
    SETTING_FLOAT("video_hdr_max_nits",           &settings->floats.video_hdr_max_nits, true, DEFAULT_VIDEO_HDR_MAX_NITS, false);
    SETTING_FLOAT("video_hdr_paper_white_nits",   &settings->floats.video_hdr_paper_white_nits, true, DEFAULT_VIDEO_HDR_PAPER_WHITE_NITS, false);
-   SETTING_FLOAT("video_hdr_display_contrast",   &settings->floats.video_hdr_display_contrast, true, DEFAULT_VIDEO_HDR_CONTRAST, false);
 
    SETTING_FLOAT("input_axis_threshold",         &settings->floats.input_axis_threshold,     true, DEFAULT_AXIS_THRESHOLD, false);
    SETTING_FLOAT("input_analog_deadzone",        &settings->floats.input_analog_deadzone,    true, DEFAULT_ANALOG_DEADZONE, false);
@@ -2449,6 +2462,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("menu_xmb_thumbnail_scale_factor",         &settings->uints.menu_xmb_thumbnail_scale_factor, true, DEFAULT_XMB_THUMBNAIL_SCALE_FACTOR, false);
    SETTING_UINT("menu_xmb_vertical_fade_factor",           &settings->uints.menu_xmb_vertical_fade_factor, true, DEFAULT_XMB_VERTICAL_FADE_FACTOR, false);
    SETTING_UINT("xmb_alpha_factor",              &settings->uints.menu_xmb_alpha_factor, true, DEFAULT_XMB_ALPHA_FACTOR, false);
+   SETTING_UINT("xmb_current_menu_icon",         &settings->uints.menu_xmb_current_menu_icon, true, DEFAULT_XMB_CURRENT_MENU_ICON, false);
    SETTING_UINT("xmb_layout",                    &settings->uints.menu_xmb_layout, true, DEFAULT_XMB_MENU_LAYOUT, false);
    SETTING_UINT("xmb_theme",                     &settings->uints.menu_xmb_theme, true, DEFAULT_XMB_ICON_THEME, false);
    SETTING_UINT("xmb_menu_color_theme",          &settings->uints.menu_xmb_color_theme, true, DEFAULT_XMB_THEME, false);
@@ -2466,6 +2480,7 @@ static struct config_uint_setting *populate_settings_uint(
 #endif
 #ifdef HAVE_OZONE
    SETTING_UINT("ozone_menu_color_theme",        &settings->uints.menu_ozone_color_theme, true, DEFAULT_OZONE_COLOR_THEME, false);
+   SETTING_UINT("ozone_header_icon",             &settings->uints.menu_ozone_header_icon, true, DEFAULT_OZONE_HEADER_ICON, false);
    SETTING_UINT("ozone_header_separator",        &settings->uints.menu_ozone_header_separator, true, DEFAULT_OZONE_HEADER_SEPARATOR, false);
    SETTING_UINT("ozone_font_scale",              &settings->uints.menu_ozone_font_scale, true, DEFAULT_OZONE_FONT_SCALE, false);
 #endif
@@ -2543,6 +2558,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("video_record_scale_factor",     &settings->uints.video_record_scale_factor, true, 1, false);
    SETTING_UINT("video_stream_scale_factor",     &settings->uints.video_stream_scale_factor, true, 1, false);
 
+   SETTING_UINT("video_hdr_subpixel_layout",    &settings->uints.video_hdr_subpixel_layout, true, DEFAULT_VIDEO_HDR_SUBPIXEL_LAYOUT, false);
 #ifdef HAVE_NETWORKING
    SETTING_UINT("streaming_mode",                &settings->uints.streaming_mode, true, STREAMING_MODE_TWITCH, false);
 #endif
@@ -2612,6 +2628,9 @@ static struct config_uint_setting *populate_settings_uint(
 #ifdef HAVE_NETWORKGAMEPAD
    SETTING_UINT("network_remote_base_port",      &settings->uints.network_remote_base_port, true, DEFAULT_NETWORK_REMOTE_BASE_PORT, false);
 #endif
+#ifdef HAVE_CLOUDSYNC
+   SETTING_UINT("cloud_sync_sync_mode",          &settings->uints.cloud_sync_sync_mode, true, CLOUD_SYNC_MODE_AUTOMATIC, false);
+#endif
 
 #ifdef HAVE_LANGEXTRA
    SETTING_UINT("user_language",                 msg_hash_get_uint(MSG_HASH_USER_LANGUAGE), true, frontend_driver_get_user_language(), false);
@@ -2664,6 +2683,13 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("input_overlay_lightgun_four_touch_input",  &settings->uints.input_overlay_lightgun_four_touch_input, true, DEFAULT_INPUT_OVERLAY_LIGHTGUN_MULTI_TOUCH_INPUT, false);
    SETTING_UINT("input_overlay_mouse_hold_msec",            &settings->uints.input_overlay_mouse_hold_msec, true, DEFAULT_INPUT_OVERLAY_MOUSE_HOLD_MSEC, false);
    SETTING_UINT("input_overlay_mouse_dtap_msec",            &settings->uints.input_overlay_mouse_dtap_msec, true, DEFAULT_INPUT_OVERLAY_MOUSE_DTAP_MSEC, false);
+   SETTING_UINT("input_overlay_mouse_alt_two_touch_input",  &settings->uints.input_overlay_mouse_alt_two_touch_input, true, DEFAULT_INPUT_OVERLAY_MOUSE_ALT_TWO_TOUCH_INPUT, false);
+#endif
+
+#ifdef HAVE_SMBCLIENT
+   SETTING_UINT("smb_client_auth_mode",           &settings->uints.smb_client_auth_mode, true, DEFAULT_SMB_CLIENT_AUTH_MODE, false);
+   SETTING_UINT("smb_client_num_contexts",        &settings->uints.smb_client_num_contexts, true, DEFAULT_SMB_CLIENT_NUM_CONTEXTS, false);
+   SETTING_UINT("smb_client_timeout",             &settings->uints.smb_client_timeout, true, DEFAULT_SMB_CLIENT_TIMEOUT, false);
 #endif
 
    *size = count;
@@ -3080,11 +3106,7 @@ void config_set_defaults(void *data)
    for (i = 0; i < MAX_USERS; i++)
    {
       settings->uints.input_joypad_index[i] = (unsigned)i;
-#ifdef SWITCH /* Switch preferred default dpad mode */
       settings->uints.input_analog_dpad_mode[i] = ANALOG_DPAD_LSTICK;
-#else
-      settings->uints.input_analog_dpad_mode[i] = ANALOG_DPAD_NONE;
-#endif
       input_config_set_device((unsigned)i, RETRO_DEVICE_JOYPAD);
       settings->uints.input_mouse_index[i] = (unsigned)i;
    }
@@ -3270,7 +3292,6 @@ void config_set_defaults(void *data)
             sizeof(settings->paths.directory_osk_overlay));
 #endif
 
-#ifdef HAVE_MENU
    if (!string_is_empty(g_defaults.dirs[DEFAULT_DIR_MENU_CONFIG]))
    {
       configuration_set_string(settings,
@@ -3293,7 +3314,7 @@ void config_set_defaults(void *data)
       configuration_set_string(settings,
             settings->paths.directory_menu_content,
             g_defaults.dirs[DEFAULT_DIR_MENU_CONTENT]);
-#endif
+
    if (!string_is_empty(g_defaults.dirs[DEFAULT_DIR_AUTOCONFIG]))
       configuration_set_string(settings,
             settings->paths.directory_autoconfig,
@@ -4532,6 +4553,20 @@ static bool config_load_file(global_t *global,
          settings->ints.content_favorites_size = (int)settings->uints.content_history_size;
    }
 
+   /* Migrate "quit_press_twice" to "confirm_quit" */
+   {
+      const char *tmp_key = "quit_press_twice";
+      struct config_entry_list *tmp = config_get_entry(conf, tmp_key);
+      if (tmp)
+      {
+         configuration_set_bool(settings,
+               settings->bools.confirm_quit,
+               string_is_equal(tmp->value, "true") ? true : false);
+         RARCH_LOG("[Config] Migrated \"%s\" to \"confirm_quit\" = \"%s\".\n",
+               tmp->key, tmp->value);
+      }
+   }
+
    if (conf)
       config_file_free(conf);
    if (bool_settings)
@@ -4578,7 +4613,6 @@ bool config_load_override(void *data)
    char content_path[PATH_MAX_LENGTH];
    char config_directory[DIR_MAX_LENGTH];
    bool should_append                     = false;
-   bool show_notification                 = true;
    rarch_system_info_t *sys_info          = (rarch_system_info_t*)data;
    const char *core_name                  = sys_info
       ? sys_info->info.library_name : NULL;
@@ -4633,16 +4667,12 @@ bool config_load_override(void *data)
 
    /* Prevent "--appendconfig" from being ignored */
    if (!path_is_empty(RARCH_PATH_CONFIG_APPEND))
-   {
-      should_append     = true;
-      show_notification = false;
-   }
+      should_append = true;
 
    /* per-core overrides */
    /* Create a new config file from core_path */
    if (path_is_valid(core_path))
    {
-
       RARCH_LOG("[Override] Core-specific overrides found at \"%s\".\n",
             core_path);
 
@@ -4661,8 +4691,7 @@ bool config_load_override(void *data)
       else
          path_set(RARCH_PATH_CONFIG_OVERRIDE, core_path);
 
-      should_append     = true;
-      show_notification = true;
+      should_append = true;
    }
 
    if (has_content)
@@ -4689,8 +4718,7 @@ bool config_load_override(void *data)
          else
             path_set(RARCH_PATH_CONFIG_OVERRIDE, content_path);
 
-         should_append     = true;
-         show_notification = true;
+         should_append = true;
       }
 
       /* per-game overrides */
@@ -4715,8 +4743,7 @@ bool config_load_override(void *data)
          else
             path_set(RARCH_PATH_CONFIG_OVERRIDE, game_path);
 
-         should_append     = true;
-         show_notification = true;
+         should_append = true;
       }
    }
 
@@ -4730,12 +4757,11 @@ bool config_load_override(void *data)
    retroarch_override_setting_unset(RARCH_OVERRIDE_SETTING_STATE_PATH, NULL);
    retroarch_override_setting_unset(RARCH_OVERRIDE_SETTING_SAVE_PATH, NULL);
 
-   if (!config_load_file(global_get_ptr(),
-            path_get(RARCH_PATH_CONFIG), settings))
+   if (!config_load_file(global_get_ptr(), path_get(RARCH_PATH_CONFIG), settings))
       return false;
 
-   if (settings->bools.notification_show_config_override_load
-         && show_notification)
+   if (     settings->bools.notification_show_config_override_load
+         && !string_is_empty(path_get(RARCH_PATH_CONFIG_OVERRIDE)))
    {
       char msg[128];
       size_t _len = strlcpy(msg, msg_hash_to_str(MSG_CONFIG_OVERRIDE_LOADED), sizeof(msg));
@@ -4773,8 +4799,7 @@ bool config_load_override_file(const char *config_path)
    retroarch_override_setting_unset(RARCH_OVERRIDE_SETTING_STATE_PATH, NULL);
    retroarch_override_setting_unset(RARCH_OVERRIDE_SETTING_SAVE_PATH, NULL);
 
-   if (!config_load_file(global_get_ptr(),
-            path_get(RARCH_PATH_CONFIG), settings))
+   if (!config_load_file(global_get_ptr(), path_get(RARCH_PATH_CONFIG), settings))
       return false;
 
    if (settings->bools.notification_show_config_override_load)
@@ -5671,6 +5696,14 @@ bool config_save_file(const char *path)
 
    for (i = 0; i < MAX_USERS; i++)
       input_config_save_keybinds_user(conf, i);
+
+   /* Remove unused "quit_press_twice" after migrating to "confirm_quit" */
+   {
+      const char *tmp_key = "quit_press_twice";
+      struct config_entry_list *tmp = config_get_entry(conf, tmp_key);
+      if (tmp)
+         config_unset(conf, tmp->key);
+   }
 
    ret = config_file_write(conf, path, true);
    config_file_free(conf);

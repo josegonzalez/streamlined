@@ -6,6 +6,20 @@
 #pragma warning(disable:4566)
 #endif
 
+/*
+##### NOTE FOR TRANSLATORS ####
+
+PLEASE do NOT modify any `msg_hash_*.h` files, besides `msg_hash_us.h`!
+
+Translations are handled using the localization platform Crowdin:
+https://crowdin.com/project/retroarch
+
+Translations from Crowdin are applied automatically and will overwrite
+any changes made to the other localization files.
+As a result, any submissions directly altering `msg_hash_*.h` files
+other than `msg_hash_us.h` will be rejected.
+*/
+
 /* Top-Level Menu */
 
 MSG_HASH(
@@ -534,14 +548,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE,
    "Прашыўка"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_IN_CONTENT_DIRECTORY,
-   "- Заўвага: уключана опцыя «Сістэмныя файлы ў каталогу змесціва»."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CORE_INFO_FIRMWARE_PATH,
-   "- Прагляд у: %s"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MISSING_REQUIRED,
@@ -1315,6 +1321,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
    "Калі адключана, файлы будуць перасунутыя ў тэчку рэзервовай копіі перад іх перазапісам ці выдаленнем."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_AUTOMATIC,
+   "Аўтаматычная"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_MODE_MANUAL,
+   "Уручную"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_DRIVER,
@@ -2142,8 +2156,8 @@ MSG_HASH(
    "Гарызантальны памер"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_CRT_SWITCH_VERTICAL_ADJUST,
-   "Вертыкальнае цэнтраванне"
+   MENU_ENUM_SUBLABEL_CRT_SWITCH_VERTICAL_ADJUST,
+   "Прайдзіце праз гэтыя наладкі, калі выява не належным чынам адцэнтравана на дысплэі."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CRT_SWITCH_HIRES_MENU,
@@ -2593,33 +2607,10 @@ MSG_HASH(
    "Пікавая яркасць"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_HDR_MAX_NITS,
-   "Ўстаноўка максімальнай яркасці (у кд/м2), якую можа выдаваць дысплей. Значэнне пікавай яркасці дысплея гледзіце на рэсурсе RTings."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_PAPER_WHITE_NITS,
    "Яркасць белага аркушу"
    )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_HDR_PAPER_WHITE_NITS,
-   "Усталёўвае яркасць, пры якой тэкст можна добра чытаць на белым аркушы або яркасць у канцы шкалы SDR (стандартнага дынамічнага дыяпазону). Выкарыстоўваецца для падладкі пад розныя ўмовы асвятлення."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_CONTRAST,
-   "Кантраст"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_HDR_CONTRAST,
-   "Налада гамы/кантраснасці HDR. Пашырае дыяпазон паміж самымі светлымі і самымі цёмнымі часткамі выявы. Чым вышэй кантраст HDR, тым мацней розніца і чым ніжэй кантраст, тым больш размытай будзе выява. Дазваляе дасягнуць найлепшай якасці карцінкі на экране."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT,
-   "Пашыраная каляровая гама"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_VIDEO_HDR_EXPAND_GAMUT,
-   "Пасля пераўтварэння каляровай прасторы ў лінейнае вызначае, ці трэба ўжываць пашыраную каляровую гаму для HDR10."
-   )
+
 
 /* Settings > Video > Synchronization */
 
@@ -3298,10 +3289,6 @@ MSG_HASH(
    "Выявіць"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PAUSE_ON_DISCONNECT,
-   "Прыпыненне змесціва пры адлучэнні кантролера"
-   )
-MSG_HASH(
    MENU_ENUM_SUBLABEL_PAUSE_ON_DISCONNECT,
    "Прыпыняць змесціва пры адлучэнні любога кантролера. Узнаўляць пры націсканні на Start."
    )
@@ -3478,6 +3465,7 @@ MSG_HASH(
    MENU_ENUM_SUBLABEL_ANDROID_INPUT_DISCONNECT_WORKAROUND,
    "Рашэнне праблемы з адлучэннем ды паўторным падлучэннем кантролераў. Перашкаджае прызначэнню аднолькавых кантролераў для абодвух гульцоў."
    )
+
 
 /* Settings > Input > Haptic Feedback/Vibration */
 
@@ -3771,16 +3759,8 @@ MSG_HASH(
    "Наступны дыск"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_META_DISK_NEXT,
-   "Павялічвае бягучы індэкс дыска. Віртуальны латок дыска мае быць адкрытым."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_DISK_PREV,
    "Папярэдні дыск"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_INPUT_META_DISK_PREV,
-   "Паніжае бягучы індэкс дыска. Віртуальны латок дыска мае быць адкрытым."
    )
 
 MSG_HASH(
@@ -4278,6 +4258,10 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TURBO,
    "Турба-кнопкі"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_INPUT_HOLD,
+   "Утрымлівайце"
    )
 
 /* Settings > Latency */
@@ -8884,10 +8868,6 @@ MSG_HASH(
    "Перазапусціць"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_RESTART_CONTENT,
-   "Перазапусціць загружаны кантэнт."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOSE_CONTENT,
    "Закрыць змесціва"
    )
@@ -9607,41 +9587,22 @@ MSG_HASH(
 /* Quick Menu > Disc Control */
 
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_DISK_TRAY_EJECT,
-   "Выняць дыск"
+   MENU_ENUM_LABEL_VALUE_DISK_INDEX,
+   "Індэкс бягучага дыска"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_DISK_TRAY_EJECT,
-   "Адкрыць віртуальны латок прывада і выняць бягучы дыск. Калі ўключаная опцыя 'Паўза пры выкліку меню', некаторым ядрам пасля любых аперацый з дыскамі патрабуецца на некалькі секунд аднавіць кантэнт для рэгістрацыі змен."
+   MENU_ENUM_LABEL_VALUE_DISK_TRAY_EJECT,
+   "Выняць дыск"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DISK_TRAY_INSERT,
    "Уставіць дыск"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_DISK_TRAY_INSERT,
-   "Загрузіць дыск з бягучага азначніка і зачыніць латок віртуальнага прывада. Калі ўключаная опцыя 'Паўза пры выкліку меню', некаторым ядрам пасля любых аперацый з дыскамі патрабуецца на некалькі секунд аднавіць кантэнт для рэгістрацыі змен."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_DISK_IMAGE_APPEND,
    "Загрузіць новы дыск"
    )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_DISK_IMAGE_APPEND,
-   "Выміце бягучы дыск, абярыце з памяці іншы, устаўце і зачыніце латок прывада.\nГэтая функцыя з'яўляецца састарэлай. Гульні на некалькіх дысках рэкамендуецца загружаць праз M3U-плэйлісты, якія дазваляюць мяняць дыскі пры дапамозе опцый 'Выняць дыск' і 'Азначнік дыска'."
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_DISK_IMAGE_APPEND_TRAY_OPEN,
-   "Выбраць новы дыск з памяці і ўставіць яго без закрыцця латка.\nУВАГА: гэта функцыя састарэлая. Гульні на некалькіх дысках рэкамендуецца загружаць праз M3U-плэйлісты, якія дазваляюць мяняць дыскі пры дапамозе опцый 'Выняць дыск' і 'Азначнік дыска'."
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_DISK_INDEX,
-   "Індэкс бягучага дыска"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_DISK_INDEX,
-   "Абярыце бягучы дыск са спісу даступных вобразаў. Дыск будзе загружаны пры выбары 'Уставіць Дыск'."
-   )
+/* deprecated */
 
 /* Quick Menu > Shaders */
 
@@ -10625,16 +10586,28 @@ MSG_HASH(
    "<Нявызначанае>"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SCAN_METHOD_CUSTOM,
+   "Уласная"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SCAN_USE_DB_NONE,
+   "Няма"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_SCAN_TARGET_PLAYLIST_CUSTOM,
+   "<Ручны ўвод>"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_ANALOG,
    "Левы аналагавы стык"
    )
 MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_RIGHT_ANALOG,
-   "Правы аналагавы стык"
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_ANALOG_FORCED,
    "Левы аналагавы стык (прымусова)"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_RIGHT_ANALOG,
+   "Правы аналагавы стык"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_RIGHT_ANALOG_FORCED,
@@ -10936,16 +10909,8 @@ MSG_HASH(
    "Верхняя мініяцюра"
    )
 MSG_HASH(
-   MENU_ENUM_SUBLABEL_THUMBNAILS_RGUI,
-   "Тып мініяцюры, якая адлюстроўваецца ў правай верхняй частцы плэйліста. Для цыклічнага пераключэння мініяцюры націсніце RetroPad Y."
-   )
-MSG_HASH(
    MENU_ENUM_LABEL_VALUE_LEFT_THUMBNAILS_RGUI,
    "Ніжняя мініяцюра"
-   )
-MSG_HASH(
-   MENU_ENUM_SUBLABEL_LEFT_THUMBNAILS_RGUI,
-   "Тып мініяцюры, якая адлюстроўваецца ў правым ніжнім куце плэйліста."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_RGUI_SWAP_THUMBNAILS,
@@ -11240,6 +11205,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_ALPHA_FACTOR,
    "Празрыстасць каляровай тэмы"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_NONE,
+   "Няма"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_XMB_CURRENT_MENU_ICON_NORMAL,
+   "Звычайна"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_XMB_FONT,
@@ -11542,6 +11515,14 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_OZONE_THUMBNAIL_SCALE_FACTOR,
    "Змяняе памер вобласці мініяцюр."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_NONE,
+   "Няма"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_OZONE_HEADER_ICON_DYNAMIC,
+   "Дынамічная"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_OZONE_HEADER_SEPARATOR_NONE,
@@ -12516,10 +12497,6 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PORT,
    "Порт"
-   )
-MSG_HASH(
-   MENU_ENUM_LABEL_VALUE_PORT_DEVICE_NAME,
-   "Порт %d назва прылады: %s (#%d)"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_PORT_DEVICE_INFO,
@@ -15725,4 +15702,6 @@ MSG_HASH(
    MENU_ENUM_SUBLABEL_QUICK_MENU_SHOW_GAME_AI,
    "Паказваць опцыю 'Гульнявы ШІ'."
    )
+#endif
+#ifdef HAVE_SMBCLIENT
 #endif

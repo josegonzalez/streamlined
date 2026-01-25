@@ -217,6 +217,7 @@ appstore_cores=(
     gw
     handy
     holani
+    jollycv
     kronos
     mednafen_ngp
     mednafen_pce
@@ -244,6 +245,7 @@ appstore_cores=(
     nxengine
     opera
     pcsx_rearmed
+    pd777
     picodrive
     #play
     pocketcdg
@@ -260,6 +262,7 @@ appstore_cores=(
     sameboy
     sameduck
     scummvm
+    skyemu
     smsplus
     snes9x
     snes9x2005

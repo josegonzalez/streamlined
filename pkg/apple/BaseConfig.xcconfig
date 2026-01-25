@@ -25,6 +25,7 @@ OTHER_CFLAGS = $(inherited) -DHAVE_COCOA_METAL
 OTHER_CFLAGS = $(inherited) -DHAVE_COMMAND
 OTHER_CFLAGS = $(inherited) -DHAVE_CONFIGFILE
 OTHER_CFLAGS = $(inherited) -DHAVE_COREAUDIO
+OTHER_CFLAGS = $(inherited) -DHAVE_COREAUDIO3
 OTHER_CFLAGS = $(inherited) -DHAVE_CORELOCATION
 OTHER_CFLAGS = $(inherited) -DHAVE_CORETEXT
 OTHER_CFLAGS = $(inherited) -DHAVE_DR_FLAC
@@ -103,7 +104,6 @@ OTHER_CFLAGS[arch=arm64*] = $(inherited) -D__ARM_NEON__ -DHAVE_NEON
 
 OTHER_CFLAGS[sdk=macosx*] = $(inherited) -DGL_SILENCE_DEPRECATION
 OTHER_CFLAGS[sdk=macosx*] = $(inherited) -DHAVE_AVF
-OTHER_CFLAGS[sdk=macosx*] = $(inherited) -DHAVE_COREAUDIO3
 OTHER_CFLAGS[sdk=macosx*] = $(inherited) -DHAVE_COREMIDI
 OTHER_CFLAGS[sdk=macosx*] = $(inherited) -DHAVE_DISCORD
 OTHER_CFLAGS[sdk=macosx*] = $(inherited) -DHAVE_DYLIB
@@ -148,6 +148,10 @@ OTHER_CFLAGS[sdk=iphonesimulator*] = $(inherited) $(OTHER_CFLAGS_IOS)
 
 OTHER_CFLAGS[config=Debug] = $(inherited) -DDEBUG=1
 OTHER_CFLAGS[config=Release] = $(inherited) -DNDEBUG -DNS_BLOCK_ASSERTIONS=1
+
+// Keep function symbols for KSCrash symbolication in release builds
+// (debug symbols still go to dSYM files)
+STRIP_STYLE[config=Release] = debugging
 
 SRCBASE  = $(SRCROOT)/../..
 DEPS_DIR = $(SRCBASE)/deps

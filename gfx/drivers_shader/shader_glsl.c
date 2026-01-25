@@ -407,21 +407,12 @@ static bool gl_glsl_compile_shader(glsl_shader_data_t *glsl,
       unsigned version_no = 0;
       unsigned gl_ver     = glsl_major * 100 + glsl_minor * 10;
 
-      switch (gl_ver)
-      {
-         case 300:
-            version_no = 130;
-            break;
-         case 310:
-            version_no = 140;
-            break;
-         case 320:
-            version_no = 150;
-            break;
-         default:
-            version_no = gl_ver;
-            break;
-      }
+      if (gl_ver >= 300)
+         version_no = 130;
+      else if (gl_ver >= 210)
+         version_no = 120;
+      else
+         version_no = 110;
 
       snprintf(version, sizeof(version), "#version %u\n", version_no);
       RARCH_LOG("[GLSL] Using GLSL version %u.\n", version_no);
@@ -449,13 +440,6 @@ static bool gl_glsl_compile_shader(glsl_shader_data_t *glsl,
 
    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
    gl_glsl_print_shader_log(shader);
-
-#if 0
-#if defined(ORBIS)
-   if (status == GL_TRUE)
-      gl_glsl_dump_shader(shader, save_path);
-#endif
-#endif
 
    return status == GL_TRUE;
 }
@@ -1244,6 +1228,17 @@ error:
 
    if (glsl)
       free(glsl);
+
+   {
+      size_t _len;
+      char msg[NAME_MAX_LENGTH];
+
+      _len = snprintf(msg, sizeof(msg), "Failed to compile shader: \"%s\".",
+            path_basename(path));
+
+      runloop_msg_queue_push(msg, _len, 1, 120, true, NULL,
+            MESSAGE_QUEUE_ICON_DEFAULT, MESSAGE_QUEUE_CATEGORY_ERROR);
+   }
 
    return NULL;
 }

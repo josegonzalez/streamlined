@@ -61,8 +61,6 @@
 #define VIDEO_SHADER_STOCK_HDR     (GFX_MAX_SHADERS - 8)
 #define VIDEO_SHADER_STOCK_NOBLEND (GFX_MAX_SHADERS - 9)
 
-#define VIDEO_HDR_MAX_CONTRAST 10.0f
-
 #if defined(_XBOX360)
 #define DEFAULT_SHADER_TYPE RARCH_SHADER_HLSL
 #elif defined(HAVE_OPENGLES2)
@@ -618,6 +616,16 @@ typedef struct gfx_ctx_driver
    /* Optional. Makes driver context (only GL right now)
     * active for this thread. */
    void (*make_current)(bool release);
+
+   /* Optional. Creates and binds a new window surface, destroying the original
+    * window surface if applicable. Returns true on success and false on error.
+    * Currently only for OpenGL. */
+   bool (*create_surface)(void *data);
+
+   /* Optional. Destroys the current window surface. Returns true on success or
+    * or if there is no currently bound window surface and false on error.
+    * Currently only for OpenGL. */
+   bool (*destroy_surface)(void *data);
 } gfx_ctx_driver_t;
 
 typedef struct gfx_ctx_mode
@@ -686,8 +694,9 @@ typedef struct video_poke_interface
    /* hdr settings */
    void (*set_hdr_max_nits)(void *data, float max_nits);
    void (*set_hdr_paper_white_nits)(void *data, float paper_white_nits);
-   void (*set_hdr_contrast)(void *data, float contrast);
    void (*set_hdr_expand_gamut)(void *data, bool expand_gamut);
+   void (*set_hdr_scanlines)(void *data, bool scanlines);
+   void (*set_hdr_subpixel_layout)(void *data, unsigned subpixel_layout);
 } video_poke_interface_t;
 
 /* msg is for showing a message on the screen
@@ -948,7 +957,8 @@ void video_driver_monitor_reset(void);
 
 void video_driver_set_aspect_ratio(void);
 
-void video_driver_update_viewport(struct video_viewport* vp, bool force_full, bool keep_aspect);
+void video_driver_update_viewport(struct video_viewport* vp,
+      bool force_full, bool keep_aspect, bool y_down);
 
 void video_driver_apply_state_changes(void);
 

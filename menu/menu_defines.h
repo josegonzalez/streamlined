@@ -352,6 +352,14 @@ enum xmb_icon_theme
    XMB_ICON_THEME_LAST
 };
 
+enum xmb_current_menu_icon
+{
+   XMB_CURRENT_MENU_ICON_NONE = 0,
+   XMB_CURRENT_MENU_ICON_NORMAL,
+   XMB_CURRENT_MENU_ICON_TITLE,
+   XMB_CURRENT_MENU_ICON_LAST
+};
+
 enum xmb_shader_pipeline
 {
 #ifndef HAVE_PSGL
@@ -452,6 +460,14 @@ enum ozone_color_theme
    OZONE_COLOR_THEME_PURPLE_RAIN,
    OZONE_COLOR_THEME_SELENIUM,
    OZONE_COLOR_THEME_LAST
+};
+
+enum ozone_header_icon
+{
+   OZONE_HEADER_ICON_NONE = 0,
+   OZONE_HEADER_ICON_DYNAMIC,
+   OZONE_HEADER_ICON_FIXED,
+   OZONE_HEADER_ICON_LAST
 };
 
 enum ozone_header_separator

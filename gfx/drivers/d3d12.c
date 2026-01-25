@@ -393,6 +393,16 @@ typedef struct
       uint32_t                        current_subframe;
       float                           core_aspect;
       float                           core_aspect_rot;
+#ifdef HAVE_DXGI_HDR
+      float                           enable_hdr;
+      float                           paper_white_nits;
+      float                           max_nits;
+      float                           expand_gamut;
+      float                           scanlines;
+      unsigned                        subpixel_layout;
+      float                           inverse_tonemap;
+      float                           hdr10;
+#endif /* HAVE_DXGI_HDR */    
       D3D12_GPU_DESCRIPTOR_HANDLE     textures;
       D3D12_GPU_DESCRIPTOR_HANDLE     samplers;
    } pass[GFX_MAX_SHADERS];
@@ -708,13 +718,13 @@ static void d3d12_init_texture(D3D12Device device, d3d12_texture_t* texture)
    if (!texture->desc.MipLevels)
       texture->desc.MipLevels          = 1;
 
-   if (   !(texture->desc.Width  >> (texture->desc.MipLevels - 1))
-       && !(texture->desc.Height >> (texture->desc.MipLevels - 1)))
+   /* Calculate mipmap count */
+   if (texture->desc.Width > 1 || texture->desc.Height > 1)
    {
-      unsigned width                   = texture->desc.Width >> 5;
-      unsigned height                  = texture->desc.Height >> 5;
+      unsigned width                   = texture->desc.Width;
+      unsigned height                  = texture->desc.Height;
       texture->desc.MipLevels          = 1;
-      while (width && height)
+      while ((width > 1) || (height > 1))
       {
          width  >>= 1;
          height >>= 1;
@@ -823,33 +833,11 @@ static void d3d12_init_texture(D3D12Device device, d3d12_texture_t* texture)
    texture->size_data.w = 1.0f / texture->desc.Height;
 }
 
-static void d3d12_upload_texture(D3D12GraphicsCommandList cmd,
-      d3d12_texture_t* texture, void *userdata)
+static void d3d12_generate_mipmaps(
+      D3D12GraphicsCommandList cmd,
+      d3d12_texture_t* texture,
+      void *userdata)
 {
-   D3D12_TEXTURE_COPY_LOCATION src, dst;
-
-   src.pResource        = texture->upload_buffer;
-   src.Type             = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-   src.PlacedFootprint  = texture->layout;
-
-   dst.pResource        = texture->handle;
-   dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-   dst.SubresourceIndex = 0;
-
-   D3D12_RESOURCE_TRANSITION(
-         cmd,
-         texture->handle,
-         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-         D3D12_RESOURCE_STATE_COPY_DEST);
-
-   cmd->lpVtbl->CopyTextureRegion(cmd, &dst, 0, 0, 0, &src, NULL);
-
-   D3D12_RESOURCE_TRANSITION(
-         cmd,
-         texture->handle,
-         D3D12_RESOURCE_STATE_COPY_DEST,
-         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
    if (texture->desc.MipLevels > 1)
    {
       unsigned       i;
@@ -903,6 +891,36 @@ static void d3d12_upload_texture(D3D12GraphicsCommandList cmd,
          }
       }
    }
+}
+
+static void d3d12_upload_texture(D3D12GraphicsCommandList cmd,
+      d3d12_texture_t* texture, void *userdata)
+{
+   D3D12_TEXTURE_COPY_LOCATION src, dst;
+
+   src.pResource        = texture->upload_buffer;
+   src.Type             = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+   src.PlacedFootprint  = texture->layout;
+
+   dst.pResource        = texture->handle;
+   dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+   dst.SubresourceIndex = 0;
+
+   D3D12_RESOURCE_TRANSITION(
+         cmd,
+         texture->handle,
+         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+         D3D12_RESOURCE_STATE_COPY_DEST);
+
+   cmd->lpVtbl->CopyTextureRegion(cmd, &dst, 0, 0, 0, &src, NULL);
+
+   D3D12_RESOURCE_TRANSITION(
+         cmd,
+         texture->handle,
+         D3D12_RESOURCE_STATE_COPY_DEST,
+         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+   d3d12_generate_mipmaps(cmd, texture, userdata);
 
    texture->dirty = false;
 }
@@ -1850,6 +1868,14 @@ static void d3d12_set_hdr_max_nits(void* data, float max_nits)
          d3d12->hdr.min_output_nits,
          d3d12->hdr.max_cll,
          d3d12->hdr.max_fall);
+
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].max_nits     = max_nits;
+      }
+   }         
 }
 
 static void d3d12_set_hdr_paper_white_nits(void* data, float paper_white_nits)
@@ -1865,21 +1891,14 @@ static void d3d12_set_hdr_paper_white_nits(void* data, float paper_white_nits)
    D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
    *mapped_ubo = d3d12->hdr.ubo_values;
    D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
-}
-
-static void d3d12_set_hdr_contrast(void* data, float contrast)
-{
-   D3D12_RANGE read_range;
-   d3d12_video_t *d3d12                   = (d3d12_video_t*)data;
-   dxgi_hdr_uniform_t *mapped_ubo         = NULL;
-
-   d3d12->hdr.ubo_values.contrast         = contrast;
-
-   read_range.Begin                       = 0;
-   read_range.End                         = 0;
-   D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
-   *mapped_ubo = d3d12->hdr.ubo_values;
-   D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+   
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].paper_white_nits     = paper_white_nits;
+      }
+   }
 }
 
 static void d3d12_set_hdr_expand_gamut(void* data, bool expand_gamut)
@@ -1895,6 +1914,60 @@ static void d3d12_set_hdr_expand_gamut(void* data, bool expand_gamut)
    D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
    *mapped_ubo = d3d12->hdr.ubo_values;
    D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+   
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].expand_gamut     = expand_gamut ? 1.0f : 0.0f;
+      }
+   }
+}
+
+static void d3d12_set_hdr_scanlines(void* data, bool scanlines)
+{
+   D3D12_RANGE read_range;
+   dxgi_hdr_uniform_t *mapped_ubo         = NULL;
+   d3d12_video_t *d3d12                   = (d3d12_video_t*)data;
+
+   d3d12->hdr.ubo_values.scanlines        = scanlines ? 1.0f : 0.0f;
+
+   read_range.Begin                       = 0;
+   read_range.End                         = 0;
+   D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
+   *mapped_ubo = d3d12->hdr.ubo_values;
+   D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+   
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].scanlines     = scanlines ? 1.0f : 0.0f;
+      }
+   }
+}
+
+static void d3d12_set_hdr_subpixel_layout(void* data, unsigned subpixel_layout)
+{
+   D3D12_RANGE read_range;
+   dxgi_hdr_uniform_t *mapped_ubo         = NULL;
+   d3d12_video_t *d3d12                   = (d3d12_video_t*)data;
+
+   d3d12->hdr.ubo_values.subpixel_layout  = subpixel_layout;
+
+   read_range.Begin                       = 0;
+   read_range.End                         = 0;
+   D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
+   *mapped_ubo = d3d12->hdr.ubo_values;
+   D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+   
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].subpixel_layout     = subpixel_layout;
+      }
+   }
 }
 
 static void d3d12_set_hdr_inverse_tonemap(d3d12_video_t* d3d12, bool inverse_tonemap)
@@ -1909,6 +1982,14 @@ static void d3d12_set_hdr_inverse_tonemap(d3d12_video_t* d3d12, bool inverse_ton
    D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
    *mapped_ubo = d3d12->hdr.ubo_values;
    D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+   
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].inverse_tonemap     = inverse_tonemap ? 1.0f : 0.0f;
+      }
+   }
 }
 
 static void d3d12_set_hdr10(d3d12_video_t* d3d12, bool hdr10)
@@ -1923,6 +2004,14 @@ static void d3d12_set_hdr10(d3d12_video_t* d3d12, bool hdr10)
    D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
    *mapped_ubo = d3d12->hdr.ubo_values;
    D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+   
+   if(d3d12->shader_preset)
+   {
+      for (unsigned i = 0; i < d3d12->shader_preset->passes; i++)
+      {
+         d3d12->pass[i].hdr10             = hdr10 ? 1.0f : 0.0f;
+      }
+   }
 }
 #endif
 
@@ -1978,7 +2067,7 @@ static void d3d12_gfx_set_rotation(void* data, unsigned rotation)
 static void d3d12_update_viewport(d3d12_video_t *d3d12, bool force_full)
 {
    video_driver_update_viewport(&d3d12->vp, force_full,
-         (d3d12->flags & D3D12_ST_FLAG_KEEP_ASPECT) ? true : false);
+         (d3d12->flags & D3D12_ST_FLAG_KEEP_ASPECT) ? true : false, true);
 
    d3d12->frame.viewport.TopLeftX = d3d12->vp.x;
    d3d12->frame.viewport.TopLeftY = d3d12->vp.y;
@@ -2122,7 +2211,17 @@ static bool d3d12_gfx_set_shader(void* data, enum rarch_shader_type type, const 
    d3d12_free_shader_preset(d3d12);
 
    if (string_is_empty(path))
+   {
+#ifdef HAVE_DXGI_HDR
+      if (d3d12->flags & D3D12_ST_FLAG_HDR_ENABLE)
+      {
+         d3d12_set_hdr_inverse_tonemap(d3d12, true);
+         d3d12_set_hdr10(d3d12, true);
+      }
+#endif /* HAVE_DXGI_HDR */ 
+
       return true;
+   }
 
    if (type != RARCH_SHADER_SLANG)
    {
@@ -2179,6 +2278,16 @@ static bool d3d12_gfx_set_shader(void* data, enum rarch_shader_type type, const 
             &d3d12->pass[i].core_aspect_rot, /* OriginalAspectRotated */
             &d3d12->pass[i].total_subframes, /* TotalSubFrames */
             &d3d12->pass[i].current_subframe,/* CurrentSubFrame */
+#ifdef HAVE_DXGI_HDR
+            &d3d12->pass[i].enable_hdr,      /* EnableHDR */
+            &d3d12->pass[i].paper_white_nits,/* PaperWhiteNits */
+            &d3d12->pass[i].max_nits,        /* MaxNits */
+            &d3d12->pass[i].scanlines,       /* Scanlines */
+            &d3d12->pass[i].subpixel_layout, /* SubpixelLayout */
+            &d3d12->pass[i].expand_gamut,    /* ExpandGamut */
+            &d3d12->pass[i].inverse_tonemap, /* InverseTonemap */
+            &d3d12->pass[i].hdr10            /* HDR10 */
+#endif /* HAVE_DXGI_HDR */ 
          }
       };
       /* clang-format on */
@@ -2284,6 +2393,15 @@ static bool d3d12_gfx_set_shader(void* data, enum rarch_shader_type type, const 
          /* If the last shader pass uses a RGBA16 back buffer and hdr has been enabled assume we want to skip the inverse tonemapper */
          d3d12_set_hdr_inverse_tonemap(d3d12, false);
          d3d12_set_hdr10(d3d12, true);
+         d3d12->flags |= D3D12_ST_FLAG_RESIZE_CHAIN;
+      }
+      else if (d3d12->shader_preset && d3d12->shader_preset->passes && (d3d12->pass[d3d12->shader_preset->passes - 1].semantics.format == SLANG_FORMAT_R8G8B8A8_UNORM))
+      {
+         d3d12_set_hdr_inverse_tonemap(d3d12, true);
+         d3d12_set_hdr10(d3d12, true);
+         d3d12_set_hdr_scanlines(d3d12, false);
+         settings_t* settings      = config_get_ptr();
+         settings->bools.video_hdr_scanlines = false;
          d3d12->flags |= D3D12_ST_FLAG_RESIZE_CHAIN;
       }
       else
@@ -2995,13 +3113,7 @@ static void d3d12_init_base(d3d12_video_t* d3d12)
 
       if (SUCCEEDED(d3d12->device->lpVtbl->QueryInterface(d3d12->device, uuidof(ID3D12InfoQueue), (void*)&d3d12->info_queue)))
       {
-#if 0
-         d3d12->info_queue->lpVtbl->SetBreakOnSeverity(d3d12->info_queue, D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
-#endif
          d3d12->info_queue->lpVtbl->SetBreakOnSeverity(d3d12->info_queue, D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
-#if 0
-         d3d12->info_queue->lpVtbl->SetBreakOnSeverity(d3d12->info_queue, D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
-#endif
       }
    }
 
@@ -3431,8 +3543,16 @@ static void *d3d12_gfx_init(const video_info_t* video,
    d3d12->hdr.ubo_values.mvp              = d3d12->mvp_no_rot;
    d3d12->hdr.ubo_values.max_nits         = settings->floats.video_hdr_max_nits;
    d3d12->hdr.ubo_values.paper_white_nits = settings->floats.video_hdr_paper_white_nits;
-   d3d12->hdr.ubo_values.contrast         = VIDEO_HDR_MAX_CONTRAST - settings->floats.video_hdr_display_contrast;
-   d3d12->hdr.ubo_values.expand_gamut     = settings->bools.video_hdr_expand_gamut;
+   
+   d3d12->hdr.ubo_values.source_size.width   = 0.0f;
+   d3d12->hdr.ubo_values.source_size.height  = 0.0f;
+   d3d12->hdr.ubo_values.output_size.width   = d3d12->frame.output_size.x;
+   d3d12->hdr.ubo_values.output_size.height  = d3d12->frame.output_size.y;
+
+   d3d12->hdr.ubo_values.subpixel_layout     = settings->uints.video_hdr_subpixel_layout;
+   d3d12->hdr.ubo_values.scanlines           = settings->bools.video_hdr_scanlines;
+   d3d12->hdr.ubo_values.expand_gamut        = settings->bools.video_hdr_expand_gamut;
+
    d3d12->hdr.ubo_values.inverse_tonemap  = 1.0f;     /* Use this to turn on/off the inverse tonemap */
    d3d12->hdr.ubo_values.hdr10            = 1.0f;     /* Use this to turn on/off the hdr10 */
 
@@ -3631,6 +3751,8 @@ static void d3d12_init_render_targets(d3d12_video_t* d3d12, unsigned width, unsi
          d3d12->pass[i].rt.desc.Flags      = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
          d3d12->pass[i].rt.srv_heap        = &d3d12->desc.srv_heap;
          d3d12->pass[i].rt.desc.Format = glslang_format_to_dxgi(d3d12->pass[i].semantics.format);
+         /* Initialize MipLevels so mipmaps are created for render target */
+         d3d12->pass[i].rt.desc.MipLevels = 0;
          d3d12_release_texture(&d3d12->pass[i].rt);
          d3d12_init_texture(d3d12->device, &d3d12->pass[i].rt);
 
@@ -3745,7 +3867,7 @@ static bool d3d12_gfx_frame(
 #ifdef HAVE_DXGI_HDR
    bool d3d12_hdr_enable          = false;
    bool video_hdr_enable          = video_info->hdr_enable;
-   DXGI_FORMAT back_buffer_format = d3d12->shader_preset && d3d12->shader_preset->passes ? glslang_format_to_dxgi(d3d12->pass[d3d12->shader_preset->passes - 1].semantics.format) : DXGI_FORMAT_R8G8B8A8_UNORM;
+   DXGI_FORMAT back_buffer_format = d3d12->shader_preset && d3d12->shader_preset->passes ? glslang_format_to_dxgi(d3d12->pass[d3d12->shader_preset->passes - 1].semantics.format) : d3d12->chain.formats[d3d12->chain.bit_depth];
    bool use_back_buffer           = back_buffer_format != d3d12->chain.formats[d3d12->chain.bit_depth];
 #endif
    D3D12GraphicsCommandList cmd   = d3d12->queue.cmd;
@@ -4088,6 +4210,21 @@ static bool d3d12_gfx_frame(
            d3d12->pass[i].current_subframe = 1;
          }
 
+#ifdef HAVE_DXGI_HDR   
+         settings_t*    settings = config_get_ptr();
+         
+         d3d12->pass[i].enable_hdr            = (d3d12->flags & D3D12_ST_FLAG_HDR_ENABLE) ? 1.0f : 0.0f;
+
+         if(d3d12->flags & D3D12_ST_FLAG_HDR_ENABLE)
+         {
+            d3d12->pass[i].paper_white_nits     = settings->floats.video_hdr_paper_white_nits;
+            d3d12->pass[i].max_nits             = settings->floats.video_hdr_max_nits;
+            d3d12->pass[i].scanlines            = settings->bools.video_hdr_scanlines ? 1.0f : 0.0f;
+            d3d12->pass[i].subpixel_layout      = settings->uints.video_hdr_subpixel_layout;
+            d3d12->pass[i].expand_gamut         = settings->bools.video_hdr_expand_gamut ? 1.0f : 0.0f;
+         }
+#endif /* HAVE_DXGI_HDR */ 
+
          for (j = 0; j < SLANG_CBUFFER_MAX; j++)
          {
             cbuffer_sem_t* buffer_sem = &d3d12->pass[i].semantics.cbuffers[j];
@@ -4264,6 +4401,9 @@ static bool d3d12_gfx_frame(
                   d3d12->pass[i].rt.handle,
                   D3D12_RESOURCE_STATE_RENDER_TARGET,
                   D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+            /* Generate mipmaps for framebuffer if it has multiple mipmap levels */
+            d3d12_generate_mipmaps(cmd, &d3d12->pass[i].rt, d3d12);
             texture = &d3d12->pass[i].rt;
          }
          else
@@ -4276,19 +4416,56 @@ static bool d3d12_gfx_frame(
 
    if (texture)
    {
-      cmd->lpVtbl->SetPipelineState(cmd,
-            d3d12->pipes[VIDEO_SHADER_STOCK_NOBLEND]);
       cmd->lpVtbl->SetGraphicsRootSignature(cmd,
             d3d12->desc.rootSignature);
+
+#ifdef HAVE_DXGI_HDR
+      if ((d3d12->flags & D3D12_ST_FLAG_HDR_ENABLE)
+         && !use_back_buffer)
+      {
+         cmd->lpVtbl->SetPipelineState(cmd, d3d12->pipes[VIDEO_SHADER_STOCK_HDR]);
+
+         if(d3d12->hdr.ubo_values.source_size.width != width || d3d12->hdr.ubo_values.source_size.height != height || 
+            d3d12->hdr.ubo_values.output_size.width != d3d12->frame.output_size.x || d3d12->hdr.ubo_values.output_size.height != d3d12->frame.output_size.y)
+         {
+            d3d12->hdr.ubo_values.source_size.width   = width;
+            d3d12->hdr.ubo_values.source_size.height  = height;
+
+            d3d12->hdr.ubo_values.output_size.width   = d3d12->frame.output_size.x;
+            d3d12->hdr.ubo_values.output_size.height  = d3d12->frame.output_size.y;
+
+            {
+               dxgi_hdr_uniform_t* mapped_ubo;
+               D3D12_RANGE read_range;
+               read_range.Begin            = 0;
+               read_range.End              = 0;
+               D3D12Map(d3d12->hdr.ubo, 0, &read_range, (void**)&mapped_ubo);
+               *mapped_ubo = d3d12->hdr.ubo_values;
+               D3D12Unmap(d3d12->hdr.ubo, 0, NULL);
+            }
+         } 
+
+         cmd->lpVtbl->SetGraphicsRootConstantBufferView(
+               cmd, ROOT_ID_UBO,
+               d3d12->hdr.ubo_view.BufferLocation);    
+      }
+      else
+#endif
+      {
+         cmd->lpVtbl->SetPipelineState(cmd,
+               d3d12->pipes[VIDEO_SHADER_STOCK_NOBLEND]);
+
+         cmd->lpVtbl->SetGraphicsRootConstantBufferView(
+               cmd, ROOT_ID_UBO,
+               d3d12->frame.ubo_view.BufferLocation);
+      }
+
       cmd->lpVtbl->SetGraphicsRootDescriptorTable(cmd,
             ROOT_ID_TEXTURE_T,
             d3d12->frame.texture[0].gpu_descriptor[0]);
       cmd->lpVtbl->SetGraphicsRootDescriptorTable(cmd,
             ROOT_ID_SAMPLER_T,
             d3d12->samplers[RARCH_FILTER_UNSPEC][RARCH_WRAP_DEFAULT]);
-      cmd->lpVtbl->SetGraphicsRootConstantBufferView(
-            cmd, ROOT_ID_UBO,
-            d3d12->frame.ubo_view.BufferLocation);
    }
 
    d3d12->chain.frame_index = DXGIGetCurrentBackBufferIndex(
@@ -4882,13 +5059,15 @@ static const video_poke_interface_t d3d12_poke_interface = {
 #ifdef HAVE_DXGI_HDR
    d3d12_set_hdr_max_nits,
    d3d12_set_hdr_paper_white_nits,
-   d3d12_set_hdr_contrast,
-   d3d12_set_hdr_expand_gamut
+   d3d12_set_hdr_expand_gamut,
+   d3d12_set_hdr_scanlines,
+   d3d12_set_hdr_subpixel_layout
 #else
    NULL, /* set_hdr_max_nits */
    NULL, /* set_hdr_paper_white_nits */
-   NULL, /* set_hdr_contrast */
-   NULL  /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_expand_gamut */
+   NULL, /* set_hdr_scanlines */
+   NULL  /* set_hdr_subpixel_layout */
 #endif
 };
 
