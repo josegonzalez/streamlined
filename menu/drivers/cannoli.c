@@ -71,11 +71,11 @@ static uint32_t cannoli_color_text       = 0xFFFFFFFF;  /* White (RGBA) */
 static uint32_t cannoli_color_text_dark  = 0x000000FF;  /* Black (RGBA) */
 
 /* Layout constants */
-#define CANNOLI_BASE_FONT_SIZE   24
-#define CANNOLI_MARGIN_RATIO     0.05f
+#define CANNOLI_BASE_FONT_SIZE   32
+#define CANNOLI_MARGIN_RATIO     0.02f
 #define CANNOLI_LINE_HEIGHT      1.8f
-#define CANNOLI_PILL_PADDING_X   12
-#define CANNOLI_BUTTON_CIRCLE_SIZE 28
+#define CANNOLI_PILL_PADDING_X   14
+#define CANNOLI_BUTTON_CIRCLE_SIZE 32
 
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
@@ -153,15 +153,56 @@ static void cannoli_draw_filled_circle(cannoli_t *cannoli,
       float *color)
 {
    int x, y;
-   for (y = -radius; y <= radius; y++)
+   float r = (float)radius;
+   float r_sq = r * r;
+
+   /* 4x4 sub-pixel sampling offsets */
+   static const float offsets[4] = { -0.375f, -0.125f, 0.125f, 0.375f };
+
+   for (y = -radius - 1; y <= radius + 1; y++)
    {
-      for (x = -radius; x <= radius; x++)
+      for (x = -radius - 1; x <= radius + 1; x++)
       {
-         if (x * x + y * y <= radius * radius)
+         float fx = (float)x;
+         float fy = (float)y;
+         int samples_inside = 0;
+         int sx, sy;
+
+         /* Count how many sub-pixel samples are inside the circle */
+         for (sy = 0; sy < 4; sy++)
          {
+            for (sx = 0; sx < 4; sx++)
+            {
+               float px = fx + offsets[sx];
+               float py = fy + offsets[sy];
+               if (px * px + py * py <= r_sq)
+                  samples_inside++;
+            }
+         }
+
+         if (samples_inside == 16)
+         {
+            /* Fully inside - draw solid */
             gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
                   cx + x, cy + y, 1, 1,
                   video_width, video_height, color, NULL);
+         }
+         else if (samples_inside > 0)
+         {
+            /* Partial coverage - blend based on sample count */
+            float alpha = (float)samples_inside / 16.0f;
+            float aa_color[16];
+            int i;
+            for (i = 0; i < 4; i++)
+            {
+               aa_color[i*4+0] = color[0];
+               aa_color[i*4+1] = color[1];
+               aa_color[i*4+2] = color[2];
+               aa_color[i*4+3] = color[3] * alpha;
+            }
+            gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+                  cx + x, cy + y, 1, 1,
+                  video_width, video_height, aa_color, NULL);
          }
       }
    }
@@ -209,7 +250,7 @@ static void cannoli_draw_button_legend(cannoli_t *cannoli,
    int pill_width = pill_padding + circle_size + inner_padding + label_width + pill_padding;
    int pill_height = circle_size + pill_padding * 2;
    int pill_y = y - pill_padding;
-   int text_baseline = pill_y + pill_height / 2 + cannoli->font_small.line_height / 4;
+   int text_baseline = pill_y + pill_height / 2 + (int)(cannoli->font_size_small * 0.20f);
 
    /* Draw rounded teal pill background */
    cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
@@ -340,7 +381,12 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    if (item_height <= 0)
       item_height = 20;
 
-   max_visible = (video_height - cannoli->margin_y * 3 - cannoli->font_title.line_height - item_height) / item_height;
+   /* Calculate visible items: screen height minus title area and button legend area */
+   {
+      int title_area = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
+      int bottom_area = cannoli->margin_y + CANNOLI_BUTTON_CIRCLE_SIZE + 20;
+      max_visible = (video_height - title_area - bottom_area) / item_height;
+   }
    if (max_visible == 0)
       max_visible = 1;
 
@@ -372,7 +418,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
    /* Draw title */
    cannoli_draw_title(cannoli, p_disp, video_width, video_height,
-         cannoli->margin_x, cannoli->margin_y + cannoli->font_title.line_height,
+         cannoli->margin_x, cannoli->margin_y + (int)(cannoli->font_size_title * 0.9f),
          title_buf, cannoli_color_text);
 
    /* Calculate scroll */
@@ -381,8 +427,8 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    else
       start_idx = 0;
 
-   /* Draw menu entries */
-   y = cannoli->margin_y + cannoli->font_title.line_height + cannoli->font.line_height / 2;
+   /* Draw menu entries - tight spacing below title */
+   y = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
 
    for (i = 0; i < max_visible && (start_idx + i) < list_size; i++)
    {
@@ -395,7 +441,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       /* Calculate consistent text position */
       int pill_height = (int)(cannoli->font_size * 1.3f);
       int pill_y = y + (item_height - pill_height) / 2;
-      int text_y = pill_y + pill_height / 2 + (int)(cannoli->font_size * 0.35f);
+      int text_y = pill_y + pill_height / 2 + (int)(cannoli->font_size * 0.20f);
 
       MENU_ENTRY_INITIALIZE(entry);
       entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
@@ -617,13 +663,23 @@ static void cannoli_context_reset(void *data, bool is_threaded)
 
    fontpath[0] = '\0';
 
+   /* Try cannoli custom font first */
    if (settings->paths.directory_assets[0] != '\0')
+   {
+      fill_pathname_join_special(fontpath, settings->paths.directory_assets,
+            "cannoli/font.ttf", sizeof(fontpath));
+      cannoli->font.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size, is_threaded);
+   }
+
+   /* Fall back to xmb font */
+   if (!cannoli->font.font && settings->paths.directory_assets[0] != '\0')
    {
       fill_pathname_join_special(fontpath, settings->paths.directory_assets,
             "xmb/monochrome/font.ttf", sizeof(fontpath));
       cannoli->font.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size, is_threaded);
    }
 
+   /* Fall back to ozone font */
    if (!cannoli->font.font && settings->paths.directory_assets[0] != '\0')
    {
       fill_pathname_join_special(fontpath, settings->paths.directory_assets,
