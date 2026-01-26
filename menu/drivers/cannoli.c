@@ -74,9 +74,9 @@ static uint32_t cannoli_color_text_dark  = 0x000000FF;  /* Black (RGBA) */
 #define CANNOLI_BASE_FONT_SIZE   32
 #define CANNOLI_MARGIN_RATIO     0.03f
 #define CANNOLI_LINE_HEIGHT      1.8f
-#define CANNOLI_PILL_PADDING_X   20
+#define CANNOLI_PILL_PADDING_X   28
 #define CANNOLI_BUTTON_CIRCLE_SIZE 32
-#define CANNOLI_SCALE_BOOST      1.05f
+#define CANNOLI_SCALE_BOOST      1.08f
 
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
