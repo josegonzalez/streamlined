@@ -173,58 +173,23 @@ static void cannoli_draw_filled_circle(cannoli_t *cannoli,
       unsigned video_width, unsigned video_height,
       float *color)
 {
-   int x, y;
-   float r = (float)radius;
-   float r_sq = r * r;
+   int y;
+   float r_sq = (float)(radius * radius);
 
-   /* 4x4 sub-pixel sampling offsets */
-   static const float offsets[4] = { -0.375f, -0.125f, 0.125f, 0.375f };
-
-   for (y = -radius - 1; y <= radius + 1; y++)
+   /* Draw circle as horizontal spans - much faster than per-pixel */
+   for (y = -radius; y <= radius; y++)
    {
-      for (x = -radius - 1; x <= radius + 1; x++)
+      float y_sq = (float)(y * y);
+      float x_span = sqrtf(r_sq - y_sq);
+      int x_start = (int)(-x_span + 0.5f);
+      int x_end = (int)(x_span + 0.5f);
+      int span_width = x_end - x_start;
+
+      if (span_width > 0)
       {
-         float fx = (float)x;
-         float fy = (float)y;
-         int samples_inside = 0;
-         int sx, sy;
-
-         /* Count how many sub-pixel samples are inside the circle */
-         for (sy = 0; sy < 4; sy++)
-         {
-            for (sx = 0; sx < 4; sx++)
-            {
-               float px = fx + offsets[sx];
-               float py = fy + offsets[sy];
-               if (px * px + py * py <= r_sq)
-                  samples_inside++;
-            }
-         }
-
-         if (samples_inside == 16)
-         {
-            /* Fully inside - draw solid */
-            gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
-                  cx + x, cy + y, 1, 1,
-                  video_width, video_height, color, NULL);
-         }
-         else if (samples_inside > 0)
-         {
-            /* Partial coverage - blend based on sample count */
-            float alpha = (float)samples_inside / 16.0f;
-            float aa_color[16];
-            int i;
-            for (i = 0; i < 4; i++)
-            {
-               aa_color[i*4+0] = color[0];
-               aa_color[i*4+1] = color[1];
-               aa_color[i*4+2] = color[2];
-               aa_color[i*4+3] = color[3] * alpha;
-            }
-            gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
-                  cx + x, cy + y, 1, 1,
-                  video_width, video_height, aa_color, NULL);
-         }
+         gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+               cx + x_start, cy + y, span_width, 1,
+               video_width, video_height, color, NULL);
       }
    }
 }
