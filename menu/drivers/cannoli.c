@@ -896,6 +896,13 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          return 0;
       }
 
+      /* Handle back button in main quick menu - close menu and resume */
+      if (action == MENU_ACTION_CANCEL && !cannoli->in_settings_submenu)
+      {
+         command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+         return 0;
+      }
+
       /* Handle selecting "Game Options" entry - enter settings submenu */
       if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
       {
