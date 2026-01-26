@@ -55,10 +55,10 @@
  * ====================================================================== */
 
 /* Colors (RGBA float format, 0.0-1.0) */
-static float cannoli_color_bg[16]        = { 0.0f, 0.0f, 0.0f, 1.0f,
-                                              0.0f, 0.0f, 0.0f, 1.0f,
-                                              0.0f, 0.0f, 0.0f, 1.0f,
-                                              0.0f, 0.0f, 0.0f, 1.0f };
+static float cannoli_color_bg[16]        = { 0.0f, 0.0f, 0.0f, 0.85f,
+                                              0.0f, 0.0f, 0.0f, 0.85f,
+                                              0.0f, 0.0f, 0.0f, 0.85f,
+                                              0.0f, 0.0f, 0.0f, 0.85f };
 static float cannoli_color_selection[16] = { 1.0f, 1.0f, 1.0f, 1.0f,
                                               1.0f, 1.0f, 1.0f, 1.0f,
                                               1.0f, 1.0f, 1.0f, 1.0f,
@@ -87,7 +87,7 @@ typedef struct
    enum msg_hash_enums action;
 } cannoli_quick_item_t;
 
-/* Special marker for our custom Settings submenu entry */
+/* Special marker for custom settings submenu entry */
 #define CANNOLI_SETTINGS_SUBMENU_MARKER 0xCAFE
 
 /* Main custom quick menu */
@@ -96,8 +96,8 @@ static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
    { "Restart",       MENU_ENUM_LABEL_RESTART_CONTENT },
    { "Save State",    MENU_ENUM_LABEL_SAVE_STATE },
    { "Load State",    MENU_ENUM_LABEL_LOAD_STATE },
-   { "Settings",      CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens custom settings submenu */
-   { "Advanced",      MENU_ENUM_LABEL_SETTINGS },
+   { "Game Options",  CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens custom settings submenu */
+   { "Advanced",      MENU_ENUM_LABEL_SETTINGS },         /* Opens full RA settings */
    { "Quit",          MENU_ENUM_LABEL_QUIT_RETROARCH },
    { NULL, 0 }
 };
@@ -112,7 +112,6 @@ static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
    { "Cheats",        MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
    { "Disk Control",  MENU_ENUM_LABEL_DISK_OPTIONS },
    { "Screenshot",    MENU_ENUM_LABEL_TAKE_SCREENSHOT },
-   { "Close Content", MENU_ENUM_LABEL_CLOSE_CONTENT },
    { NULL, 0 }
 };
 
@@ -414,7 +413,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    title_buf[0] = '\0';
    if (cannoli->in_settings_submenu)
    {
-      strlcpy(title_buf, "Settings", sizeof(title_buf));
+      strlcpy(title_buf, "Game Options", sizeof(title_buf));
    }
    else if (cannoli->is_quick_menu)
    {
@@ -473,7 +472,10 @@ static void cannoli_render_menu(cannoli_t *cannoli,
                    | MENU_ENTRY_FLAG_VALUE_ENABLED;
       menu_entry_get(&entry, 0, (unsigned)(start_idx + i), NULL, true);
 
-      if (!string_is_empty(entry.rich_label))
+      /* For custom menus, prefer path (our custom label) over rich_label (RA's label) */
+      if (cannoli->is_quick_menu || cannoli->in_settings_submenu)
+         entry_label = entry.path;
+      else if (!string_is_empty(entry.rich_label))
          entry_label = entry.rich_label;
       else
          entry_label = entry.path;
@@ -600,11 +602,12 @@ static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
    for (i = 0; items[i].label != NULL; i++)
    {
       const cannoli_quick_item_t *item = &items[i];
-      const char *label_str = msg_hash_to_str(item->action);
+      const char *action_label = msg_hash_to_str(item->action);
 
+      /* Use proper internal label for callbacks, but set alt for display */
       menu_entries_append(list,
             item->label,
-            label_str ? label_str : item->label,
+            action_label ? action_label : item->label,
             item->action,
             MENU_SETTING_ACTION,
             0, 0, NULL);
@@ -910,7 +913,6 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       /* Handle selecting "Settings" entry - enter settings submenu */
       if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
       {
-         /* Check if this is our custom Settings entry by checking the label */
          const char *entry_label = NULL;
 
          if (!string_is_empty(entry->rich_label))
@@ -918,7 +920,7 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          else if (!string_is_empty(entry->path))
             entry_label = entry->path;
 
-         if (entry_label && string_is_equal(entry_label, "Settings"))
+         if (entry_label && string_is_equal(entry_label, "Game Options"))
          {
             cannoli->in_settings_submenu = true;
             cannoli_populate_menu_items(cannoli_settings_menu_items);
