@@ -134,6 +134,9 @@ typedef struct
    unsigned height;
    int margin_x;
    int margin_y;
+   int pill_padding;
+   int button_size;
+   float scale_factor;
 
    /* State */
    bool is_quick_menu;
@@ -228,11 +231,11 @@ static void cannoli_draw_button_legend(cannoli_t *cannoli,
       int x, int y, const char *button, const char *label,
       unsigned video_width, unsigned video_height)
 {
-   int circle_size = CANNOLI_BUTTON_CIRCLE_SIZE;
+   int circle_size = cannoli->button_size;
    int circle_radius = circle_size / 2;
    int label_width = cannoli_get_text_width(cannoli, label, true);
-   int pill_padding = 6;
-   int inner_padding = 6;
+   int pill_padding = (int)(6 * cannoli->scale_factor);
+   int inner_padding = (int)(6 * cannoli->scale_factor);
    int pill_width = pill_padding + circle_size + inner_padding + label_width + pill_padding;
    int pill_height = circle_size + pill_padding * 2;
    int pill_y = y - pill_padding;
@@ -370,7 +373,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    /* Calculate visible items: screen height minus title area and button legend area */
    {
       int title_area = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
-      int bottom_area = cannoli->margin_y + CANNOLI_BUTTON_CIRCLE_SIZE + 20;
+      int bottom_area = cannoli->margin_y + cannoli->button_size + (int)(20 * cannoli->scale_factor);
       max_visible = (video_height - title_area - bottom_area) / item_height;
    }
    if (max_visible == 0)
@@ -465,12 +468,12 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
          /* Full-width pill when there's a value to show, otherwise fit to text */
          if (show_value)
-            pill_width = video_width - cannoli->margin_x * 2 + CANNOLI_PILL_PADDING_X * 2;
+            pill_width = video_width - cannoli->margin_x * 2 + cannoli->pill_padding * 2;
          else
-            pill_width = cannoli_get_text_width(cannoli, display_label, false) + CANNOLI_PILL_PADDING_X * 2;
+            pill_width = cannoli_get_text_width(cannoli, display_label, false) + cannoli->pill_padding * 2;
 
          cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
-               cannoli->margin_x - CANNOLI_PILL_PADDING_X, pill_y,
+               cannoli->margin_x - cannoli->pill_padding, pill_y,
                pill_width, pill_height,
                video_width, video_height, cannoli_color_selection);
 
@@ -520,7 +523,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    }
 
    /* Button legends */
-   button_legend_y = video_height - cannoli->margin_y - CANNOLI_BUTTON_CIRCLE_SIZE;
+   button_legend_y = video_height - cannoli->margin_y - cannoli->button_size;
 
    cannoli_draw_button_legend(cannoli, p_disp, userdata,
          cannoli->margin_x, button_legend_y,
@@ -528,10 +531,10 @@ static void cannoli_render_menu(cannoli_t *cannoli,
          video_width, video_height);
 
    {
-      int pill_padding = 6;
-      int inner_padding = 6;
+      int pill_padding = (int)(6 * cannoli->scale_factor);
+      int inner_padding = (int)(6 * cannoli->scale_factor);
       int label_width = cannoli_get_text_width(cannoli, "Select", true);
-      int pill_width = pill_padding + CANNOLI_BUTTON_CIRCLE_SIZE + inner_padding + label_width + pill_padding;
+      int pill_width = pill_padding + cannoli->button_size + inner_padding + label_width + pill_padding;
       int legend_x = video_width - cannoli->margin_x - pill_width;
 
       cannoli_draw_button_legend(cannoli, p_disp, userdata,
@@ -636,9 +639,12 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    if (scale_factor < 1.0f)
       scale_factor = 1.0f;
 
+   cannoli->scale_factor = scale_factor;
    cannoli->font_size = CANNOLI_BASE_FONT_SIZE * scale_factor;
    cannoli->font_size_small = CANNOLI_BASE_FONT_SIZE * scale_factor * 0.75f;
    cannoli->font_size_title = CANNOLI_BASE_FONT_SIZE * scale_factor * 1.4f;
+   cannoli->pill_padding = (int)(CANNOLI_PILL_PADDING_X * scale_factor);
+   cannoli->button_size = (int)(CANNOLI_BUTTON_CIRCLE_SIZE * scale_factor);
 
    if (cannoli->font.font)
    {
