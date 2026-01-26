@@ -87,15 +87,32 @@ typedef struct
    enum msg_hash_enums action;
 } cannoli_quick_item_t;
 
+/* Special marker for our custom Settings submenu entry */
+#define CANNOLI_SETTINGS_SUBMENU_MARKER 0xCAFE
+
 /* Main custom quick menu */
 static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
    { "Resume",        MENU_ENUM_LABEL_RESUME_CONTENT },
    { "Restart",       MENU_ENUM_LABEL_RESTART_CONTENT },
    { "Save State",    MENU_ENUM_LABEL_SAVE_STATE },
    { "Load State",    MENU_ENUM_LABEL_LOAD_STATE },
-   { "Options",       MENU_ENUM_LABEL_CORE_OPTIONS },
-   { "Settings",      MENU_ENUM_LABEL_SETTINGS },
+   { "Settings",      CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens custom settings submenu */
+   { "Advanced",      MENU_ENUM_LABEL_SETTINGS },
    { "Quit",          MENU_ENUM_LABEL_QUIT_RETROARCH },
+   { NULL, 0 }
+};
+
+/* Custom settings submenu items */
+static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
+   { "State Slot",    MENU_ENUM_LABEL_STATE_SLOT },
+   { "Core Options",  MENU_ENUM_LABEL_CORE_OPTIONS },
+   { "Controls",      MENU_ENUM_LABEL_CORE_INPUT_REMAPPING_OPTIONS },
+   { "Shaders",       MENU_ENUM_LABEL_SHADER_OPTIONS },
+   { "Overrides",     MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS },
+   { "Cheats",        MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
+   { "Disk Control",  MENU_ENUM_LABEL_DISK_OPTIONS },
+   { "Screenshot",    MENU_ENUM_LABEL_TAKE_SCREENSHOT },
+   { "Close Content", MENU_ENUM_LABEL_CLOSE_CONTENT },
    { NULL, 0 }
 };
 
@@ -121,6 +138,7 @@ typedef struct
 
    /* State */
    bool is_quick_menu;
+   bool in_settings_submenu;
 } cannoli_t;
 
 /* ======================================================================
@@ -392,9 +410,13 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    if (max_visible == 0)
       max_visible = 1;
 
-   /* Get title - show game name for quick menu, otherwise standard title */
+   /* Get title - show game name for quick menu, "Settings" for submenu */
    title_buf[0] = '\0';
-   if (cannoli->is_quick_menu)
+   if (cannoli->in_settings_submenu)
+   {
+      strlcpy(title_buf, "Settings", sizeof(title_buf));
+   }
+   else if (cannoli->is_quick_menu)
    {
       /* Custom quick menu - show game name */
       const char *content_path = path_get(RARCH_PATH_CONTENT);
@@ -832,15 +854,18 @@ static void cannoli_populate_entries(void *data,
          /* Populate with our custom quick menu items */
          cannoli_populate_menu_items(cannoli_quick_menu_items);
          cannoli->is_quick_menu = true;
+         cannoli->in_settings_submenu = false;
       }
       else
       {
          cannoli->is_quick_menu = false;
+         cannoli->in_settings_submenu = false;
       }
    }
    else
    {
       cannoli->is_quick_menu = false;
+      cannoli->in_settings_submenu = false;
    }
 }
 
@@ -865,7 +890,45 @@ static int cannoli_environ(enum menu_environ_cb type, void *data, void *userdata
 static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       size_t i, enum menu_action action)
 {
-   /* Use generic handler for all input */
+   struct menu_state *menu_st = menu_state_get_ptr();
+   cannoli_t *cannoli = NULL;
+
+   if (menu_st)
+      cannoli = (cannoli_t*)menu_st->userdata;
+
+   if (cannoli && cannoli->is_quick_menu)
+   {
+      /* Handle back button in settings submenu - return to quick menu */
+      if (action == MENU_ACTION_CANCEL && cannoli->in_settings_submenu)
+      {
+         cannoli->in_settings_submenu = false;
+         cannoli_populate_menu_items(cannoli_quick_menu_items);
+         menu_st->selection_ptr = 0;
+         return 0;
+      }
+
+      /* Handle selecting "Settings" entry - enter settings submenu */
+      if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
+      {
+         /* Check if this is our custom Settings entry by checking the label */
+         const char *entry_label = NULL;
+
+         if (!string_is_empty(entry->rich_label))
+            entry_label = entry->rich_label;
+         else if (!string_is_empty(entry->path))
+            entry_label = entry->path;
+
+         if (entry_label && string_is_equal(entry_label, "Settings"))
+         {
+            cannoli->in_settings_submenu = true;
+            cannoli_populate_menu_items(cannoli_settings_menu_items);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+      }
+   }
+
+   /* Use generic handler for all other input */
    return generic_menu_entry_action(userdata, entry, i, action);
 }
 
