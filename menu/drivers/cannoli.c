@@ -72,10 +72,11 @@ static uint32_t cannoli_color_text_dark  = 0x000000FF;  /* Black (RGBA) */
 
 /* Layout constants */
 #define CANNOLI_BASE_FONT_SIZE   32
-#define CANNOLI_MARGIN_RATIO     0.02f
+#define CANNOLI_MARGIN_RATIO     0.03f
 #define CANNOLI_LINE_HEIGHT      1.8f
-#define CANNOLI_PILL_PADDING_X   14
+#define CANNOLI_PILL_PADDING_X   20
 #define CANNOLI_BUTTON_CIRCLE_SIZE 32
+#define CANNOLI_SCALE_BOOST      1.05f
 
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
@@ -638,6 +639,9 @@ static void cannoli_context_reset(void *data, bool is_threaded)
 
    if (scale_factor < 1.0f)
       scale_factor = 1.0f;
+
+   /* Apply scale boost */
+   scale_factor *= CANNOLI_SCALE_BOOST;
 
    cannoli->scale_factor = scale_factor;
    cannoli->font_size = CANNOLI_BASE_FONT_SIZE * scale_factor;
