@@ -16,7 +16,7 @@
 /*
  * Cannoli Menu Driver
  *
- * A minimal, clean GPU-rendered menu driver with MinUI-style visuals.
+ * A minimal menu driver for cannoliOS.
  * Uses standard RetroArch menu navigation with custom quick menu.
  */
 
@@ -87,13 +87,15 @@ typedef struct
    enum msg_hash_enums action;
 } cannoli_quick_item_t;
 
+/* Main custom quick menu */
 static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
    { "Resume",        MENU_ENUM_LABEL_RESUME_CONTENT },
    { "Restart",       MENU_ENUM_LABEL_RESTART_CONTENT },
    { "Save State",    MENU_ENUM_LABEL_SAVE_STATE },
    { "Load State",    MENU_ENUM_LABEL_LOAD_STATE },
    { "Options",       MENU_ENUM_LABEL_CORE_OPTIONS },
-   { "Close Content", MENU_ENUM_LABEL_CLOSE_CONTENT },
+   { "Settings",      MENU_ENUM_LABEL_SETTINGS },
+   { "Quit",          MENU_ENUM_LABEL_QUIT_RETROARCH },
    { NULL, 0 }
 };
 
@@ -390,10 +392,11 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    if (max_visible == 0)
       max_visible = 1;
 
-   /* Get title - use game name for quick menu */
+   /* Get title - show game name for quick menu, otherwise standard title */
    title_buf[0] = '\0';
    if (cannoli->is_quick_menu)
    {
+      /* Custom quick menu - show game name */
       const char *content_path = path_get(RARCH_PATH_CONTENT);
       if (!string_is_empty(content_path))
       {
@@ -551,7 +554,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
  * QUICK MENU CUSTOMIZATION
  * ====================================================================== */
 
-static void cannoli_populate_quick_menu(void)
+static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
@@ -569,12 +572,12 @@ static void cannoli_populate_quick_menu(void)
    if (!list)
       return;
 
-   /* Clear and repopulate with our custom items */
+   /* Clear and repopulate with custom items */
    menu_entries_clear(list);
 
-   for (i = 0; cannoli_quick_menu_items[i].label != NULL; i++)
+   for (i = 0; items[i].label != NULL; i++)
    {
-      const cannoli_quick_item_t *item = &cannoli_quick_menu_items[i];
+      const cannoli_quick_item_t *item = &items[i];
       const char *label_str = msg_hash_to_str(item->action);
 
       menu_entries_append(list,
@@ -800,16 +803,19 @@ static void cannoli_populate_entries(void *data,
 {
    cannoli_t *cannoli = (cannoli_t*)data;
    const char *content_settings_label = msg_hash_to_str(MENU_ENUM_LABEL_CONTENT_SETTINGS);
-   bool is_quick_menu = false;
+   bool is_content_settings = false;
 
-   /* Check if this is the quick menu (content_settings) and customize it */
+   if (!cannoli)
+      return;
+
+   /* Check if this is the quick menu (content_settings) */
    if (label)
    {
       if (content_settings_label && string_is_equal(label, content_settings_label))
-         is_quick_menu = true;
+         is_content_settings = true;
 
       /* Also check enum_idx from the menu stack */
-      if (!is_quick_menu)
+      if (!is_content_settings)
       {
          struct menu_state *menu_st = menu_state_get_ptr();
          if (menu_st && menu_st->entries.list)
@@ -817,17 +823,25 @@ static void cannoli_populate_entries(void *data,
             enum msg_hash_enums enum_idx = MSG_UNKNOWN;
             menu_entries_get_last_stack(NULL, NULL, NULL, &enum_idx, NULL);
             if (enum_idx == MENU_ENUM_LABEL_CONTENT_SETTINGS)
-               is_quick_menu = true;
+               is_content_settings = true;
          }
       }
 
-      if (is_quick_menu)
-         cannoli_populate_quick_menu();
+      if (is_content_settings)
+      {
+         /* Populate with our custom quick menu items */
+         cannoli_populate_menu_items(cannoli_quick_menu_items);
+         cannoli->is_quick_menu = true;
+      }
+      else
+      {
+         cannoli->is_quick_menu = false;
+      }
    }
-
-   /* Track quick menu state for rendering */
-   if (cannoli)
-      cannoli->is_quick_menu = is_quick_menu;
+   else
+   {
+      cannoli->is_quick_menu = false;
+   }
 }
 
 static void cannoli_navigation_set(void *data, bool scroll) { }
