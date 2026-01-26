@@ -238,7 +238,7 @@ static void cannoli_draw_button_legend(cannoli_t *cannoli,
    int pill_padding = (int)(6 * cannoli->scale_factor);
    int inner_padding = (int)(6 * cannoli->scale_factor);
    /* Add extra padding on right to account for font rendering variations */
-   int pill_width = pill_padding + circle_size + inner_padding + label_width + (int)(pill_padding * 1.5f);
+   int pill_width = pill_padding + circle_size + inner_padding + label_width + (int)(pill_padding * 2.5f);
    int pill_height = circle_size + pill_padding * 2;
    int pill_y = y - pill_padding;
    int text_baseline = pill_y + pill_height / 2 + (int)(cannoli->font_size_small * 0.20f);
@@ -435,9 +435,9 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       bool is_selected = ((start_idx + i) == selection);
 
       /* Calculate consistent text position */
-      int pill_height = (int)(cannoli->font_size * 1.3f);
+      int pill_height = (int)(cannoli->font_size * 1.5f);
       int pill_y = y + (item_height - pill_height) / 2;
-      int text_y = pill_y + pill_height / 2 + (int)(cannoli->font_size * 0.20f);
+      int text_y = pill_y + pill_height / 2 + (int)(cannoli->font_size * 0.30f);
 
       MENU_ENTRY_INITIALIZE(entry);
       entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
