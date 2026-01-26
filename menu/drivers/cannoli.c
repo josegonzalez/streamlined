@@ -237,7 +237,8 @@ static void cannoli_draw_button_legend(cannoli_t *cannoli,
    int label_width = cannoli_get_text_width(cannoli, label, true);
    int pill_padding = (int)(6 * cannoli->scale_factor);
    int inner_padding = (int)(6 * cannoli->scale_factor);
-   int pill_width = pill_padding + circle_size + inner_padding + label_width + pill_padding;
+   /* Add extra padding on right to account for font rendering variations */
+   int pill_width = pill_padding + circle_size + inner_padding + label_width + (int)(pill_padding * 1.5f);
    int pill_height = circle_size + pill_padding * 2;
    int pill_y = y - pill_padding;
    int text_baseline = pill_y + pill_height / 2 + (int)(cannoli->font_size_small * 0.20f);
@@ -468,10 +469,11 @@ static void cannoli_render_menu(cannoli_t *cannoli,
          int pill_width;
 
          /* Full-width pill when there's a value to show, otherwise fit to text */
+         /* Add extra padding on right to account for font rendering variations */
          if (show_value)
             pill_width = video_width - cannoli->margin_x * 2 + cannoli->pill_padding * 2;
          else
-            pill_width = cannoli_get_text_width(cannoli, display_label, false) + cannoli->pill_padding * 2;
+            pill_width = cannoli_get_text_width(cannoli, display_label, false) + (int)(cannoli->pill_padding * 2.5f);
 
          cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
                cannoli->margin_x - cannoli->pill_padding, pill_y,
