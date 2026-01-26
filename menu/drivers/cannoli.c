@@ -138,6 +138,7 @@ typedef struct
    /* State */
    bool is_quick_menu;
    bool in_settings_submenu;
+   bool return_to_settings_submenu;  /* Track if we should return to Game Options submenu */
 } cannoli_t;
 
 /* ======================================================================
@@ -854,19 +855,30 @@ static void cannoli_populate_entries(void *data,
 
       if (is_content_settings)
       {
-         /* Populate with our custom quick menu items */
-         cannoli_populate_menu_items(cannoli_quick_menu_items);
+         /* Check if we should return to the Game Options submenu */
+         if (cannoli->return_to_settings_submenu)
+         {
+            cannoli_populate_menu_items(cannoli_settings_menu_items);
+            cannoli->in_settings_submenu = true;
+            cannoli->return_to_settings_submenu = false;
+         }
+         else
+         {
+            cannoli_populate_menu_items(cannoli_quick_menu_items);
+            cannoli->in_settings_submenu = false;
+         }
          cannoli->is_quick_menu = true;
-         cannoli->in_settings_submenu = false;
       }
       else
       {
+         /* Don't reset return_to_settings_submenu here - we need it when coming back */
          cannoli->is_quick_menu = false;
          cannoli->in_settings_submenu = false;
       }
    }
    else
    {
+      /* Don't reset return_to_settings_submenu here - we need it when coming back */
       cannoli->is_quick_menu = false;
       cannoli->in_settings_submenu = false;
    }
@@ -905,12 +917,13 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       if (action == MENU_ACTION_CANCEL && cannoli->in_settings_submenu)
       {
          cannoli->in_settings_submenu = false;
+         cannoli->return_to_settings_submenu = false;
          cannoli_populate_menu_items(cannoli_quick_menu_items);
          menu_st->selection_ptr = 0;
          return 0;
       }
 
-      /* Handle selecting "Settings" entry - enter settings submenu */
+      /* Handle selecting "Game Options" entry - enter settings submenu */
       if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
       {
          const char *entry_label = NULL;
@@ -923,10 +936,17 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          if (entry_label && string_is_equal(entry_label, "Game Options"))
          {
             cannoli->in_settings_submenu = true;
+            cannoli->return_to_settings_submenu = false;
             cannoli_populate_menu_items(cannoli_settings_menu_items);
             menu_st->selection_ptr = 0;
             return 0;
          }
+      }
+
+      /* When selecting an item from Game Options submenu, mark to return there */
+      if (action == MENU_ACTION_OK && cannoli->in_settings_submenu)
+      {
+         cannoli->return_to_settings_submenu = true;
       }
    }
 
