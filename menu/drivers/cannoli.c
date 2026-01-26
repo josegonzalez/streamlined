@@ -139,6 +139,7 @@ typedef struct
    bool is_quick_menu;
    bool in_settings_submenu;
    bool return_to_settings_submenu;  /* Track if we should return to Game Options submenu */
+   size_t saved_quick_menu_selection; /* Remember position in main quick menu */
 } cannoli_t;
 
 /* ======================================================================
@@ -919,7 +920,8 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          cannoli->in_settings_submenu = false;
          cannoli->return_to_settings_submenu = false;
          cannoli_populate_menu_items(cannoli_quick_menu_items);
-         menu_st->selection_ptr = 0;
+         /* Restore saved position in main quick menu */
+         menu_st->selection_ptr = cannoli->saved_quick_menu_selection;
          return 0;
       }
 
@@ -935,6 +937,8 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
 
          if (entry_label && string_is_equal(entry_label, "Game Options"))
          {
+            /* Save current position before entering submenu */
+            cannoli->saved_quick_menu_selection = menu_st->selection_ptr;
             cannoli->in_settings_submenu = true;
             cannoli->return_to_settings_submenu = false;
             cannoli_populate_menu_items(cannoli_settings_menu_items);
