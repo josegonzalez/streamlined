@@ -8265,6 +8265,7 @@ bool menu_input_dialog_start_search(void)
    ios_keyboard_start(
          (char **)menu_st->input_dialog_keyboard_buffer,
          &input_st->keyboard_line.size,
+         &input_st->keyboard_line.ptr,
          msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SEARCH),
          menu_input_search_cb,
          menu);
@@ -8337,6 +8338,7 @@ bool menu_input_dialog_start(menu_input_ctx_line_t *line)
    ios_keyboard_start(
          (char **)menu_st->input_dialog_keyboard_buffer,
          &input_st->keyboard_line.size,
+         &input_st->keyboard_line.ptr,
          line->label,
          line->cb,
          menu);
