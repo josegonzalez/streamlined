@@ -16,8 +16,25 @@
 /*
  * Cannoli Menu Driver
  *
- * A minimal menu driver for cannoliOS.
- * Uses standard RetroArch menu navigation with custom quick menu.
+ * A minimal menu driver for RetroArch.
+ * Uses standard RetroArch menu navigation with custom in-game quick menu.
+ *
+ * Architecture Overview:
+ * - Renders a simple list-based menu with rounded pill selection indicators, heavily inspired by MinUI
+ * - Replaces RetroArch's default quick menu with a custom simplified version
+ * - Supports a two-level menu: main quick menu and "Game Options" submenu
+ *
+ * Scaling:
+ * - Uses RetroArch's DPI-aware scaling via gfx_display_get_dpi_scale()
+ * - This provides intelligent scaling based on display size and viewing distance
+ * - Respects user's menu_scale_factor preference from settings
+ *
+ * Navigation State Machine:
+ * - is_quick_menu: true when viewing the custom quick menu (not RA settings)
+ * - in_settings_submenu: true when in "Game Options" submenu
+ * - return_to_settings_submenu: flag to return to submenu after backing out of RA menu
+ * - Back button in main quick menu closes menu and resumes content
+ * - Back button in Game Options submenu returns to main quick menu
  */
 
 #include <stdlib.h>
@@ -54,29 +71,30 @@
  * CONFIGURATION
  * ====================================================================== */
 
-/* Colors (RGBA float format, 0.0-1.0) */
-static float cannoli_color_bg[16]        = { 0.0f, 0.0f, 0.0f, 0.85f,
-                                              0.0f, 0.0f, 0.0f, 0.85f,
-                                              0.0f, 0.0f, 0.0f, 0.85f,
-                                              0.0f, 0.0f, 0.0f, 0.85f };
-static float cannoli_color_selection[16] = { 1.0f, 1.0f, 1.0f, 1.0f,
-                                              1.0f, 1.0f, 1.0f, 1.0f,
-                                              1.0f, 1.0f, 1.0f, 1.0f,
-                                              1.0f, 1.0f, 1.0f, 1.0f };
-static float cannoli_color_accent[16]    = { 0.18f, 0.55f, 0.53f, 1.0f,
-                                              0.18f, 0.55f, 0.53f, 1.0f,
-                                              0.18f, 0.55f, 0.53f, 1.0f,
-                                              0.18f, 0.55f, 0.53f, 1.0f };
-static uint32_t cannoli_color_text       = 0xFFFFFFFF;  /* White (RGBA) */
-static uint32_t cannoli_color_text_dark  = 0x000000FF;  /* Black (RGBA) */
+/*
+ * Color array format for gfx_display_draw_quad():
+ * RetroArch's quad rendering expects 16 floats representing RGBA values
+ * for each of the 4 vertices of the quad (top-left, top-right, bottom-left,
+ * bottom-right). For solid colors, all 4 vertices use the same RGBA values.
+ *
+ * Layout: [R0,G0,B0,A0, R1,G1,B1,A1, R2,G2,B2,A2, R3,G3,B3,A3]
+ */
+#define CANNOLI_SOLID_COLOR(r, g, b, a) \
+   { r, g, b, a, r, g, b, a, r, g, b, a, r, g, b, a }
 
-/* Layout constants */
-#define CANNOLI_BASE_FONT_SIZE   32
-#define CANNOLI_MARGIN_RATIO     0.03f
-#define CANNOLI_LINE_HEIGHT      1.8f
-#define CANNOLI_PILL_PADDING_X   28
-#define CANNOLI_BUTTON_CIRCLE_SIZE 32
-#define CANNOLI_SCALE_BOOST      1.08f
+static float cannoli_color_bg[16]        = CANNOLI_SOLID_COLOR(0.0f, 0.0f, 0.0f, 0.85f);
+static float cannoli_color_selection[16] = CANNOLI_SOLID_COLOR(1.0f, 1.0f, 1.0f, 1.0f);
+static float cannoli_color_accent[16]    = CANNOLI_SOLID_COLOR(0.18f, 0.55f, 0.53f, 1.0f);
+static uint32_t cannoli_color_text       = 0xFFFFFFFF;  /* White (RGBA packed) */
+static uint32_t cannoli_color_text_dark  = 0x000000FF;  /* Black (RGBA packed) */
+
+/* Layout constants - base sizes at 1.0x scale factor */
+#define CANNOLI_BASE_FONT_SIZE     32    /* Base font size in pixels */
+#define CANNOLI_MARGIN_RATIO       0.03f /* Screen edge margin as ratio of dimension */
+#define CANNOLI_LINE_HEIGHT        1.8f  /* Line height multiplier for menu items */
+#define CANNOLI_PILL_PADDING_RATIO 0.375f /* Horizontal padding as ratio of font size */
+#define CANNOLI_BUTTON_CIRCLE_SIZE 32    /* Size of button circles in legend */
+#define CANNOLI_MIN_FONT_SIZE      12    /* Minimum font size to ensure readability */
 
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
@@ -88,7 +106,13 @@ typedef struct
    enum msg_hash_enums action;
 } cannoli_quick_item_t;
 
-/* Special marker for custom settings submenu entry */
+/*
+ * Sentinel value used to identify the "Game Options" menu entry.
+ * When a menu item has this value as its action, selecting it opens
+ * the custom settings submenu instead of triggering a RetroArch action.
+ * The value 0xCAFE is arbitrary, chosen to not conflict with any
+ * MENU_ENUM_LABEL_* values.
+ */
 #define CANNOLI_SETTINGS_SUBMENU_MARKER 0xCAFE
 
 /* Main custom quick menu */
@@ -150,6 +174,7 @@ typedef struct
  * DRAWING FUNCTIONS
  * ====================================================================== */
 
+/* Forward declarations */
 static void cannoli_draw_text(cannoli_t *cannoli,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
@@ -198,6 +223,15 @@ static void cannoli_draw_filled_circle(cannoli_t *cannoli,
    }
 }
 
+/*
+ * Draw a rounded pill shape (stadium/discorectangle).
+ * Composed of: left semicircle + center rectangle + right semicircle.
+ * The radius is derived from height/2, creating perfect semicircles at ends.
+ *
+ *   ╭───────────────────╮
+ *   │ O               O │  <- semicircles at each end
+ *   ╰───────────────────╯
+ */
 static void cannoli_draw_rounded_pill(cannoli_t *cannoli,
       gfx_display_t *p_disp, void *userdata,
       int x, int y, int width, int height,
@@ -218,7 +252,7 @@ static void cannoli_draw_rounded_pill(cannoli_t *cannoli,
          x + width - radius, y + radius, radius,
          video_width, video_height, color);
 
-   /* Center rectangle */
+   /* Center rectangle (only if pill is wide enough) */
    if (rect_width > 0)
    {
       gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
@@ -237,8 +271,9 @@ static void cannoli_draw_button_legend(cannoli_t *cannoli,
    int label_width = cannoli_get_text_width(cannoli, label, true);
    int pill_padding = (int)(6 * cannoli->scale_factor);
    int inner_padding = (int)(6 * cannoli->scale_factor);
-   /* Add extra padding on right to account for font rendering variations */
-   int pill_width = pill_padding + circle_size + inner_padding + label_width + (int)(pill_padding * 2.5f);
+   /* Layout: [padding][circle][inner_padding][label][padding + small extra] */
+   int pill_width = pill_padding * 2 + circle_size + inner_padding + label_width
+         + (int)(2 * cannoli->scale_factor);
    int pill_height = circle_size + pill_padding * 2;
    int pill_y = y - pill_padding;
    int text_baseline = pill_y + pill_height / 2 + (int)(cannoli->font_size_small * 0.20f);
@@ -467,13 +502,17 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       if (is_selected)
       {
          int pill_width;
+         int text_width = cannoli_get_text_width(cannoli, display_label, false);
 
-         /* Full-width pill when there's a value to show, otherwise fit to text */
-         /* Add extra padding on right to account for font rendering variations */
+         /*
+          * Pill width calculation:
+          * - With value: spans from label to value (full content width + padding)
+          * - Without value: fits snugly around label text with symmetric padding
+          */
          if (show_value)
             pill_width = video_width - cannoli->margin_x * 2 + cannoli->pill_padding * 2;
          else
-            pill_width = cannoli_get_text_width(cannoli, display_label, false) + (int)(cannoli->pill_padding * 2.5f);
+            pill_width = text_width + cannoli->pill_padding * 2;
 
          cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
                cannoli->margin_x - cannoli->pill_padding, pill_y,
@@ -537,7 +576,8 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       int pill_padding = (int)(6 * cannoli->scale_factor);
       int inner_padding = (int)(6 * cannoli->scale_factor);
       int label_width = cannoli_get_text_width(cannoli, "Select", true);
-      int pill_width = pill_padding + cannoli->button_size + inner_padding + label_width + pill_padding;
+      int pill_width = pill_padding * 2 + cannoli->button_size + inner_padding + label_width
+            + (int)(2 * cannoli->scale_factor);
       int legend_x = video_width - cannoli->margin_x - pill_width;
 
       cannoli_draw_button_legend(cannoli, p_disp, userdata,
@@ -591,6 +631,25 @@ static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
  * MENU DRIVER INTERFACE
  * ====================================================================== */
 
+/*
+ * Try to load a font from the given path within the assets directory.
+ * Returns the loaded font or NULL if not found.
+ */
+static font_data_t *cannoli_try_load_font(gfx_display_t *p_disp,
+      const char *assets_dir, const char *font_subpath,
+      float font_size, bool is_threaded, char *fontpath_out, size_t fontpath_size)
+{
+   font_data_t *font = NULL;
+
+   if (assets_dir[0] == '\0')
+      return NULL;
+
+   fill_pathname_join_special(fontpath_out, assets_dir, font_subpath, fontpath_size);
+   font = gfx_display_font_file(p_disp, fontpath_out, font_size, is_threaded);
+
+   return font;
+}
+
 static void *cannoli_init(void **userdata, bool video_is_threaded)
 {
    gfx_display_t *p_disp = disp_get_ptr();
@@ -634,24 +693,48 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    if (!cannoli)
       return;
 
-   if (p_disp->framebuf_height > 0)
-      scale_factor = (float)p_disp->framebuf_height / 480.0f;
-   else
-      scale_factor = 1.0f;
+   /*
+    * Use RetroArch's DPI-aware scaling system instead of simple pixel ratio.
+    * gfx_display_get_dpi_scale() intelligently handles:
+    * - Actual display DPI when available from the OS
+    * - Smart blending based on screen size (TVs get larger UI for couch viewing)
+    * - Fallback to pixel-based scaling when DPI info unavailable
+    *
+    * Parameters:
+    * - width/height: current framebuffer dimensions
+    * - fullscreen: affects DPI detection on some platforms
+    * - false: don't use widget scale (we're a menu driver, not widgets)
+    */
+   scale_factor = gfx_display_get_dpi_scale(p_disp,
+         settings,
+         p_disp->framebuf_width,
+         p_disp->framebuf_height,
+         settings->bools.video_fullscreen,
+         false);
 
-   if (scale_factor < 1.0f)
-      scale_factor = 1.0f;
+   /* Apply user's menu scale preference from Settings > User Interface */
+   scale_factor *= settings->floats.menu_scale_factor;
 
-   /* Apply scale boost */
-   scale_factor *= CANNOLI_SCALE_BOOST;
+   /* Ensure a minimum scale to prevent unusably small UI */
+   if (scale_factor < 0.5f)
+      scale_factor = 0.5f;
 
    cannoli->scale_factor = scale_factor;
    cannoli->font_size = CANNOLI_BASE_FONT_SIZE * scale_factor;
    cannoli->font_size_small = CANNOLI_BASE_FONT_SIZE * scale_factor * 0.75f;
    cannoli->font_size_title = CANNOLI_BASE_FONT_SIZE * scale_factor * 1.4f;
-   cannoli->pill_padding = (int)(CANNOLI_PILL_PADDING_X * scale_factor);
+
+   /* Clamp font sizes to ensure readability */
+   if (cannoli->font_size < CANNOLI_MIN_FONT_SIZE)
+      cannoli->font_size = CANNOLI_MIN_FONT_SIZE;
+   if (cannoli->font_size_small < CANNOLI_MIN_FONT_SIZE - 2)
+      cannoli->font_size_small = CANNOLI_MIN_FONT_SIZE - 2;
+
+   /* Pill padding scales with font size so it stays proportional with different fonts */
+   cannoli->pill_padding = (int)(cannoli->font_size * CANNOLI_PILL_PADDING_RATIO);
    cannoli->button_size = (int)(CANNOLI_BUTTON_CIRCLE_SIZE * scale_factor);
 
+   /* Free existing fonts before reloading */
    if (cannoli->font.font)
    {
       font_driver_free(cannoli->font.font);
@@ -670,30 +753,27 @@ static void cannoli_context_reset(void *data, bool is_threaded)
 
    fontpath[0] = '\0';
 
-   /* Try cannoli custom font first */
-   if (settings->paths.directory_assets[0] != '\0')
-   {
-      fill_pathname_join_special(fontpath, settings->paths.directory_assets,
-            "cannoli/font.ttf", sizeof(fontpath));
-      cannoli->font.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size, is_threaded);
-   }
+   /*
+    * Font loading priority:
+    * 1. Cannoli-specific font (assets/cannoli/font.ttf) for custom styling
+    * 2. XMB font (assets/xmb/monochrome/font.ttf) commonly available
+    * 3. Ozone font (assets/ozone/regular.ttf) as final fallback
+    */
+   cannoli->font.font = cannoli_try_load_font(p_disp,
+         settings->paths.directory_assets, "cannoli/font.ttf",
+         cannoli->font_size, is_threaded, fontpath, sizeof(fontpath));
 
-   /* Fall back to xmb font */
-   if (!cannoli->font.font && settings->paths.directory_assets[0] != '\0')
-   {
-      fill_pathname_join_special(fontpath, settings->paths.directory_assets,
-            "xmb/monochrome/font.ttf", sizeof(fontpath));
-      cannoli->font.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size, is_threaded);
-   }
+   if (!cannoli->font.font)
+      cannoli->font.font = cannoli_try_load_font(p_disp,
+            settings->paths.directory_assets, "xmb/monochrome/font.ttf",
+            cannoli->font_size, is_threaded, fontpath, sizeof(fontpath));
 
-   /* Fall back to ozone font */
-   if (!cannoli->font.font && settings->paths.directory_assets[0] != '\0')
-   {
-      fill_pathname_join_special(fontpath, settings->paths.directory_assets,
-            "ozone/regular.ttf", sizeof(fontpath));
-      cannoli->font.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size, is_threaded);
-   }
+   if (!cannoli->font.font)
+      cannoli->font.font = cannoli_try_load_font(p_disp,
+            settings->paths.directory_assets, "ozone/regular.ttf",
+            cannoli->font_size, is_threaded, fontpath, sizeof(fontpath));
 
+   /* Load additional font sizes using the same font file that worked */
    if (cannoli->font.font && fontpath[0] != '\0')
    {
       cannoli->font_small.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_small, is_threaded);
@@ -880,6 +960,28 @@ static int cannoli_environ(enum menu_environ_cb type, void *data, void *userdata
    return -1;
 }
 
+/*
+ * Custom input handler for Cannoli menu navigation.
+ *
+ * Navigation state machine:
+ *
+ *   [Game Running] ---(menu button)---> [Main Quick Menu]
+ *         ^                                    |
+ *         |                                    v
+ *         +----(B: back)----+          [Game Options]
+ *                           |                  |
+ *                           |                  v
+ *                           +--------  [RA Settings Screen]
+ *                                             |
+ *                                      (B: back to Game Options)
+ *
+ * Key behaviors:
+ * - B in main quick menu: closes menu and resumes game
+ * - B in Game Options submenu: returns to main quick menu
+ * - B in RA settings (entered from Game Options): returns to Game Options
+ * - A on "Game Options": enters the custom settings submenu
+ * - A on any other item: executes the associated RetroArch action
+ */
 static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       size_t i, enum menu_action action)
 {
@@ -891,25 +993,24 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
 
    if (cannoli && cannoli->is_quick_menu)
    {
-      /* Handle back button in settings submenu - return to quick menu */
+      /* Back button in Game Options submenu: return to main quick menu */
       if (action == MENU_ACTION_CANCEL && cannoli->in_settings_submenu)
       {
          cannoli->in_settings_submenu = false;
          cannoli->return_to_settings_submenu = false;
          cannoli_populate_menu_items(cannoli_quick_menu_items);
-         /* Restore saved position in main quick menu */
          menu_st->selection_ptr = cannoli->saved_quick_menu_selection;
          return 0;
       }
 
-      /* Handle back button in main quick menu - close menu and resume */
+      /* Back button in main quick menu: close menu entirely and resume game */
       if (action == MENU_ACTION_CANCEL && !cannoli->in_settings_submenu)
       {
          command_event(CMD_EVENT_MENU_TOGGLE, NULL);
          return 0;
       }
 
-      /* Handle selecting "Game Options" entry - enter settings submenu */
+      /* Select "Game Options" entry: enter the settings submenu */
       if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
       {
          const char *entry_label = NULL;
@@ -921,7 +1022,6 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
 
          if (entry_label && string_is_equal(entry_label, "Game Options"))
          {
-            /* Save current position before entering submenu */
             cannoli->saved_quick_menu_selection = menu_st->selection_ptr;
             cannoli->in_settings_submenu = true;
             cannoli->return_to_settings_submenu = false;
@@ -931,14 +1031,17 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          }
       }
 
-      /* When selecting an item from Game Options submenu, mark to return there */
+      /*
+       * When entering an RA settings screen from Game Options submenu,
+       * set flag to return to Game Options (not main menu) when backing out.
+       */
       if (action == MENU_ACTION_OK && cannoli->in_settings_submenu)
       {
          cannoli->return_to_settings_submenu = true;
       }
    }
 
-   /* Use generic handler for all other input */
+   /* Delegate all other input to RetroArch's generic menu handler */
    return generic_menu_entry_action(userdata, entry, i, action);
 }
 
