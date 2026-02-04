@@ -60,6 +60,7 @@
 #include "../../msg_hash.h"
 #include "../../gfx/gfx_display.h"
 #include "../../gfx/gfx_animation.h"
+#include "../../gfx/gfx_thumbnail.h"
 #include "../../gfx/font_driver.h"
 #include "../../configuration.h"
 #include "../../retroarch.h"
@@ -85,8 +86,10 @@
 static float cannoli_color_bg[16]        = CANNOLI_SOLID_COLOR(0.0f, 0.0f, 0.0f, 0.85f);
 static float cannoli_color_selection[16] = CANNOLI_SOLID_COLOR(1.0f, 1.0f, 1.0f, 1.0f);
 static float cannoli_color_accent[16]    = CANNOLI_SOLID_COLOR(0.18f, 0.55f, 0.53f, 1.0f);
-static uint32_t cannoli_color_text       = 0xFFFFFFFF;  /* White (RGBA packed) */
-static uint32_t cannoli_color_text_dark  = 0x000000FF;  /* Black (RGBA packed) */
+static float cannoli_color_black[16]     = CANNOLI_SOLID_COLOR(0.0f, 0.0f, 0.0f, 1.0f);
+static uint32_t cannoli_color_text        = 0xFFFFFFFF;  /* White (RGBA packed) */
+static uint32_t cannoli_color_text_dark   = 0x000000FF;  /* Black (RGBA packed) */
+static uint32_t cannoli_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packed) */
 
 /* Layout constants - base sizes at 1.0x scale factor */
 #define CANNOLI_BASE_FONT_SIZE     32    /* Base font size in pixels */
@@ -118,9 +121,9 @@ typedef struct
 /* Main custom quick menu */
 static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
    { "Resume",        MENU_ENUM_LABEL_RESUME_CONTENT },
+   { "Save",          MENU_ENUM_LABEL_SAVE_STATE },
+   { "Load",          MENU_ENUM_LABEL_LOAD_STATE },
    { "Restart",       MENU_ENUM_LABEL_RESTART_CONTENT },
-   { "Save State",    MENU_ENUM_LABEL_SAVE_STATE },
-   { "Load State",    MENU_ENUM_LABEL_LOAD_STATE },
    { "Game Options",  CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens custom settings submenu */
    { "Advanced",      MENU_ENUM_LABEL_SETTINGS },         /* Opens full RA settings */
    { "Quit",          MENU_ENUM_LABEL_QUIT_RETROARCH },
@@ -150,9 +153,11 @@ typedef struct
    font_data_impl_t font;
    font_data_impl_t font_small;
    font_data_impl_t font_title;
+   font_data_impl_t font_tiny;   /* For slot indicators */
    float font_size;
    float font_size_small;
    float font_size_title;
+   float font_size_tiny;
 
    /* Layout */
    unsigned width;
@@ -168,7 +173,18 @@ typedef struct
    bool in_settings_submenu;
    bool return_to_settings_submenu;  /* Track if we should return to Game Options submenu */
    size_t saved_quick_menu_selection; /* Remember position in main quick menu */
+
+   /* Save slot selector */
+   gfx_thumbnail_t savestate_thumbnail;
+   char savestate_thumbnail_path[PATH_MAX_LENGTH];
+   int preview_slot;              /* Currently previewed slot (0-7) */
+   bool show_slot_selector;       /* True when on Save/Load State entry */
+   size_t last_selection;         /* Track selection changes */
 } cannoli_t;
+
+/* Number of save slots to display (Auto + slots 0-7) */
+#define CANNOLI_NUM_SLOTS 9
+#define CANNOLI_AUTO_SLOT_INDEX 0  /* First dot is the auto slot (state_slot -1) */
 
 /* ======================================================================
  * DRAWING FUNCTIONS
@@ -342,6 +358,29 @@ static int cannoli_get_text_width(cannoli_t *cannoli, const char *text, bool sma
    return 0;
 }
 
+static void cannoli_draw_text_tiny(cannoli_t *cannoli,
+      gfx_display_t *p_disp,
+      unsigned video_width, unsigned video_height,
+      int x, int y,
+      const char *text, uint32_t color)
+{
+   font_data_t *font = cannoli->font_tiny.font ? cannoli->font_tiny.font : cannoli->font_small.font;
+   if (font && text)
+   {
+      gfx_display_draw_text(font, text, x, y,
+            video_width, video_height, color,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+   }
+}
+
+static int cannoli_get_text_width_tiny(cannoli_t *cannoli, const char *text)
+{
+   font_data_t *font = cannoli->font_tiny.font ? cannoli->font_tiny.font : cannoli->font_small.font;
+   if (font && text)
+      return font_driver_get_message_width(font, text, strlen(text), 1.0f);
+   return 0;
+}
+
 /* Truncate text to fit within max_width, adding ellipsis if needed */
 static void cannoli_truncate_text(cannoli_t *cannoli, const char *text,
       char *out, size_t out_size, int max_width, bool small_font)
@@ -376,6 +415,177 @@ static void cannoli_truncate_text(cannoli_t *cannoli, const char *text,
 }
 
 /* ======================================================================
+ * SAVE SLOT SELECTOR
+ * ====================================================================== */
+
+/*
+ * Load the thumbnail for a specific save slot.
+ * Constructs the path and requests async thumbnail load.
+ *
+ * @param preview_slot: 0 = Auto (state_slot -1), 1-8 = state_slot 0-7
+ */
+static void cannoli_load_slot_thumbnail(cannoli_t *cannoli, int preview_slot)
+{
+   char state_path[PATH_MAX_LENGTH];
+   settings_t *settings = config_get_ptr();
+   int state_slot = preview_slot - 1;  /* Convert preview_slot to state_slot */
+
+   /* Get savestate path for this slot */
+   if (!runloop_get_savestate_path(state_path, sizeof(state_path), state_slot))
+      return;
+
+   /* Append .png extension for thumbnail */
+   strlcat(state_path, ".png", sizeof(state_path));
+
+   /* Request thumbnail if path changed or status is unknown */
+   if (   (cannoli->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+       || !string_is_equal(state_path, cannoli->savestate_thumbnail_path))
+   {
+      strlcpy(cannoli->savestate_thumbnail_path, state_path,
+            sizeof(cannoli->savestate_thumbnail_path));
+
+      /* Free old texture before requesting new one */
+      gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
+
+      /* Request new thumbnail - the thumbnail system handles missing files */
+      gfx_thumbnail_request_file(state_path, &cannoli->savestate_thumbnail,
+            settings->uints.gfx_thumbnail_upscale_threshold);
+
+      /* Use core aspect ratio for proper rendering */
+      cannoli->savestate_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
+   }
+
+   cannoli->preview_slot = preview_slot;
+}
+
+/*
+ * Draw the save slot selector UI: thumbnail preview with polaroid frame and dot indicators.
+ * Positioned on the right side of the screen, vertically centered.
+ */
+static void cannoli_draw_slot_selector(cannoli_t *cannoli,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   int i;
+   /* Larger thumbnail - 45% of screen height, maintain 4:3 aspect for frame */
+   int thumb_max_height = (int)(video_height * 0.45f);
+   int thumb_max_width  = (int)(thumb_max_height * 4.0f / 3.0f);
+
+   /* Polaroid frame dimensions */
+   int frame_border     = (int)(5 * cannoli->scale_factor);   /* Side/top border */
+   int frame_bottom     = (int)(28 * cannoli->scale_factor);  /* Thicker bottom chin for dots */
+   int frame_width      = thumb_max_width + frame_border * 2;
+   int frame_height     = thumb_max_height + frame_border + frame_bottom;
+
+   int frame_x, frame_y;
+   int thumb_x, thumb_y;
+   int dot_y, dot_spacing, dot_radius;
+   int total_dots_width;
+   int dots_start_x;
+
+   /* Calculate dot dimensions first (needed for vertical centering) */
+   dot_radius  = (int)(4 * cannoli->scale_factor);
+   dot_spacing = (int)(16 * cannoli->scale_factor);
+
+   /* Position frame on right side, vertically centered with dots below */
+   frame_x = video_width - cannoli->margin_x - frame_width;
+   frame_y = (video_height - frame_height - dot_radius * 2 - (int)(16 * cannoli->scale_factor)) / 2;
+
+   /* Thumbnail position inside frame */
+   thumb_x = frame_x + frame_border;
+   thumb_y = frame_y + frame_border;
+
+   /* Draw polaroid frame (white background) */
+   gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
+         frame_x, frame_y, frame_width, frame_height,
+         video_width, video_height, cannoli_color_selection, NULL);
+
+   /* Draw thumbnail if available */
+   if (cannoli->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+   {
+      float draw_width, draw_height;
+
+      /* Calculate aspect-correct dimensions */
+      gfx_thumbnail_get_draw_dimensions(
+            &cannoli->savestate_thumbnail,
+            thumb_max_width, thumb_max_height, 1.0f,
+            &draw_width, &draw_height);
+
+      /* Center within thumbnail area */
+      {
+         int offset_x = (thumb_max_width - (int)draw_width) / 2;
+         int offset_y = (thumb_max_height - (int)draw_height) / 2;
+
+         gfx_thumbnail_draw(userdata, video_width, video_height,
+               &cannoli->savestate_thumbnail,
+               (float)(thumb_x + offset_x), (float)(thumb_y + offset_y),
+               (unsigned)draw_width, (unsigned)draw_height,
+               GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
+      }
+   }
+   else if (cannoli->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
+   {
+      /* Only show placeholder when we know the thumbnail is missing (not while loading) */
+      const char *placeholder;
+      char state_path[PATH_MAX_LENGTH];
+      settings_t *settings = config_get_ptr();
+
+      /* Check if save state exists (without .png) to determine message */
+      if (runloop_get_savestate_path(state_path, sizeof(state_path), settings->ints.state_slot)
+            && path_is_valid(state_path))
+         placeholder = "No Screenshot";
+      else
+         placeholder = "Empty";
+
+      /* Draw placeholder text centered in thumbnail area */
+      {
+         int text_width = cannoli_get_text_width(cannoli, placeholder, false);
+         int text_x = thumb_x + (thumb_max_width - text_width) / 2;
+         /* Center vertically: account for font baseline by adding ~1/3 of font size */
+         int text_y = thumb_y + thumb_max_height / 2 + (int)(cannoli->font_size * 0.35f);
+
+         cannoli_draw_text(cannoli, p_disp, video_width, video_height,
+               text_x, text_y,
+               placeholder, cannoli_color_text_dark, false);
+      }
+   }
+
+   /* Draw slot indicators in the polaroid chin: 'A' for auto, dots for 0-7 */
+   total_dots_width = CANNOLI_NUM_SLOTS * (dot_radius * 2)
+         + (CANNOLI_NUM_SLOTS - 1) * (dot_spacing - dot_radius * 2);
+   dot_y = thumb_y + thumb_max_height + (frame_bottom - dot_radius * 2) / 2;
+   dots_start_x = frame_x + (frame_width - total_dots_width) / 2;
+
+   for (i = 0; i < CANNOLI_NUM_SLOTS; i++)
+   {
+      int dot_cx = dots_start_x + i * dot_spacing + dot_radius;
+      bool is_selected = (i == cannoli->preview_slot);
+      float *color = is_selected ? cannoli_color_accent : cannoli_color_black;
+      int r = is_selected ? dot_radius : (int)(dot_radius * 0.6f);
+      /* Adjust y position to keep dots vertically centered regardless of size */
+      int cy = dot_y + dot_radius;
+
+      if (i == 0)
+      {
+         /* Draw 'A' for Auto slot using tiny font, centered on dot line */
+         int text_width = cannoli_get_text_width_tiny(cannoli, "A");
+         int text_x = dot_cx - text_width / 2;
+         /* Center 'A' vertically: baseline + 0.35*font_size ≈ visual center */
+         int text_y = cy + (int)(cannoli->font_size_tiny * 0.35f);
+         cannoli_draw_text_tiny(cannoli, p_disp, video_width, video_height,
+               text_x, text_y, "A",
+               is_selected ? cannoli_color_text_accent : cannoli_color_text_dark);
+      }
+      else
+      {
+         cannoli_draw_filled_circle(cannoli, p_disp, userdata,
+               dot_cx, cy, r,
+               video_width, video_height, color);
+      }
+   }
+}
+
+/* ======================================================================
  * MENU RENDERING
  * ====================================================================== */
 
@@ -406,6 +616,42 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    item_height = cannoli->font.line_height;
    if (item_height <= 0)
       item_height = 20;
+
+   /*
+    * Detect if on Save (index 1) or Load (index 2) in main quick menu.
+    * Show the slot selector UI when these entries are selected.
+    */
+   {
+      bool was_showing = cannoli->show_slot_selector;
+      cannoli->show_slot_selector = false;
+
+      if (cannoli->is_quick_menu && !cannoli->in_settings_submenu)
+      {
+         if (selection == 1 || selection == 2)
+            cannoli->show_slot_selector = true;
+      }
+
+      /* When selection changes to save/load, load the current slot's thumbnail */
+      if (cannoli->show_slot_selector && (!was_showing || selection != cannoli->last_selection))
+      {
+         settings_t *settings = config_get_ptr();
+         int state_slot = settings->ints.state_slot;
+
+         /* Convert state_slot to preview_slot: state_slot -1 = preview 0 (Auto) */
+         /* Clamp state_slot to -1 to 7 range */
+         if (state_slot < -1)
+            state_slot = -1;
+         else if (state_slot > 7)
+            state_slot = 7;
+         settings->ints.state_slot = state_slot;
+
+         /* preview_slot = state_slot + 1 */
+         cannoli->preview_slot = state_slot + 1;
+         cannoli_load_slot_thumbnail(cannoli, cannoli->preview_slot);
+      }
+
+      cannoli->last_selection = selection;
+   }
 
    /* Calculate visible items: screen height minus title area and button legend area */
    {
@@ -563,6 +809,10 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
       y += item_height;
    }
+
+   /* Draw save slot selector if on Save/Load State entry */
+   if (cannoli->show_slot_selector)
+      cannoli_draw_slot_selector(cannoli, p_disp, userdata, video_width, video_height);
 
    /* Button legends */
    button_legend_y = video_height - cannoli->margin_y - cannoli->button_size;
@@ -723,12 +973,16 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    cannoli->font_size = CANNOLI_BASE_FONT_SIZE * scale_factor;
    cannoli->font_size_small = CANNOLI_BASE_FONT_SIZE * scale_factor * 0.75f;
    cannoli->font_size_title = CANNOLI_BASE_FONT_SIZE * scale_factor * 1.4f;
+   /* Tiny font sized to match dot indicators (dot_radius * 2 is diameter) */
+   cannoli->font_size_tiny = 4 * scale_factor * 2.5f;
 
    /* Clamp font sizes to ensure readability */
    if (cannoli->font_size < CANNOLI_MIN_FONT_SIZE)
       cannoli->font_size = CANNOLI_MIN_FONT_SIZE;
    if (cannoli->font_size_small < CANNOLI_MIN_FONT_SIZE - 2)
       cannoli->font_size_small = CANNOLI_MIN_FONT_SIZE - 2;
+   if (cannoli->font_size_tiny < 8)
+      cannoli->font_size_tiny = 8;
 
    /* Pill padding scales with font size so it stays proportional with different fonts */
    cannoli->pill_padding = (int)(cannoli->font_size * CANNOLI_PILL_PADDING_RATIO);
@@ -749,6 +1003,11 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    {
       font_driver_free(cannoli->font_title.font);
       cannoli->font_title.font = NULL;
+   }
+   if (cannoli->font_tiny.font)
+   {
+      font_driver_free(cannoli->font_tiny.font);
+      cannoli->font_tiny.font = NULL;
    }
 
    fontpath[0] = '\0';
@@ -778,6 +1037,7 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    {
       cannoli->font_small.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_small, is_threaded);
       cannoli->font_title.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_title, is_threaded);
+      cannoli->font_tiny.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_tiny, is_threaded);
    }
 
    cannoli->font.line_height = (int)(cannoli->font_size * CANNOLI_LINE_HEIGHT);
@@ -791,6 +1051,13 @@ static void cannoli_context_reset(void *data, bool is_threaded)
       cannoli->font.line_height = 20;
    if (cannoli->font_small.line_height < 15)
       cannoli->font_small.line_height = 15;
+
+   /* Initialize save slot selector state */
+   gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
+   cannoli->savestate_thumbnail_path[0] = '\0';
+   cannoli->preview_slot = 0;
+   cannoli->show_slot_selector = false;
+   cannoli->last_selection = 0;
 
    gfx_display_init_white_texture();
 }
@@ -816,6 +1083,14 @@ static void cannoli_context_destroy(void *data)
          font_driver_free(cannoli->font_title.font);
          cannoli->font_title.font = NULL;
       }
+      if (cannoli->font_tiny.font)
+      {
+         font_driver_free(cannoli->font_tiny.font);
+         cannoli->font_tiny.font = NULL;
+      }
+
+      /* Clean up save slot thumbnail */
+      gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
    }
 
    gfx_display_deinit_white_texture();
@@ -870,6 +1145,8 @@ static void cannoli_frame(void *data, video_frame_info_t *video_info)
       font_bind(&cannoli->font_small);
    if (cannoli->font_title.font)
       font_bind(&cannoli->font_title);
+   if (cannoli->font_tiny.font)
+      font_bind(&cannoli->font_tiny);
 
    cannoli_draw_bg(cannoli, p_disp, userdata, video_width, video_height);
    cannoli_render_menu(cannoli, p_disp, userdata, video_width, video_height);
@@ -880,6 +1157,8 @@ static void cannoli_frame(void *data, video_frame_info_t *video_info)
       font_flush(video_width, video_height, &cannoli->font_small);
    if (cannoli->font_title.font)
       font_flush(video_width, video_height, &cannoli->font_title);
+   if (cannoli->font_tiny.font)
+      font_flush(video_width, video_height, &cannoli->font_tiny);
 }
 
 static void cannoli_populate_entries(void *data,
@@ -926,6 +1205,15 @@ static void cannoli_populate_entries(void *data,
             cannoli->in_settings_submenu = false;
          }
          cannoli->is_quick_menu = true;
+
+         /*
+          * Reset thumbnail state when entering quick menu so it reloads.
+          * This ensures the thumbnail is refreshed (e.g., if a new screenshot
+          * was taken since last viewing).
+          */
+         gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
+         cannoli->savestate_thumbnail_path[0] = '\0';
+         cannoli->last_selection = (size_t)-1;  /* Force reload on next render */
       }
       else
       {
@@ -993,6 +1281,51 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
 
    if (cannoli && cannoli->is_quick_menu)
    {
+      /* Handle input for save slot selection when on Save/Load entry */
+      if (cannoli->show_slot_selector)
+      {
+         settings_t *settings = config_get_ptr();
+         struct menu_state *menu_state = menu_state_get_ptr();
+         size_t selection = menu_state ? menu_state->selection_ptr : 0;
+
+         /*
+          * Slot mapping: preview_slot 0 = Auto (state_slot -1)
+          *               preview_slot 1-8 = state_slot 0-7
+          * So: state_slot = preview_slot - 1
+          */
+         if (action == MENU_ACTION_LEFT)
+         {
+            cannoli->preview_slot--;
+            if (cannoli->preview_slot < 0)
+               cannoli->preview_slot = CANNOLI_NUM_SLOTS - 1;
+            settings->ints.state_slot = cannoli->preview_slot - 1;
+            cannoli_load_slot_thumbnail(cannoli, cannoli->preview_slot);
+            return 0;  /* Consume input */
+         }
+
+         if (action == MENU_ACTION_RIGHT)
+         {
+            cannoli->preview_slot++;
+            if (cannoli->preview_slot >= CANNOLI_NUM_SLOTS)
+               cannoli->preview_slot = 0;
+            settings->ints.state_slot = cannoli->preview_slot - 1;
+            cannoli_load_slot_thumbnail(cannoli, cannoli->preview_slot);
+            return 0;  /* Consume input */
+         }
+
+         /* A or Start button executes save/load action and closes menu */
+         if (action == MENU_ACTION_OK || action == MENU_ACTION_START)
+         {
+            /* selection 1 = Save, selection 2 = Load */
+            if (selection == 1)
+               command_event(CMD_EVENT_SAVE_STATE, NULL);
+            else if (selection == 2)
+               command_event(CMD_EVENT_LOAD_STATE, NULL);
+            command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+            return 0;
+         }
+      }
+
       /* Back button in Game Options submenu: return to main quick menu */
       if (action == MENU_ACTION_CANCEL && cannoli->in_settings_submenu)
       {
