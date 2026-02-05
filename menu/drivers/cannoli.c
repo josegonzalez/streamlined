@@ -72,6 +72,7 @@
 #include "../../core_info.h"
 #include <file/file_path.h>
 #include <lists/dir_list.h>
+#include <streams/file_stream.h>
 
 /* ======================================================================
  * CONFIGURATION
@@ -138,7 +139,7 @@ static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
    { NULL, 0 }
 };
 
-/* Combined settings submenu items (alphabetized)
+/* Combined settings submenu items for quick menu (alphabetized)
  * NOTE: Disc Control is handled dynamically - see cannoli_populate_settings_submenu() */
 static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
    { "Achievements",     MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS },
@@ -152,6 +153,33 @@ static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
    { "Saving",           MENU_ENUM_LABEL_SAVING_SETTINGS },
    { "Screenshot",       MENU_ENUM_LABEL_TAKE_SCREENSHOT },
    { "Shaders",          MENU_ENUM_LABEL_SHADER_OPTIONS },
+   { "Video",            MENU_ENUM_LABEL_VIDEO_SETTINGS },
+   { NULL, 0 }
+};
+
+/* Main menu settings submenu items - all alphabetized */
+static const cannoli_quick_item_t cannoli_main_settings_items[] = {
+   { "Accessibility",    MENU_ENUM_LABEL_ACCESSIBILITY_SETTINGS },
+   { "Achievements",     MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS },
+   { "Audio",            MENU_ENUM_LABEL_AUDIO_SETTINGS },
+   { "Configuration",    MENU_ENUM_LABEL_CONFIGURATION_SETTINGS },
+   { "Core",             MENU_ENUM_LABEL_CORE_SETTINGS },
+   { "Directory",        MENU_ENUM_LABEL_DIRECTORY_SETTINGS },
+   { "Drivers",          MENU_ENUM_LABEL_DRIVER_SETTINGS },
+   { "Frame Throttle",   MENU_ENUM_LABEL_FRAME_THROTTLE_SETTINGS },
+   { "Help",             MENU_ENUM_LABEL_HELP_LIST },
+   { "Information",      MENU_ENUM_LABEL_INFORMATION_LIST },
+   { "Input",            MENU_ENUM_LABEL_INPUT_SETTINGS },
+   { "Latency",          MENU_ENUM_LABEL_LATENCY_SETTINGS },
+   { "Logging",          MENU_ENUM_LABEL_LOGGING_SETTINGS },
+   { "Network",          MENU_ENUM_LABEL_NETWORK_SETTINGS },
+   { "Online Updater",   MENU_ENUM_LABEL_ONLINE_UPDATER },
+   { "Playlists",        MENU_ENUM_LABEL_PLAYLIST_SETTINGS },
+   { "Power Management", MENU_ENUM_LABEL_POWER_MANAGEMENT_SETTINGS },
+   { "Recording",        MENU_ENUM_LABEL_RECORDING_SETTINGS },
+   { "Saving",           MENU_ENUM_LABEL_SAVING_SETTINGS },
+   { "User",             MENU_ENUM_LABEL_USER_SETTINGS },
+   { "User Interface",   MENU_ENUM_LABEL_USER_INTERFACE_SETTINGS },
    { "Video",            MENU_ENUM_LABEL_VIDEO_SETTINGS },
    { NULL, 0 }
 };
@@ -203,10 +231,22 @@ typedef struct
    bool is_custom_main_menu;      /* True when displaying custom launcher menu */
    bool in_folder;                /* True when inside a folder (blocks going up) */
    char current_folder_path[PATH_MAX_LENGTH]; /* Path of current folder */
+   char folder_core_path[PATH_MAX_LENGTH];    /* Core path for current folder (from core.txt) */
    size_t main_menu_selection;    /* Remember selection in main menu when entering folder */
    size_t folder_selection;       /* Remember selection in folder when launching game */
    char last_launched_folder[PATH_MAX_LENGTH]; /* Folder from which game was launched */
+   char last_folder_core_path[PATH_MAX_LENGTH]; /* Core path for last launched folder */
    bool return_to_folder;         /* Flag to return to folder after game exit */
+
+   /* Core selection mode */
+   bool selecting_core;           /* True when showing core selection list */
+   char pending_content_path[PATH_MAX_LENGTH]; /* Content path waiting for core selection */
+
+   /* Main menu settings submenu */
+   bool in_main_settings_submenu; /* True when in Settings submenu from main menu */
+   bool return_to_main_settings_submenu; /* Flag to return to settings submenu after backing out */
+   size_t saved_main_menu_selection; /* Remember position in main menu when entering settings */
+   size_t saved_settings_selection; /* Remember position in settings submenu */
 } cannoli_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -739,9 +779,17 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
    /* Get title - show game name for quick menu, "Settings" for submenu */
    title_buf[0] = '\0';
-   if (cannoli->in_settings_submenu)
+   if (cannoli->selecting_core)
+   {
+      strlcpy(title_buf, "Select Core", sizeof(title_buf));
+   }
+   else if (cannoli->in_settings_submenu)
    {
       strlcpy(title_buf, "Advanced", sizeof(title_buf));
+   }
+   else if (cannoli->in_main_settings_submenu)
+   {
+      strlcpy(title_buf, "Settings", sizeof(title_buf));
    }
    else if (cannoli->is_custom_main_menu && cannoli->in_folder)
    {
@@ -798,8 +846,8 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    cannoli->ticker_idx++;
 
    /* Draw title with ticker-based scrolling for long titles
-    * Skip title only for top-level custom main menu (show for platform screens) */
-   if (!(cannoli->is_custom_main_menu && !cannoli->in_folder))
+    * Skip title only for top-level custom main menu (show for platform screens and settings submenu) */
+   if (!(cannoli->is_custom_main_menu && !cannoli->in_folder && !cannoli->in_main_settings_submenu))
    {
       int max_title_width = video_width - cannoli->margin_x * 2;
       int title_y = cannoli->margin_y + (int)(cannoli->font_size_title * 0.9f);
@@ -837,7 +885,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       start_idx = 0;
 
    /* Draw menu entries - tight spacing below title, or from top for top-level main menu */
-   if (cannoli->is_custom_main_menu && !cannoli->in_folder)
+   if (cannoli->is_custom_main_menu && !cannoli->in_folder && !cannoli->in_main_settings_submenu)
       y = cannoli->margin_y;
    else
       y = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
@@ -861,8 +909,11 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       menu_entry_get(&entry, 0, (unsigned)(start_idx + i), NULL, true);
 
       /* For custom menus, prefer path (our custom label) over rich_label (RA's label)
-       * For custom main menu, use label (display name) since path contains full file path */
-      if (cannoli->is_quick_menu || cannoli->in_settings_submenu)
+       * For custom main menu, use label (display name) since path contains full file path
+       * For core selection, use path (display name) since label contains core path
+       * For main settings submenu, use path (our custom label) */
+      if (cannoli->is_quick_menu || cannoli->in_settings_submenu || cannoli->selecting_core
+            || cannoli->in_main_settings_submenu)
          entry_label = entry.path;
       else if (cannoli->is_custom_main_menu && !string_is_empty(entry.label))
          entry_label = entry.label;
@@ -882,7 +933,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
       /* Process entry type - adds slash prefix for directories
        * Skip for top-level custom main menu (already handled in populate) */
-      if (!(cannoli->is_custom_main_menu && !cannoli->in_folder))
+      if (!(cannoli->is_custom_main_menu && !cannoli->in_folder && !cannoli->in_main_settings_submenu))
          cannoli_process_entry_type(entry.value, display_label, sizeof(display_label));
 
       /* Check if value should be displayed */
@@ -1188,6 +1239,296 @@ static void cannoli_populate_settings_submenu(void)
    }
 }
 
+/* Populate main menu settings submenu (Settings categories + main menu items) */
+static void cannoli_populate_main_settings_submenu(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   const cannoli_quick_item_t *item;
+
+   if (!menu_st)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   /* Clear and repopulate with custom items */
+   menu_entries_clear(list);
+
+   for (item = cannoli_main_settings_items; item->label != NULL; item++)
+   {
+      const char *action_label;
+
+      /* Skip Achievements if not compiled in */
+#ifndef HAVE_CHEEVOS
+      if (item->action == MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS)
+         continue;
+#endif
+
+      /* Skip Online Updater if not compiled in */
+#ifndef HAVE_ONLINE_UPDATER
+      if (item->action == MENU_ENUM_LABEL_ONLINE_UPDATER)
+         continue;
+#endif
+
+      /* Skip Network if not compiled in */
+#ifndef HAVE_NETWORKING
+      if (item->action == MENU_ENUM_LABEL_NETWORK_SETTINGS)
+         continue;
+#endif
+
+      action_label = msg_hash_to_str(item->action);
+
+      menu_entries_append(list,
+            item->label,
+            action_label ? action_label : item->label,
+            item->action,
+            MENU_SETTING_ACTION,
+            0, 0, NULL);
+   }
+}
+
+/*
+ * Try to find a core by name from the core info list.
+ * Matches against core_name, display_name, or filename (without _libretro suffix).
+ * Returns true if found and writes path to core_path_out.
+ */
+static bool cannoli_find_core_by_name(const char *name, char *core_path_out, size_t core_path_size)
+{
+   core_info_list_t *core_info_list = NULL;
+   size_t i;
+
+   if (string_is_empty(name))
+      return false;
+
+   /* If it's already a full path and exists, use it directly */
+   if (path_is_absolute(name) && path_is_valid(name))
+   {
+      strlcpy(core_path_out, name, core_path_size);
+      return true;
+   }
+
+   core_info_get_list(&core_info_list);
+   if (!core_info_list)
+      return false;
+
+   /* Search for a core matching the given name */
+   for (i = 0; i < core_info_list->count; i++)
+   {
+      const core_info_t *info = &core_info_list->list[i];
+
+      if (!info || string_is_empty(info->path))
+         continue;
+
+      /* Check if core_name matches (case insensitive) */
+      if (info->core_name && strcasecmp(name, info->core_name) == 0)
+      {
+         strlcpy(core_path_out, info->path, core_path_size);
+         return true;
+      }
+
+      /* Also try matching against display_name */
+      if (info->display_name && strcasecmp(name, info->display_name) == 0)
+      {
+         strlcpy(core_path_out, info->path, core_path_size);
+         return true;
+      }
+
+      /* Also try matching against the filename without extension */
+      {
+         char basename[256];
+         const char *filename = path_basename(info->path);
+         if (filename)
+         {
+            strlcpy(basename, filename, sizeof(basename));
+            path_remove_extension(basename);
+            /* Remove _libretro suffix if present */
+            {
+               char *suffix = strstr(basename, "_libretro");
+               if (suffix)
+                  *suffix = '\0';
+            }
+            if (strcasecmp(name, basename) == 0)
+            {
+               strlcpy(core_path_out, info->path, core_path_size);
+               return true;
+            }
+         }
+      }
+   }
+
+   return false;
+}
+
+/*
+ * Read core path from a folder's core.txt file.
+ * The file can contain multiple lines, each with a core name in order of preference.
+ * The first installed core found will be used.
+ *
+ * Example core.txt:
+ *   snes9x
+ *   bsnes
+ *   mesen-s
+ *
+ * Each line can be:
+ *   - Full path to core (e.g., /path/to/cores/snes9x_libretro.dylib)
+ *   - Core name (e.g., snes9x, Snes9x, SNES9x) - case insensitive
+ *   - Core filename without _libretro suffix (e.g., snes9x)
+ *
+ * Returns true if a valid core path was found and written to core_path_out.
+ */
+static bool cannoli_read_folder_core(const char *folder_path, char *core_path_out, size_t core_path_size)
+{
+   char core_file_path[PATH_MAX_LENGTH];
+   RFILE *file;
+   char line[PATH_MAX_LENGTH];
+
+   if (string_is_empty(folder_path))
+      return false;
+
+   /* Build path to core.txt */
+   fill_pathname_join_special(core_file_path, folder_path, ".core.txt", sizeof(core_file_path));
+
+   /* Check if file exists */
+   if (!path_is_valid(core_file_path))
+      return false;
+
+   /* Read the core path from the file */
+   file = filestream_open(core_file_path, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return false;
+
+   /* Read each line and try to find an installed core */
+   while (filestream_gets(file, line, sizeof(line)))
+   {
+      /* Trim trailing newline/whitespace */
+      string_trim_whitespace(line);
+
+      if (string_is_empty(line))
+         continue;
+
+      /* Skip comment lines */
+      if (line[0] == '#')
+         continue;
+
+      /* Try to find this core */
+      if (cannoli_find_core_by_name(line, core_path_out, core_path_size))
+      {
+         filestream_close(file);
+         return true;
+      }
+   }
+
+   filestream_close(file);
+   return false;
+}
+
+/*
+ * Save the selected core to the folder's core.txt file.
+ * Uses the core's base name (without _libretro suffix) for portability.
+ */
+static bool cannoli_save_folder_core(const char *folder_path, const char *core_path)
+{
+   char core_file_path[PATH_MAX_LENGTH];
+   char core_name[256];
+   RFILE *file;
+   const char *filename;
+   char *suffix;
+
+   if (string_is_empty(folder_path) || string_is_empty(core_path))
+      return false;
+
+   /* Extract the core name from the path */
+   filename = path_basename(core_path);
+   if (!filename)
+      return false;
+
+   strlcpy(core_name, filename, sizeof(core_name));
+   path_remove_extension(core_name);
+
+   /* Remove _libretro suffix if present */
+   suffix = strstr(core_name, "_libretro");
+   if (suffix)
+      *suffix = '\0';
+
+   /* Build path to core.txt */
+   fill_pathname_join_special(core_file_path, folder_path, ".core.txt", sizeof(core_file_path));
+
+   /* Write the core name to the file */
+   file = filestream_open(core_file_path, RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return false;
+
+   filestream_printf(file, "%s\n", core_name);
+   filestream_close(file);
+
+   return true;
+}
+
+/*
+ * Populate the menu with a list of all installed cores.
+ * Used when the user needs to select which core to use for a folder.
+ */
+static void cannoli_populate_core_selection(cannoli_t *cannoli, const char *content_path)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   core_info_list_t *core_info_list = NULL;
+   size_t i;
+
+   if (!menu_st)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   /* Clear existing entries */
+   menu_entries_clear(list);
+
+   /* Get list of all installed cores */
+   core_info_get_list(&core_info_list);
+
+   if (!core_info_list || core_info_list->count == 0)
+   {
+      menu_entries_append(list,
+            "No cores installed",
+            "",
+            MSG_UNKNOWN,
+            FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   /* Add each installed core to the list */
+   for (i = 0; i < core_info_list->count; i++)
+   {
+      const core_info_t *info = &core_info_list->list[i];
+      const char *display_name = info->display_name ? info->display_name : info->core_name;
+
+      if (string_is_empty(info->path) || string_is_empty(display_name))
+         continue;
+
+      menu_entries_append(list,
+            display_name,       /* Display name */
+            info->path,         /* Core path in label for selection */
+            MSG_UNKNOWN,
+            FILE_TYPE_CORE,
+            0, 0, NULL);
+   }
+}
+
 /*
  * Strip leading sort prefix from folder name (e.g., "1) Game Boy" -> "Game Boy")
  * Pattern: one or more digits followed by ") "
@@ -1312,7 +1653,7 @@ static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directo
    {
       menu_entries_append(list,
             "Settings",
-            msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS),
+            "cannoli_main_settings",
             MENU_ENUM_LABEL_SETTINGS,
             MENU_SETTING_ACTION,
             0, 0, NULL);
@@ -1652,12 +1993,27 @@ static void cannoli_populate_entries(void *data,
 
          if (!string_is_empty(start_dir))
          {
+            /* Check if returning to main settings submenu */
+            if (cannoli->return_to_main_settings_submenu)
+            {
+               cannoli_populate_main_settings_submenu();
+               cannoli->is_custom_main_menu = true;
+               cannoli->in_main_settings_submenu = true;
+               cannoli->return_to_main_settings_submenu = false;
+               cannoli->in_folder = false;
+               /* Restore selection in settings submenu */
+               if (menu_st_local)
+                  menu_st_local->selection_ptr = cannoli->saved_settings_selection;
+            }
             /* Check if returning from a game - restore folder state */
-            if (cannoli->return_to_folder && !string_is_empty(cannoli->last_launched_folder))
+            else if (cannoli->return_to_folder && !string_is_empty(cannoli->last_launched_folder))
             {
                cannoli_populate_folder_menu(cannoli, cannoli->last_launched_folder, true);
                strlcpy(cannoli->current_folder_path, cannoli->last_launched_folder,
                      sizeof(cannoli->current_folder_path));
+               /* Restore the folder's core path */
+               strlcpy(cannoli->folder_core_path, cannoli->last_folder_core_path,
+                     sizeof(cannoli->folder_core_path));
                cannoli->is_custom_main_menu = true;
                cannoli->in_folder = true;
                cannoli->return_to_folder = false;
@@ -1884,6 +2240,75 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       }
    }
 
+   /* Handle core selection mode */
+   if (cannoli && cannoli->selecting_core)
+   {
+      /* Cancel core selection - go back to folder */
+      if (action == MENU_ACTION_CANCEL)
+      {
+         cannoli->selecting_core = false;
+         cannoli->pending_content_path[0] = '\0';
+         cannoli_populate_folder_menu(cannoli, cannoli->current_folder_path, true);
+         return 0;
+      }
+
+      /* Core selected - save to .core.txt and launch content */
+      if (action == MENU_ACTION_OK && entry)
+      {
+         const char *selected_core = entry->label;  /* Core path is in label */
+
+         if (!string_is_empty(selected_core) && path_is_valid(selected_core))
+         {
+            content_ctx_info_t content_info;
+
+            /* Save the selected core to .core.txt for this folder */
+            cannoli_save_folder_core(cannoli->current_folder_path, selected_core);
+
+            /* Update the folder's core path */
+            strlcpy(cannoli->folder_core_path, selected_core,
+                  sizeof(cannoli->folder_core_path));
+
+            content_info.argc        = 0;
+            content_info.argv        = NULL;
+            content_info.args        = NULL;
+            content_info.environ_get = NULL;
+
+            /* Save folder state so we can return after quitting */
+            cannoli->folder_selection = menu_st->selection_ptr;
+            strlcpy(cannoli->last_launched_folder, cannoli->current_folder_path,
+                  sizeof(cannoli->last_launched_folder));
+            strlcpy(cannoli->last_folder_core_path, cannoli->folder_core_path,
+                  sizeof(cannoli->last_folder_core_path));
+            cannoli->return_to_folder = true;
+
+            cannoli->selecting_core = false;
+            cannoli->is_custom_main_menu = false;
+            cannoli->in_folder = false;
+
+            /* Close menu before loading content */
+            command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+
+            task_push_load_content_with_new_core_from_menu(
+                  selected_core,
+                  cannoli->pending_content_path,
+                  &content_info,
+                  CORE_TYPE_PLAIN, NULL, NULL);
+
+            cannoli->pending_content_path[0] = '\0';
+            return 0;
+         }
+      }
+
+      /* Allow navigation (up/down) - pass to generic handler */
+      if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN ||
+          action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+      {
+         return generic_menu_entry_action(userdata, entry, i, action);
+      }
+
+      return 0;  /* Block other actions during core selection */
+   }
+
    /* Handle custom main menu (launcher mode) navigation */
    if (cannoli && cannoli->is_custom_main_menu)
    {
@@ -1906,8 +2331,27 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          return 0;
       }
 
+      /* Back button in main settings submenu: return to main menu */
+      if (action == MENU_ACTION_CANCEL && cannoli->in_main_settings_submenu)
+      {
+         settings_t *settings = config_get_ptr();
+         const char *start_dir = settings->paths.directory_menu_content;
+
+         cannoli->in_main_settings_submenu = false;
+         cannoli->return_to_main_settings_submenu = false;
+         if (!string_is_empty(start_dir))
+         {
+            cannoli_populate_folder_menu(cannoli, start_dir, false);
+            strlcpy(cannoli->current_folder_path, start_dir,
+                  sizeof(cannoli->current_folder_path));
+         }
+         /* Restore saved main menu selection */
+         menu_st->selection_ptr = cannoli->saved_main_menu_selection;
+         return 0;
+      }
+
       /* Block back navigation at top level (nowhere to go) */
-      if (action == MENU_ACTION_CANCEL && !cannoli->in_folder)
+      if (action == MENU_ACTION_CANCEL && !cannoli->in_folder && !cannoli->in_main_settings_submenu)
       {
          return 0;  /* Do nothing - can't go up from top level */
       }
@@ -1915,11 +2359,26 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       /* Handle folder/file/settings selection */
       if (action == MENU_ACTION_OK && entry)
       {
-         /* Check for Settings entry */
-         if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS)
+         /* Check for Settings entry - show custom settings submenu */
+         if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS && !cannoli->in_main_settings_submenu)
          {
-            /* Open RA settings - let generic handler do it */
+            cannoli->saved_main_menu_selection = menu_st->selection_ptr;
+            cannoli->in_main_settings_submenu = true;
+            cannoli_populate_main_settings_submenu();
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         /* Handle selection within main settings submenu */
+         if (cannoli->in_main_settings_submenu)
+         {
+            /* Save selection so we can return to same position */
+            cannoli->saved_settings_selection = menu_st->selection_ptr;
+            /* Set flag to return to settings submenu when backing out */
+            cannoli->return_to_main_settings_submenu = true;
+            /* Let generic handler process the RA menu item */
             cannoli->is_custom_main_menu = false;
+            cannoli->in_main_settings_submenu = false;
             return generic_menu_entry_action(userdata, entry, i, action);
          }
 
@@ -1938,29 +2397,40 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
                cannoli_populate_folder_menu(cannoli, item_path, true);  /* Inside folder - show slash */
                strlcpy(cannoli->current_folder_path, item_path,
                      sizeof(cannoli->current_folder_path));
+
+               /* Try to read folder's core.txt */
+               if (!cannoli_read_folder_core(item_path, cannoli->folder_core_path,
+                     sizeof(cannoli->folder_core_path)))
+                  cannoli->folder_core_path[0] = '\0';  /* No core.txt found */
+
                cannoli->in_folder = true;
                menu_st->selection_ptr = 0;
                return 0;
             }
             else if (path_is_valid(item_path))
             {
-               /* Launch the selected file (ROM) - find compatible core */
-               core_info_list_t *core_info_list = NULL;
-               const core_info_t *core_infos = NULL;
-               size_t num_infos = 0;
+               /* Launch the selected file (ROM) */
+               const char *core_path = NULL;
                content_ctx_info_t content_info;
 
-               /* Get list of cores that support this content */
-               core_info_get_list(&core_info_list);
-               if (core_info_list)
+               /* Check if folder has a specific core assigned via .core.txt */
+               if (!string_is_empty(cannoli->folder_core_path))
                {
-                  core_info_list_get_supported_cores(core_info_list,
-                        item_path, &core_infos, &num_infos);
+                  core_path = cannoli->folder_core_path;
+               }
+               else
+               {
+                  /* No .core.txt - show core selection screen */
+                  strlcpy(cannoli->pending_content_path, item_path,
+                        sizeof(cannoli->pending_content_path));
+                  cannoli->selecting_core = true;
+                  cannoli_populate_core_selection(cannoli, item_path);
+                  menu_st->selection_ptr = 0;
+                  return 0;
                }
 
-               if (num_infos > 0 && core_infos && core_infos[0].path)
+               if (core_path && path_is_valid(core_path))
                {
-                  /* Found at least one compatible core - use the first one */
                   content_info.argc        = 0;
                   content_info.argv        = NULL;
                   content_info.args        = NULL;
@@ -1970,13 +2440,18 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
                   cannoli->folder_selection = menu_st->selection_ptr;
                   strlcpy(cannoli->last_launched_folder, cannoli->current_folder_path,
                         sizeof(cannoli->last_launched_folder));
+                  strlcpy(cannoli->last_folder_core_path, cannoli->folder_core_path,
+                        sizeof(cannoli->last_folder_core_path));
                   cannoli->return_to_folder = true;
 
                   cannoli->is_custom_main_menu = false;
                   cannoli->in_folder = false;
 
+                  /* Close menu before loading content */
+                  command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+
                   task_push_load_content_with_new_core_from_menu(
-                        core_infos[0].path,  /* Use first compatible core */
+                        core_path,           /* Core to use */
                         item_path,           /* Content path */
                         &content_info,
                         CORE_TYPE_PLAIN, NULL, NULL);
@@ -1984,7 +2459,6 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
                   return 0;
                }
                /* No compatible core found - do nothing for now */
-               /* TODO: Show an error message */
                return 0;
             }
          }
