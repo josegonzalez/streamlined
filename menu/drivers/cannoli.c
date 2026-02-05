@@ -22,7 +22,7 @@
  * Architecture Overview:
  * - Renders a simple list-based menu with rounded pill selection indicators, heavily inspired by MinUI
  * - Replaces RetroArch's default quick menu with a custom simplified version
- * - Supports a two-level menu: main quick menu and "Game Options" submenu
+ * - Supports a two-level menu: main quick menu and "Advanced" settings submenu
  *
  * Scaling:
  * - Uses RetroArch's DPI-aware scaling via gfx_display_get_dpi_scale()
@@ -31,10 +31,10 @@
  *
  * Navigation State Machine:
  * - is_quick_menu: true when viewing the custom quick menu (not RA settings)
- * - in_settings_submenu: true when in "Game Options" submenu
+ * - in_settings_submenu: true when in "Advanced" submenu
  * - return_to_settings_submenu: flag to return to submenu after backing out of RA menu
  * - Back button in main quick menu closes menu and resumes content
- * - Back button in Game Options submenu returns to main quick menu
+ * - Back button in Advanced submenu returns to main quick menu
  */
 
 #include <stdlib.h>
@@ -67,6 +67,7 @@
 #include "../../retroarch.h"
 #include "../../runloop.h"
 #include "../../paths.h"
+#include "../../disk_control_interface.h"
 #include <file/file_path.h>
 
 /* ======================================================================
@@ -111,7 +112,7 @@ typedef struct
 } cannoli_quick_item_t;
 
 /*
- * Sentinel value used to identify the "Game Options" menu entry.
+ * Sentinel value used to identify the "Advanced" menu entry.
  * When a menu item has this value as its action, selecting it opens
  * the custom settings submenu instead of triggering a RetroArch action.
  * The value 0xCAFE is arbitrary, chosen to not conflict with any
@@ -119,28 +120,36 @@ typedef struct
  */
 #define CANNOLI_SETTINGS_SUBMENU_MARKER 0xCAFE
 
-/* Main custom quick menu */
+/* Marker for conditional exit entry - shows "Exit" or "Quit" based on CLI launch */
+#define CANNOLI_EXIT_MARKER 0xCAFF
+
+/* Main custom quick menu
+ * NOTE: Exit/Quit handled dynamically - see cannoli_populate_quick_menu() */
 static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
    { "Resume",        MENU_ENUM_LABEL_RESUME_CONTENT },
    { "Save",          MENU_ENUM_LABEL_SAVE_STATE },
    { "Load",          MENU_ENUM_LABEL_LOAD_STATE },
-   { "Restart",       MENU_ENUM_LABEL_RESTART_CONTENT },
-   { "Game Options",  CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens custom settings submenu */
-   { "Advanced",      MENU_ENUM_LABEL_SETTINGS },         /* Opens full RA settings */
-   { "Quit",          MENU_ENUM_LABEL_QUIT_RETROARCH },
+   { "Advanced",      CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens combined settings submenu */
+   { "Reset",         MENU_ENUM_LABEL_RESTART_CONTENT },
+   { NULL,            CANNOLI_EXIT_MARKER },  /* Dynamic: "Exit" or "Quit" based on CLI */
    { NULL, 0 }
 };
 
-/* Custom settings submenu items */
+/* Combined settings submenu items (alphabetized)
+ * NOTE: Disc Control is handled dynamically - see cannoli_populate_settings_submenu() */
 static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
-   { "State Slot",    MENU_ENUM_LABEL_STATE_SLOT },
-   { "Core Options",  MENU_ENUM_LABEL_CORE_OPTIONS },
-   { "Controls",      MENU_ENUM_LABEL_CORE_INPUT_REMAPPING_OPTIONS },
-   { "Shaders",       MENU_ENUM_LABEL_SHADER_OPTIONS },
-   { "Overrides",     MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS },
-   { "Cheats",        MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
-   { "Disk Control",  MENU_ENUM_LABEL_DISK_OPTIONS },
-   { "Screenshot",    MENU_ENUM_LABEL_TAKE_SCREENSHOT },
+   { "Achievements",     MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS },
+   { "Audio",            MENU_ENUM_LABEL_AUDIO_SETTINGS },
+   { "Cheats",           MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
+   { "Controls",         MENU_ENUM_LABEL_CORE_INPUT_REMAPPING_OPTIONS },
+   { "Core Options",     MENU_ENUM_LABEL_CORE_OPTIONS },
+   { "Disc Control",     MENU_ENUM_LABEL_DISK_OPTIONS },  /* Conditionally shown */
+   { "Input",            MENU_ENUM_LABEL_INPUT_SETTINGS },
+   { "Overrides",        MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS },
+   { "Saving",           MENU_ENUM_LABEL_SAVING_SETTINGS },
+   { "Screenshot",       MENU_ENUM_LABEL_TAKE_SCREENSHOT },
+   { "Shaders",          MENU_ENUM_LABEL_SHADER_OPTIONS },
+   { "Video",            MENU_ENUM_LABEL_VIDEO_SETTINGS },
    { NULL, 0 }
 };
 
@@ -172,7 +181,7 @@ typedef struct
    /* State */
    bool is_quick_menu;
    bool in_settings_submenu;
-   bool return_to_settings_submenu;  /* Track if we should return to Game Options submenu */
+   bool return_to_settings_submenu;  /* Track if we should return to Advanced submenu */
    size_t saved_quick_menu_selection; /* Remember position in main quick menu */
 
    /* Save slot selector */
@@ -396,7 +405,7 @@ static int cannoli_get_title_width(cannoli_t *cannoli, const char *text)
 }
 
 /*
- * Check if entry value indicates a directory and add folder icon prefix.
+ * Check if entry value indicates a directory and add slash prefix.
  * Returns true if entry is a directory.
  */
 static bool cannoli_process_entry_type(const char *value, char *label, size_t label_size)
@@ -405,8 +414,8 @@ static bool cannoli_process_entry_type(const char *value, char *label, size_t la
 
    if (string_is_equal(value, "(DIR)"))
    {
-      /* Add folder icon prefix (Nerd Font U+F0DCF) */
-      snprintf(temp, sizeof(temp), "\xF3\xB0\xB7\x8F %s", label);
+      /* Add leading slash to indicate directory */
+      snprintf(temp, sizeof(temp), "/%s", label);
       strlcpy(label, temp, label_size);
       return true;
    }
@@ -718,7 +727,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    title_buf[0] = '\0';
    if (cannoli->in_settings_submenu)
    {
-      strlcpy(title_buf, "Game Options", sizeof(title_buf));
+      strlcpy(title_buf, "Advanced", sizeof(title_buf));
    }
    else if (cannoli->is_quick_menu)
    {
@@ -1017,6 +1026,124 @@ static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
       const char *action_label = msg_hash_to_str(item->action);
 
       /* Use proper internal label for callbacks, but set alt for display */
+      menu_entries_append(list,
+            item->label,
+            action_label ? action_label : item->label,
+            item->action,
+            MENU_SETTING_ACTION,
+            0, 0, NULL);
+   }
+}
+
+/* Check if content was launched from command line */
+static bool cannoli_is_launched_from_cli(void)
+{
+   global_t *global = global_get_ptr();
+   if (!global)
+      return false;
+   return (global->flags & GLOB_FLG_LAUNCHED_FROM_CLI) != 0;
+}
+
+/* Check if disc control is available for current core */
+static bool cannoli_is_disc_control_available(void)
+{
+   rarch_system_info_t *sys_info = &runloop_state_get_ptr()->system;
+   if (!sys_info)
+      return false;
+   return disk_control_enabled(&sys_info->disk_control);
+}
+
+/* Populate quick menu, with dynamic Exit/Quit based on CLI launch */
+static void cannoli_populate_quick_menu(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   const cannoli_quick_item_t *item;
+   bool from_cli = cannoli_is_launched_from_cli();
+
+   if (!menu_st)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   /* Clear and repopulate with custom items */
+   menu_entries_clear(list);
+
+   for (item = cannoli_quick_menu_items; item->label != NULL || item->action == CANNOLI_EXIT_MARKER; item++)
+   {
+      const char *label;
+      const char *action_label;
+      enum msg_hash_enums action;
+
+      /* Handle dynamic Quit entry - quits if CLI, exits to menu if not */
+      if (item->action == CANNOLI_EXIT_MARKER)
+      {
+         label = "Quit";
+         action = from_cli ? MENU_ENUM_LABEL_QUIT_RETROARCH : MENU_ENUM_LABEL_CLOSE_CONTENT;
+         action_label = msg_hash_to_str(action);
+      }
+      else
+      {
+         label = item->label;
+         action = item->action;
+         action_label = msg_hash_to_str(action);
+      }
+
+      menu_entries_append(list,
+            label,
+            action_label ? action_label : label,
+            action,
+            MENU_SETTING_ACTION,
+            0, 0, NULL);
+   }
+}
+
+/* Populate settings submenu, conditionally including Disc Control */
+static void cannoli_populate_settings_submenu(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   const cannoli_quick_item_t *item;
+   bool show_disc_control = cannoli_is_disc_control_available();
+
+   if (!menu_st)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   /* Clear and repopulate with custom items */
+   menu_entries_clear(list);
+
+   for (item = cannoli_settings_menu_items; item->label != NULL; item++)
+   {
+      const char *action_label;
+
+      /* Skip Disc Control if not available */
+      if (item->action == MENU_ENUM_LABEL_DISK_OPTIONS && !show_disc_control)
+         continue;
+
+      /* Skip Achievements if not compiled in */
+#ifndef HAVE_CHEEVOS
+      if (item->action == MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS)
+         continue;
+#endif
+
+      action_label = msg_hash_to_str(item->action);
+
       menu_entries_append(list,
             item->label,
             action_label ? action_label : item->label,
@@ -1346,16 +1473,16 @@ static void cannoli_populate_entries(void *data,
 
       if (is_content_settings)
       {
-         /* Check if we should return to the Game Options submenu */
+         /* Check if we should return to the Advanced settings submenu */
          if (cannoli->return_to_settings_submenu)
          {
-            cannoli_populate_menu_items(cannoli_settings_menu_items);
+            cannoli_populate_settings_submenu();
             cannoli->in_settings_submenu = true;
             cannoli->return_to_settings_submenu = false;
          }
          else
          {
-            cannoli_populate_menu_items(cannoli_quick_menu_items);
+            cannoli_populate_quick_menu();
             cannoli->in_settings_submenu = false;
          }
          cannoli->is_quick_menu = true;
@@ -1410,18 +1537,18 @@ static int cannoli_environ(enum menu_environ_cb type, void *data, void *userdata
  *   [Game Running] ---(menu button)---> [Main Quick Menu]
  *         ^                                    |
  *         |                                    v
- *         +----(B: back)----+          [Game Options]
+ *         +----(B: back)----+          [Advanced]
  *                           |                  |
  *                           |                  v
  *                           +--------  [RA Settings Screen]
  *                                             |
- *                                      (B: back to Game Options)
+ *                                      (B: back to Advanced)
  *
  * Key behaviors:
  * - B in main quick menu: closes menu and resumes game
- * - B in Game Options submenu: returns to main quick menu
- * - B in RA settings (entered from Game Options): returns to Game Options
- * - A on "Game Options": enters the custom settings submenu
+ * - B in Advanced submenu: returns to main quick menu
+ * - B in RA settings (entered from Advanced): returns to Advanced
+ * - A on "Advanced": enters the custom settings submenu
  * - A on any other item: executes the associated RetroArch action
  */
 static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
@@ -1480,12 +1607,12 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          }
       }
 
-      /* Back button in Game Options submenu: return to main quick menu */
+      /* Back button in Advanced submenu: return to main quick menu */
       if (action == MENU_ACTION_CANCEL && cannoli->in_settings_submenu)
       {
          cannoli->in_settings_submenu = false;
          cannoli->return_to_settings_submenu = false;
-         cannoli_populate_menu_items(cannoli_quick_menu_items);
+         cannoli_populate_quick_menu();
          menu_st->selection_ptr = cannoli->saved_quick_menu_selection;
          return 0;
       }
@@ -1497,7 +1624,7 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          return 0;
       }
 
-      /* Select "Game Options" entry: enter the settings submenu */
+      /* Select "Advanced" entry: enter the settings submenu */
       if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
       {
          const char *entry_label = NULL;
@@ -1507,20 +1634,38 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          else if (!string_is_empty(entry->path))
             entry_label = entry->path;
 
-         if (entry_label && string_is_equal(entry_label, "Game Options"))
+         if (entry_label && string_is_equal(entry_label, "Advanced"))
          {
             cannoli->saved_quick_menu_selection = menu_st->selection_ptr;
             cannoli->in_settings_submenu = true;
             cannoli->return_to_settings_submenu = false;
-            cannoli_populate_menu_items(cannoli_settings_menu_items);
+            cannoli_populate_settings_submenu();
             menu_st->selection_ptr = 0;
             return 0;
+         }
+
+         /* Handle "Quit" - if not CLI, close content and go to main menu */
+         if (entry_label && string_is_equal(entry_label, "Quit"))
+         {
+            if (!cannoli_is_launched_from_cli())
+            {
+               /* Reset cannoli state */
+               cannoli->is_quick_menu = false;
+               cannoli->in_settings_submenu = false;
+               cannoli->return_to_settings_submenu = false;
+
+               /* Unload core and flush to main menu */
+               command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+               menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
+               return 0;
+            }
+            /* If CLI, let the default handler quit RetroArch */
          }
       }
 
       /*
-       * When entering an RA settings screen from Game Options submenu,
-       * set flag to return to Game Options (not main menu) when backing out.
+       * When entering an RA settings screen from Advanced submenu,
+       * set flag to return to Advanced (not main menu) when backing out.
        */
       if (action == MENU_ACTION_OK && cannoli->in_settings_submenu)
       {
