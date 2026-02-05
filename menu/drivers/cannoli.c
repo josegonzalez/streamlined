@@ -68,7 +68,10 @@
 #include "../../runloop.h"
 #include "../../paths.h"
 #include "../../disk_control_interface.h"
+#include "../../tasks/task_content.h"
+#include "../../core_info.h"
 #include <file/file_path.h>
+#include <lists/dir_list.h>
 
 /* ======================================================================
  * CONFIGURATION
@@ -195,6 +198,15 @@ typedef struct
    uint64_t ticker_idx;           /* Incremented each frame for ticker animation */
    uint64_t item_ticker_start;    /* ticker_idx when current item was selected */
    size_t item_ticker_selection;  /* Track which item is being ticker-scrolled */
+
+   /* Custom main menu (launcher mode) */
+   bool is_custom_main_menu;      /* True when displaying custom launcher menu */
+   bool in_folder;                /* True when inside a folder (blocks going up) */
+   char current_folder_path[PATH_MAX_LENGTH]; /* Path of current folder */
+   size_t main_menu_selection;    /* Remember selection in main menu when entering folder */
+   size_t folder_selection;       /* Remember selection in folder when launching game */
+   char last_launched_folder[PATH_MAX_LENGTH]; /* Folder from which game was launched */
+   bool return_to_folder;         /* Flag to return to folder after game exit */
 } cannoli_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -206,6 +218,8 @@ typedef struct
  * ====================================================================== */
 
 /* Forward declarations */
+static const char *cannoli_strip_sort_prefix(const char *name);
+
 static void cannoli_draw_text(cannoli_t *cannoli,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
@@ -729,6 +743,17 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    {
       strlcpy(title_buf, "Advanced", sizeof(title_buf));
    }
+   else if (cannoli->is_custom_main_menu && cannoli->in_folder)
+   {
+      /* Show folder/platform name as title */
+      const char *folder_name = path_basename(cannoli->current_folder_path);
+      if (!string_is_empty(folder_name))
+      {
+         /* Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
+         const char *clean_name = cannoli_strip_sort_prefix(folder_name);
+         strlcpy(title_buf, clean_name, sizeof(title_buf));
+      }
+   }
    else if (cannoli->is_quick_menu)
    {
       /* Custom quick menu - show game name */
@@ -772,7 +797,9 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    /* Increment ticker for this frame */
    cannoli->ticker_idx++;
 
-   /* Draw title with ticker-based scrolling for long titles */
+   /* Draw title with ticker-based scrolling for long titles
+    * Skip title only for top-level custom main menu (show for platform screens) */
+   if (!(cannoli->is_custom_main_menu && !cannoli->in_folder))
    {
       int max_title_width = video_width - cannoli->margin_x * 2;
       int title_y = cannoli->margin_y + (int)(cannoli->font_size_title * 0.9f);
@@ -809,8 +836,11 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    else
       start_idx = 0;
 
-   /* Draw menu entries - tight spacing below title */
-   y = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
+   /* Draw menu entries - tight spacing below title, or from top for top-level main menu */
+   if (cannoli->is_custom_main_menu && !cannoli->in_folder)
+      y = cannoli->margin_y;
+   else
+      y = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
 
    for (i = 0; i < max_visible && (start_idx + i) < list_size; i++)
    {
@@ -830,9 +860,12 @@ static void cannoli_render_menu(cannoli_t *cannoli,
                    | MENU_ENTRY_FLAG_VALUE_ENABLED;
       menu_entry_get(&entry, 0, (unsigned)(start_idx + i), NULL, true);
 
-      /* For custom menus, prefer path (our custom label) over rich_label (RA's label) */
+      /* For custom menus, prefer path (our custom label) over rich_label (RA's label)
+       * For custom main menu, use label (display name) since path contains full file path */
       if (cannoli->is_quick_menu || cannoli->in_settings_submenu)
          entry_label = entry.path;
+      else if (cannoli->is_custom_main_menu && !string_is_empty(entry.label))
+         entry_label = entry.label;
       else if (!string_is_empty(entry.rich_label))
          entry_label = entry.rich_label;
       else
@@ -847,8 +880,10 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       /* Copy label for display */
       strlcpy(display_label, entry_label, sizeof(display_label));
 
-      /* Process entry type - adds folder icon for directories */
-      cannoli_process_entry_type(entry.value, display_label, sizeof(display_label));
+      /* Process entry type - adds slash prefix for directories
+       * Skip for top-level custom main menu (already handled in populate) */
+      if (!(cannoli->is_custom_main_menu && !cannoli->in_folder))
+         cannoli_process_entry_type(entry.value, display_label, sizeof(display_label));
 
       /* Check if value should be displayed */
       bool show_value = !string_is_empty(entry.value)
@@ -1153,6 +1188,137 @@ static void cannoli_populate_settings_submenu(void)
    }
 }
 
+/*
+ * Strip leading sort prefix from folder name (e.g., "1) Game Boy" -> "Game Boy")
+ * Pattern: one or more digits followed by ") "
+ * Returns pointer to the start of the actual name (within the same string)
+ */
+static const char *cannoli_strip_sort_prefix(const char *name)
+{
+   const char *p = name;
+
+   /* Check for leading digits */
+   if (!p || !isdigit((unsigned char)*p))
+      return name;
+
+   /* Skip all digits */
+   while (*p && isdigit((unsigned char)*p))
+      p++;
+
+   /* Check for ") " after digits */
+   if (p[0] == ')' && p[1] == ' ')
+      return p + 2;
+
+   /* No valid prefix found, return original */
+   return name;
+}
+
+/* Populate custom main menu with folders and files from the specified directory
+ * show_folder_slash: if true, prefix folder names with "/" */
+static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directory, bool show_folder_slash)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   settings_t *settings = config_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   struct string_list *str_list;
+   unsigned i;
+
+   if (!menu_st || !directory || directory[0] == '\0')
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   /* Clear existing entries */
+   menu_entries_clear(list);
+
+   /* Scan directory for folders and files */
+   str_list = dir_list_new(directory, NULL, true,
+         settings->bools.show_hidden_files, true, false);
+
+   if (str_list && str_list->size)
+   {
+      /* Sort alphabetically with directories first */
+      dir_list_sort(str_list, true);
+
+      for (i = 0; i < str_list->size; i++)
+      {
+         const char *path = str_list->elems[i].data;
+         unsigned attr = str_list->elems[i].attr.i;
+         const char *name = path_basename(path);
+
+         /* Skip hidden items (starting with .) */
+         if (!name || name[0] == '.')
+            continue;
+
+         if (attr == RARCH_DIRECTORY)
+         {
+            /* Show directories, optionally with leading slash
+             * Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
+            char display_name[256];
+            const char *clean_name = cannoli_strip_sort_prefix(name);
+
+            if (show_folder_slash)
+               snprintf(display_name, sizeof(display_name), "/%s", clean_name);
+            else
+               strlcpy(display_name, clean_name, sizeof(display_name));
+
+            menu_entries_append(list,
+                  display_name,     /* Display name (entry->path for rendering) */
+                  path,             /* Full path (entry->label for navigation) */
+                  MSG_UNKNOWN,
+                  FILE_TYPE_DIRECTORY,
+                  0, 0, NULL);
+         }
+         else
+         {
+            /* Show files (ROMs) - strip extension for cleaner display */
+            char display_name[256];
+            strlcpy(display_name, name, sizeof(display_name));
+            path_remove_extension(display_name);
+
+            menu_entries_append(list,
+                  display_name,     /* Display name (entry->path for rendering) */
+                  path,             /* Full path (entry->label for loading) */
+                  MSG_UNKNOWN,
+                  FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
+      }
+   }
+
+   if (str_list)
+      string_list_free(str_list);
+
+   /* Show empty message if folder has no content (only for platform folders, not top level) */
+   if (show_folder_slash && list->size == 0)
+   {
+      menu_entries_append(list,
+            "No games found",
+            "",
+            MSG_UNKNOWN,
+            FILE_TYPE_NONE,
+            0, 0, NULL);
+   }
+
+   /* Add Settings option at the bottom (only at top level) */
+   if (!show_folder_slash)
+   {
+      menu_entries_append(list,
+            "Settings",
+            msg_hash_to_str(MENU_ENUM_LABEL_SETTINGS),
+            MENU_ENUM_LABEL_SETTINGS,
+            MENU_SETTING_ACTION,
+            0, 0, NULL);
+   }
+}
+
 /* ======================================================================
  * MENU DRIVER INTERFACE
  * ====================================================================== */
@@ -1447,19 +1613,23 @@ static void cannoli_populate_entries(void *data,
 {
    cannoli_t *cannoli = (cannoli_t*)data;
    const char *content_settings_label = msg_hash_to_str(MENU_ENUM_LABEL_CONTENT_SETTINGS);
+   const char *main_menu_label = msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU);
    bool is_content_settings = false;
+   bool is_main_menu = false;
 
    if (!cannoli)
       return;
 
-   /* Check if this is the quick menu (content_settings) */
+   /* Check what menu we're in */
    if (label)
    {
       if (content_settings_label && string_is_equal(label, content_settings_label))
          is_content_settings = true;
+      else if (main_menu_label && string_is_equal(label, main_menu_label))
+         is_main_menu = true;
 
       /* Also check enum_idx from the menu stack */
-      if (!is_content_settings)
+      if (!is_content_settings && !is_main_menu)
       {
          struct menu_state *menu_st = menu_state_get_ptr();
          if (menu_st && menu_st->entries.list)
@@ -1468,7 +1638,45 @@ static void cannoli_populate_entries(void *data,
             menu_entries_get_last_stack(NULL, NULL, NULL, &enum_idx, NULL);
             if (enum_idx == MENU_ENUM_LABEL_CONTENT_SETTINGS)
                is_content_settings = true;
+            else if (enum_idx == MENU_ENUM_LABEL_MAIN_MENU)
+               is_main_menu = true;
          }
+      }
+
+      /* Handle main menu - show folders from start directory */
+      if (is_main_menu)
+      {
+         settings_t *settings = config_get_ptr();
+         const char *start_dir = settings->paths.directory_menu_content;
+         struct menu_state *menu_st_local = menu_state_get_ptr();
+
+         if (!string_is_empty(start_dir))
+         {
+            /* Check if returning from a game - restore folder state */
+            if (cannoli->return_to_folder && !string_is_empty(cannoli->last_launched_folder))
+            {
+               cannoli_populate_folder_menu(cannoli, cannoli->last_launched_folder, true);
+               strlcpy(cannoli->current_folder_path, cannoli->last_launched_folder,
+                     sizeof(cannoli->current_folder_path));
+               cannoli->is_custom_main_menu = true;
+               cannoli->in_folder = true;
+               cannoli->return_to_folder = false;
+               /* Restore selection to the game that was played */
+               if (menu_st_local)
+                  menu_st_local->selection_ptr = cannoli->folder_selection;
+            }
+            else
+            {
+               cannoli_populate_folder_menu(cannoli, start_dir, false);  /* Top level - no slash */
+               strlcpy(cannoli->current_folder_path, start_dir,
+                     sizeof(cannoli->current_folder_path));
+               cannoli->is_custom_main_menu = true;
+               cannoli->in_folder = false;
+            }
+         }
+         cannoli->is_quick_menu = false;
+         cannoli->in_settings_submenu = false;
+         return;
       }
 
       if (is_content_settings)
@@ -1486,6 +1694,7 @@ static void cannoli_populate_entries(void *data,
             cannoli->in_settings_submenu = false;
          }
          cannoli->is_quick_menu = true;
+         cannoli->is_custom_main_menu = false;
 
          /*
           * Reset thumbnail state when entering quick menu so it reloads.
@@ -1501,6 +1710,7 @@ static void cannoli_populate_entries(void *data,
          /* Don't reset return_to_settings_submenu here - we need it when coming back */
          cannoli->is_quick_menu = false;
          cannoli->in_settings_submenu = false;
+         cannoli->is_custom_main_menu = false;
       }
    }
    else
@@ -1508,6 +1718,7 @@ static void cannoli_populate_entries(void *data,
       /* Don't reset return_to_settings_submenu here - we need it when coming back */
       cannoli->is_quick_menu = false;
       cannoli->in_settings_submenu = false;
+      cannoli->is_custom_main_menu = false;
    }
 }
 
@@ -1670,6 +1881,113 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       if (action == MENU_ACTION_OK && cannoli->in_settings_submenu)
       {
          cannoli->return_to_settings_submenu = true;
+      }
+   }
+
+   /* Handle custom main menu (launcher mode) navigation */
+   if (cannoli && cannoli->is_custom_main_menu)
+   {
+      /* Block back navigation when inside a folder */
+      if (action == MENU_ACTION_CANCEL && cannoli->in_folder)
+      {
+         /* Go back to top-level folder listing */
+         settings_t *settings = config_get_ptr();
+         const char *start_dir = settings->paths.directory_menu_content;
+
+         if (!string_is_empty(start_dir))
+         {
+            cannoli_populate_folder_menu(cannoli, start_dir, false);  /* Back to top - no slash */
+            strlcpy(cannoli->current_folder_path, start_dir,
+                  sizeof(cannoli->current_folder_path));
+            cannoli->in_folder = false;
+            /* Restore saved main menu selection */
+            menu_st->selection_ptr = cannoli->main_menu_selection;
+         }
+         return 0;
+      }
+
+      /* Block back navigation at top level (nowhere to go) */
+      if (action == MENU_ACTION_CANCEL && !cannoli->in_folder)
+      {
+         return 0;  /* Do nothing - can't go up from top level */
+      }
+
+      /* Handle folder/file/settings selection */
+      if (action == MENU_ACTION_OK && entry)
+      {
+         /* Check for Settings entry */
+         if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS)
+         {
+            /* Open RA settings - let generic handler do it */
+            cannoli->is_custom_main_menu = false;
+            return generic_menu_entry_action(userdata, entry, i, action);
+         }
+
+         /* For custom main menu entries, the full path is in entry->label
+          * (entry->path contains the display name without path/extension) */
+         const char *item_path = entry->label;
+
+         if (!string_is_empty(item_path))
+         {
+            if (path_is_directory(item_path))
+            {
+               /* Save current selection before entering folder */
+               cannoli->main_menu_selection = menu_st->selection_ptr;
+
+               /* Enter the selected folder */
+               cannoli_populate_folder_menu(cannoli, item_path, true);  /* Inside folder - show slash */
+               strlcpy(cannoli->current_folder_path, item_path,
+                     sizeof(cannoli->current_folder_path));
+               cannoli->in_folder = true;
+               menu_st->selection_ptr = 0;
+               return 0;
+            }
+            else if (path_is_valid(item_path))
+            {
+               /* Launch the selected file (ROM) - find compatible core */
+               core_info_list_t *core_info_list = NULL;
+               const core_info_t *core_infos = NULL;
+               size_t num_infos = 0;
+               content_ctx_info_t content_info;
+
+               /* Get list of cores that support this content */
+               core_info_get_list(&core_info_list);
+               if (core_info_list)
+               {
+                  core_info_list_get_supported_cores(core_info_list,
+                        item_path, &core_infos, &num_infos);
+               }
+
+               if (num_infos > 0 && core_infos && core_infos[0].path)
+               {
+                  /* Found at least one compatible core - use the first one */
+                  content_info.argc        = 0;
+                  content_info.argv        = NULL;
+                  content_info.args        = NULL;
+                  content_info.environ_get = NULL;
+
+                  /* Save folder state so we can return after quitting */
+                  cannoli->folder_selection = menu_st->selection_ptr;
+                  strlcpy(cannoli->last_launched_folder, cannoli->current_folder_path,
+                        sizeof(cannoli->last_launched_folder));
+                  cannoli->return_to_folder = true;
+
+                  cannoli->is_custom_main_menu = false;
+                  cannoli->in_folder = false;
+
+                  task_push_load_content_with_new_core_from_menu(
+                        core_infos[0].path,  /* Use first compatible core */
+                        item_path,           /* Content path */
+                        &content_info,
+                        CORE_TYPE_PLAIN, NULL, NULL);
+
+                  return 0;
+               }
+               /* No compatible core found - do nothing for now */
+               /* TODO: Show an error message */
+               return 0;
+            }
+         }
       }
    }
 
