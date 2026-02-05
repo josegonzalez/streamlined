@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
@@ -180,6 +181,11 @@ typedef struct
    int preview_slot;              /* Currently previewed slot (0-7) */
    bool show_slot_selector;       /* True when on Save/Load State entry */
    size_t last_selection;         /* Track selection changes */
+
+   /* Ticker for text scrolling (uses RetroArch's built-in animation system) */
+   uint64_t ticker_idx;           /* Incremented each frame for ticker animation */
+   uint64_t item_ticker_start;    /* ticker_idx when current item was selected */
+   size_t item_ticker_selection;  /* Track which item is being ticker-scrolled */
 } cannoli_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -379,6 +385,52 @@ static int cannoli_get_text_width_tiny(cannoli_t *cannoli, const char *text)
    if (font && text)
       return font_driver_get_message_width(font, text, strlen(text), 1.0f);
    return 0;
+}
+
+static int cannoli_get_title_width(cannoli_t *cannoli, const char *text)
+{
+   font_data_t *font = cannoli->font_title.font ? cannoli->font_title.font : cannoli->font.font;
+   if (font && text)
+      return font_driver_get_message_width(font, text, strlen(text), 1.0f);
+   return 0;
+}
+
+/*
+ * Check if entry value indicates a directory and add folder icon prefix.
+ * Returns true if entry is a directory.
+ */
+static bool cannoli_process_entry_type(const char *value, char *label, size_t label_size)
+{
+   char temp[256];
+
+   if (string_is_equal(value, "(DIR)"))
+   {
+      /* Add folder icon prefix (Nerd Font U+F0DCF) */
+      snprintf(temp, sizeof(temp), "\xF3\xB0\xB7\x8F %s", label);
+      strlcpy(label, temp, label_size);
+      return true;
+   }
+   return false;
+}
+
+/*
+ * Check if value should be hidden (file type indicators).
+ * These are hardcoded English strings in RetroArch, not translated.
+ */
+static bool cannoli_should_hide_value(const char *value)
+{
+   return string_is_equal(value, "(FILE)")
+       || string_is_equal(value, "(DIR)")
+       || string_is_equal(value, "(IMAGE)")
+       || string_is_equal(value, "(MOVIE)")
+       || string_is_equal(value, "(MUSIC)")
+       || string_is_equal(value, "(COMP)")
+       || string_is_equal(value, "(CORE)")
+       || string_is_equal(value, "(SHADER)")
+       || string_is_equal(value, "(PRESET)")
+       || string_is_equal(value, "(RDB)")
+       || string_is_equal(value, "(CURSOR)")
+       || string_is_equal(value, "(CFILE)");
 }
 
 /* Truncate text to fit within max_width, adding ellipsis if needed */
@@ -691,12 +743,56 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    else
    {
       menu_entries_get_title(title_buf, sizeof(title_buf));
+
+      /* Strip "Select File: " prefix (localized) from file browser titles */
+      {
+         const char *select_file = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SELECT_FILE);
+         size_t prefix_len = strlen(select_file);
+
+         /* Check for "Select File: " pattern (translated string + ": ") */
+         if (strncmp(title_buf, select_file, prefix_len) == 0
+               && title_buf[prefix_len] == ':'
+               && title_buf[prefix_len + 1] == ' ')
+         {
+            memmove(title_buf, title_buf + prefix_len + 2,
+                  strlen(title_buf + prefix_len + 2) + 1);
+         }
+      }
    }
 
-   /* Draw title */
-   cannoli_draw_title(cannoli, p_disp, video_width, video_height,
-         cannoli->margin_x, cannoli->margin_y + (int)(cannoli->font_size_title * 0.9f),
-         title_buf, cannoli_color_text);
+   /* Increment ticker for this frame */
+   cannoli->ticker_idx++;
+
+   /* Draw title with ticker-based scrolling for long titles */
+   {
+      int max_title_width = video_width - cannoli->margin_x * 2;
+      int title_y = cannoli->margin_y + (int)(cannoli->font_size_title * 0.9f);
+      char title_ticker[256];
+      unsigned x_offset = 0;
+      font_data_t *title_font = cannoli->font_title.font
+            ? cannoli->font_title.font : cannoli->font.font;
+
+      gfx_animation_ctx_ticker_smooth_t ticker;
+      ticker.idx           = cannoli->ticker_idx;
+      ticker.src_str       = title_buf;
+      ticker.spacer        = NULL;
+      ticker.dst_str       = title_ticker;
+      ticker.dst_str_width = NULL;
+      ticker.x_offset      = &x_offset;
+      ticker.font          = title_font;
+      ticker.dst_str_len   = sizeof(title_ticker);
+      ticker.glyph_width   = (unsigned)cannoli->font_size_title;
+      ticker.field_width   = (unsigned)max_title_width;
+      ticker.font_scale    = 1.0f;
+      ticker.type_enum     = TICKER_TYPE_BOUNCE;
+      ticker.selected      = true;
+
+      gfx_animation_ticker_smooth(&ticker);
+
+      cannoli_draw_title(cannoli, p_disp, video_width, video_height,
+            cannoli->margin_x + (int)x_offset, title_y,
+            title_ticker, cannoli_color_text);
+   }
 
    /* Calculate scroll */
    if (selection >= max_visible)
@@ -742,13 +838,23 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       /* Copy label for display */
       strlcpy(display_label, entry_label, sizeof(display_label));
 
-      /* Check if value is "..." - if so, don't display it */
-      bool show_value = !string_is_empty(entry.value) && !string_is_equal(entry.value, "...");
+      /* Process entry type - adds folder icon for directories */
+      cannoli_process_entry_type(entry.value, display_label, sizeof(display_label));
+
+      /* Check if value should be displayed */
+      bool show_value = !string_is_empty(entry.value)
+                     && !string_is_equal(entry.value, "...")
+                     && !cannoli_should_hide_value(entry.value);
 
       if (is_selected)
       {
          int pill_width;
          int text_width = cannoli_get_text_width(cannoli, display_label, false);
+         int max_value_width = (video_width - cannoli->margin_x * 2) * 45 / 100;
+         int value_gap = (int)(16 * cannoli->scale_factor);
+         int max_label_width = show_value
+               ? (video_width - cannoli->margin_x * 2 - max_value_width - value_gap)
+               : (video_width - cannoli->margin_x * 2);
 
          /*
           * Pill width calculation:
@@ -758,22 +864,54 @@ static void cannoli_render_menu(cannoli_t *cannoli,
          if (show_value)
             pill_width = video_width - cannoli->margin_x * 2 + cannoli->pill_padding * 2;
          else
-            pill_width = text_width + cannoli->pill_padding * 2;
+            pill_width = (text_width > max_label_width ? max_label_width : text_width)
+                  + cannoli->pill_padding * 2;
 
          cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
                cannoli->margin_x - cannoli->pill_padding, pill_y,
                pill_width, pill_height,
                video_width, video_height, cannoli_color_selection);
 
-         cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-               cannoli->margin_x, text_y,
-               display_label, cannoli_color_text_dark, false);
+         /* Draw label with ticker scrolling if too long */
+         {
+            char label_ticker[256];
+            unsigned x_offset = 0;
+            uint64_t item_idx;
+
+            /* Reset ticker when selection changes so scrolling starts from left */
+            if (selection != cannoli->item_ticker_selection)
+            {
+               cannoli->item_ticker_selection = selection;
+               cannoli->item_ticker_start = cannoli->ticker_idx;
+            }
+            item_idx = cannoli->ticker_idx - cannoli->item_ticker_start;
+
+            gfx_animation_ctx_ticker_smooth_t ticker;
+            ticker.idx           = item_idx;
+            ticker.src_str       = display_label;
+            ticker.spacer        = NULL;
+            ticker.dst_str       = label_ticker;
+            ticker.dst_str_width = NULL;
+            ticker.x_offset      = &x_offset;
+            ticker.font          = cannoli->font.font;
+            ticker.dst_str_len   = sizeof(label_ticker);
+            ticker.glyph_width   = (unsigned)cannoli->font_size;
+            ticker.field_width   = (unsigned)max_label_width;
+            ticker.font_scale    = 1.0f;
+            ticker.type_enum     = TICKER_TYPE_BOUNCE;
+            ticker.selected      = true;
+
+            gfx_animation_ticker_smooth(&ticker);
+
+            cannoli_draw_text(cannoli, p_disp, video_width, video_height,
+                  cannoli->margin_x + (int)x_offset, text_y,
+                  label_ticker, cannoli_color_text_dark, false);
+         }
 
          /* Value stays on the right, truncated to max width */
          if (show_value)
          {
             char truncated_value[256];
-            int max_value_width = (video_width - cannoli->margin_x * 2) * 45 / 100;
             int value_width;
 
             cannoli_truncate_text(cannoli, entry.value, truncated_value,
@@ -787,9 +925,20 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       }
       else
       {
+         /* Non-selected: truncate long labels */
+         int max_value_width = (video_width - cannoli->margin_x * 2) * 45 / 100;
+         int value_gap = (int)(16 * cannoli->scale_factor);
+         int max_label_width = show_value
+               ? (video_width - cannoli->margin_x * 2 - max_value_width - value_gap)
+               : (video_width - cannoli->margin_x * 2);
+         char truncated_label[256];
+
+         cannoli_truncate_text(cannoli, display_label, truncated_label,
+               sizeof(truncated_label), max_label_width, false);
+
          cannoli_draw_text(cannoli, p_disp, video_width, video_height,
                cannoli->margin_x, text_y,
-               display_label, cannoli_color_text, false);
+               truncated_label, cannoli_color_text, false);
 
          if (show_value)
          {
@@ -972,7 +1121,7 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    cannoli->scale_factor = scale_factor;
    cannoli->font_size = CANNOLI_BASE_FONT_SIZE * scale_factor;
    cannoli->font_size_small = CANNOLI_BASE_FONT_SIZE * scale_factor * 0.75f;
-   cannoli->font_size_title = CANNOLI_BASE_FONT_SIZE * scale_factor * 1.4f;
+   cannoli->font_size_title = CANNOLI_BASE_FONT_SIZE * scale_factor * 1.1f;
    /* Tiny font sized to match dot indicators (dot_radius * 2 is diameter) */
    cannoli->font_size_tiny = 4 * scale_factor * 2.5f;
 
@@ -1058,6 +1207,11 @@ static void cannoli_context_reset(void *data, bool is_threaded)
    cannoli->preview_slot = 0;
    cannoli->show_slot_selector = false;
    cannoli->last_selection = 0;
+
+   /* Initialize ticker for text scrolling */
+   cannoli->ticker_idx = 0;
+   cannoli->item_ticker_start = 0;
+   cannoli->item_ticker_selection = (size_t)-1;
 
    gfx_display_init_white_texture();
 }
