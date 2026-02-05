@@ -142,14 +142,19 @@ static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
 /* Combined settings submenu items for quick menu (alphabetized)
  * NOTE: Disc Control is handled dynamically - see cannoli_populate_settings_submenu() */
 static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
-   { "Achievements",     MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS },
+   { "Achievements",     MENU_ENUM_LABEL_ACHIEVEMENT_LIST },
    { "Audio",            MENU_ENUM_LABEL_AUDIO_SETTINGS },
    { "Cheats",           MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
    { "Controls",         MENU_ENUM_LABEL_CORE_INPUT_REMAPPING_OPTIONS },
    { "Core Options",     MENU_ENUM_LABEL_CORE_OPTIONS },
    { "Disc Control",     MENU_ENUM_LABEL_DISK_OPTIONS },  /* Conditionally shown */
+   { "Information",      MENU_ENUM_LABEL_INFORMATION },
    { "Input",            MENU_ENUM_LABEL_INPUT_SETTINGS },
+   { "Latency",          MENU_ENUM_LABEL_LATENCY_SETTINGS },
+   { "Onscreen Overlay", MENU_ENUM_LABEL_ONSCREEN_OVERLAY_SETTINGS },
    { "Overrides",        MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS },
+   { "Recording",        MENU_ENUM_LABEL_RECORDING_SETTINGS },
+   { "Rewind",           MENU_ENUM_LABEL_REWIND_SETTINGS },
    { "Saving",           MENU_ENUM_LABEL_SAVING_SETTINGS },
    { "Screenshot",       MENU_ENUM_LABEL_TAKE_SCREENSHOT },
    { "Shaders",          MENU_ENUM_LABEL_SHADER_OPTIONS },
@@ -1224,7 +1229,19 @@ static void cannoli_populate_settings_submenu(void)
 
       /* Skip Achievements if not compiled in */
 #ifndef HAVE_CHEEVOS
-      if (item->action == MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS)
+      if (item->action == MENU_ENUM_LABEL_ACHIEVEMENT_LIST)
+         continue;
+#endif
+
+      /* Skip Cheats if not compiled in */
+#ifndef HAVE_CHEATS
+      if (item->action == MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS)
+         continue;
+#endif
+
+      /* Skip Rewind if not compiled in */
+#ifndef HAVE_REWIND
+      if (item->action == MENU_ENUM_LABEL_REWIND_SETTINGS)
          continue;
 #endif
 
