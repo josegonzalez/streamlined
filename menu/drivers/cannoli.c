@@ -167,22 +167,31 @@ static const cannoli_quick_item_t cannoli_main_settings_items[] = {
    { "Accessibility",    MENU_ENUM_LABEL_ACCESSIBILITY_SETTINGS },
    { "Achievements",     MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS },
    { "Audio",            MENU_ENUM_LABEL_AUDIO_SETTINGS },
+   { "Cheats",           MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
    { "Configuration",    MENU_ENUM_LABEL_CONFIGURATION_SETTINGS },
+   { "Controls",         MENU_ENUM_LABEL_CORE_INPUT_REMAPPING_OPTIONS },
    { "Core",             MENU_ENUM_LABEL_CORE_SETTINGS },
+   { "Core Options",     MENU_ENUM_LABEL_CORE_OPTIONS },
    { "Directory",        MENU_ENUM_LABEL_DIRECTORY_SETTINGS },
    { "Drivers",          MENU_ENUM_LABEL_DRIVER_SETTINGS },
    { "Frame Throttle",   MENU_ENUM_LABEL_FRAME_THROTTLE_SETTINGS },
-   { "Help",             MENU_ENUM_LABEL_HELP_LIST },
    { "Information",      MENU_ENUM_LABEL_INFORMATION_LIST },
    { "Input",            MENU_ENUM_LABEL_INPUT_SETTINGS },
    { "Latency",          MENU_ENUM_LABEL_LATENCY_SETTINGS },
    { "Logging",          MENU_ENUM_LABEL_LOGGING_SETTINGS },
    { "Network",          MENU_ENUM_LABEL_NETWORK_SETTINGS },
+   { "On-Screen Overlay", MENU_ENUM_LABEL_ONSCREEN_OVERLAY_SETTINGS },
    { "Online Updater",   MENU_ENUM_LABEL_ONLINE_UPDATER },
+   { "Overrides",        MENU_ENUM_LABEL_QUICK_MENU_OVERRIDE_OPTIONS },
    { "Playlists",        MENU_ENUM_LABEL_PLAYLIST_SETTINGS },
    { "Power Management", MENU_ENUM_LABEL_POWER_MANAGEMENT_SETTINGS },
    { "Recording",        MENU_ENUM_LABEL_RECORDING_SETTINGS },
+   { "Rewind",           MENU_ENUM_LABEL_REWIND_SETTINGS },
    { "Saving",           MENU_ENUM_LABEL_SAVING_SETTINGS },
+   { "Shaders",          MENU_ENUM_LABEL_SHADER_OPTIONS },
+   { "Start Recording",  MENU_ENUM_LABEL_QUICK_MENU_START_RECORDING },
+   { "Start Streaming",  MENU_ENUM_LABEL_QUICK_MENU_START_STREAMING },
+   { "Take Screenshot",  MENU_ENUM_LABEL_TAKE_SCREENSHOT },
    { "User",             MENU_ENUM_LABEL_USER_SETTINGS },
    { "User Interface",   MENU_ENUM_LABEL_USER_INTERFACE_SETTINGS },
    { "Video",            MENU_ENUM_LABEL_VIDEO_SETTINGS },
@@ -919,7 +928,12 @@ static void cannoli_render_menu(cannoli_t *cannoli,
        * For main settings submenu, use path (our custom label) */
       if (cannoli->is_quick_menu || cannoli->in_settings_submenu || cannoli->selecting_core
             || cannoli->in_main_settings_submenu)
+      {
          entry_label = entry.path;
+         /* Core Options has empty path - use rich_label instead */
+         if (string_is_empty(entry_label) && !string_is_empty(entry.rich_label))
+            entry_label = entry.rich_label;
+      }
       else if (cannoli->is_custom_main_menu && !string_is_empty(entry.label))
          entry_label = entry.label;
       else if (!string_is_empty(entry.rich_label))
@@ -1245,6 +1259,18 @@ static void cannoli_populate_settings_submenu(void)
          continue;
 #endif
 
+      /* Core Options needs empty path and special type to work properly */
+      if (item->action == MENU_ENUM_LABEL_CORE_OPTIONS)
+      {
+         menu_entries_append(list,
+               "",  /* Empty path required for core options */
+               msg_hash_to_str(MENU_ENUM_LABEL_CORE_OPTIONS),
+               MENU_ENUM_LABEL_CORE_OPTIONS,
+               MENU_SETTING_ACTION_CORE_OPTIONS,
+               0, 0, NULL);
+         continue;
+      }
+
       action_label = msg_hash_to_str(item->action);
 
       menu_entries_append(list,
@@ -1299,6 +1325,33 @@ static void cannoli_populate_main_settings_submenu(void)
       if (item->action == MENU_ENUM_LABEL_NETWORK_SETTINGS)
          continue;
 #endif
+
+      /* Skip Cheats if not compiled in */
+#ifndef HAVE_CHEATS
+      if (item->action == MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS)
+         continue;
+#endif
+
+      /* Skip Rewind if not compiled in */
+#ifndef HAVE_REWIND
+      if (item->action == MENU_ENUM_LABEL_REWIND_SETTINGS)
+         continue;
+#endif
+
+      /* Skip Core Options if no core is loaded */
+      if (item->action == MENU_ENUM_LABEL_CORE_OPTIONS)
+      {
+         if (retroarch_ctl(RARCH_CTL_IS_DUMMY_CORE, NULL))
+            continue;
+         /* Core Options needs empty path and special type to work properly */
+         menu_entries_append(list,
+               "",  /* Empty path required for core options */
+               msg_hash_to_str(MENU_ENUM_LABEL_CORE_OPTIONS),
+               MENU_ENUM_LABEL_CORE_OPTIONS,
+               MENU_SETTING_ACTION_CORE_OPTIONS,
+               0, 0, NULL);
+         continue;
+      }
 
       action_label = msg_hash_to_str(item->action);
 
@@ -1665,13 +1718,20 @@ static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directo
             0, 0, NULL);
    }
 
-   /* Add Settings option at the bottom (only at top level) */
+   /* Add Settings and Quit options at the bottom (only at top level) */
    if (!show_folder_slash)
    {
       menu_entries_append(list,
             "Settings",
             "cannoli_main_settings",
             MENU_ENUM_LABEL_SETTINGS,
+            MENU_SETTING_ACTION,
+            0, 0, NULL);
+
+      menu_entries_append(list,
+            "Quit",
+            msg_hash_to_str(MENU_ENUM_LABEL_QUIT_RETROARCH),
+            MENU_ENUM_LABEL_QUIT_RETROARCH,
             MENU_SETTING_ACTION,
             0, 0, NULL);
    }
