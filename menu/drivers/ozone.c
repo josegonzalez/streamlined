@@ -1020,8 +1020,8 @@ static float ozone_border_1_hacking_the_kernel[16] = COLOR_HEX_TO_FLOAT(0x00E000
 static float ozone_border_0_twilight_zone[16]      = COLOR_HEX_TO_FLOAT(0xC3A0E0, 1.0f);
 static float ozone_border_1_twilight_zone[16]      = COLOR_HEX_TO_FLOAT(0x9B61CC, 1.0f);
 
-static float ozone_border_0_dracula[16]            = COLOR_HEX_TO_FLOAT(0xC3A0E0, 1.0f);
-static float ozone_border_1_dracula[16]            = COLOR_HEX_TO_FLOAT(0x9B61CC, 1.0f);
+static float ozone_border_0_dracula[16]            = COLOR_HEX_TO_FLOAT(0xBD93F9, 1.0f);
+static float ozone_border_1_dracula[16]            = COLOR_HEX_TO_FLOAT(0xFF79C6, 1.0f);
 
 static float ozone_border_0_selenium[16]           = COLOR_HEX_TO_FLOAT(0x91a666, 1.0f);
 static float ozone_border_1_selenium[16]           = COLOR_HEX_TO_FLOAT(0x566646, 1.0f);
@@ -1328,7 +1328,6 @@ static ozone_theme_t ozone_theme_dracula = {
 
    "dracula"                                             /* name */
 };
-
 
 static ozone_theme_t ozone_theme_solarized_dark = {
    /* Background color */
@@ -2176,6 +2175,7 @@ static uintptr_t ozone_entries_icon_get_texture(
       case MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_CONTENT_DIR:
       case MENU_ENUM_LABEL_REMOVE_CURRENT_CONFIG_OVERRIDE_GAME:
             return ozone->icons_textures[OZONE_ENTRIES_ICONS_TEXTURE_CLOSE];
+      case MENU_ENUM_LABEL_RESET_TO_DEFAULT_CONFIG:
       case MENU_ENUM_LABEL_CORE_OPTIONS_RESET:
       case MENU_ENUM_LABEL_REMAP_FILE_RESET:
       case MENU_ENUM_LABEL_OVERRIDE_UNLOAD:
@@ -2273,7 +2273,6 @@ static uintptr_t ozone_entries_icon_get_texture(
 #endif
 #endif
       case MENU_ENUM_LABEL_REBOOT:
-      case MENU_ENUM_LABEL_RESET_TO_DEFAULT_CONFIG:
       case MENU_ENUM_LABEL_CHEAT_COPY_AFTER:
       case MENU_ENUM_LABEL_CHEAT_COPY_BEFORE:
       case MENU_ENUM_LABEL_CHEAT_RELOAD_CHEATS:
@@ -8077,11 +8076,9 @@ static bool ozone_scan_available(ozone_handle_t *ozone, size_t current_selection
    switch (last_entry.enum_idx)
    {
       case MENU_ENUM_LABEL_VIDEO_SHADER_PARAMETERS:
-      case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_MANAGER:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_PREPEND:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_APPEND:
-      case MENU_ENUM_LABEL_SHADER_APPLY_CHANGES:
       case MENU_ENUM_LABEL_SHADER_PARAMETERS_ENTRY:
          return true;
       default:
@@ -8121,7 +8118,6 @@ static bool ozone_manage_available(ozone_handle_t *ozone, size_t current_selecti
       case MENU_ENUM_LABEL_GOTO_MUSIC:
       case MENU_ENUM_LABEL_GOTO_VIDEO:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PARAMETERS:
-      case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_MANAGER:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_PREPEND:
       case MENU_ENUM_LABEL_VIDEO_SHADER_PRESET_APPEND:
@@ -8710,7 +8706,7 @@ static enum menu_action ozone_parse_menu_entry_action(
                && (ozone->show_thumbnail_bar))
          {
             /* Allow launch if already using "imageviewer" core */
-            if (string_is_equal(runloop_state_get_ptr()->system.info.library_name, "image display"))
+            if (string_is_equal(runloop_state_get_ptr()->system.info.library_name, "Image Viewer"))
                break;
 
             if (ozone->flags2 & OZONE_FLAG2_SHOW_FULLSCREEN_THUMBNAILS)
