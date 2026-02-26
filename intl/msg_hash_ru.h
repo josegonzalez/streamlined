@@ -686,7 +686,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CPU_CORES,
-   "Ядер CPU"
+   "Число ядер CPU"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_JIT_AVAILABLE,
@@ -1540,11 +1540,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_SETTINGS,
-   "ИИ-сервис"
+   "AI-сервисы"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_SETTINGS,
-   "Настройки ИИ-сервиса (перевод, синтез речи и др.)."
+   "Настройки AI-сервисов (перевод, синтез речи и т.д.)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ACCESSIBILITY_SETTINGS,
@@ -2166,15 +2166,15 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_FILTER,
-   "Применить программный графический фильтр. Возможно сильное снижение производительности. Некоторые фильтры совместимы только с ядрами, которы используют 32- или 16-битную глубину цвета."
+   "Применить программный графический фильтр. Некоторые фильтры совместимы только с ядрами, использующими 32- или 16-битный цвет. Возможно сильное снижение производительности."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_VIDEO_FILTER,
-   "Применить программный графический фильтр. Возможно сильное снижение производительности. Некоторые фильтры совместимы только с ядрами, которы используют 32- или 16-битную глубину цвета. Доступен выбор графических фильтров из динамически связанных библиотек."
+   "Применить программный графический фильтр. Некоторые фильтры совместимы только с ядрами, использующими 32- или 16-битный цвет. Возможно сильное снижение производительности. Доступен выбор графических фильтров из динамически связанных библиотек."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_VIDEO_FILTER_BUILTIN,
-   "Применить программный графический фильтр. Возможно сильное снижение производительности. Некоторые фильтры совместимы только с ядрами, которы используют 32- или 16-битную глубину цвета. Доступен выбор графических фильтров из встроенных библиотек."
+   "Применить программный графический фильтр. Некоторые фильтры совместимы только с ядрами, использующими 32- или 16-битный цвет. Возможно сильное снижение производительности. Доступен выбор графических фильтров из встроенных библиотек."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FILTER_REMOVE,
@@ -2186,7 +2186,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_NOTCH_WRITE_OVER,
-   "Добавлять вырез в полноэкранном режиме для Android и iOS"
+   "Включать вырез камеры на Android/iOS"
 )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_USE_METAL_ARG_BUFFERS,
@@ -2732,7 +2732,23 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_HDR_EXPAND_GAMUT,
-   "Использует полный цветовой диапазон дисплея для получения более светлого и насыщенного изображения. Отключите для цветопередачи, приближённой к оригинальной игре."
+   "Использует полный цветовой диапазон дисплея для получения более светлого и насыщенного изображения. Выберите 'Точное' для цветопередачи, приближенной к оригинальному изображению игры."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_ACCURATE,
+   "Точное"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_EXPANDED,
+   "Расширенное"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_WIDE,
+   "Широкое"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_VIDEO_HDR_EXPAND_GAMUT_SUPER,
+   "Супер"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_HDR_SCANLINES,
@@ -2756,19 +2772,19 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_VSYNC,
-   "Вертикальная синхронизация"
+   "Вертикальная синхронизация (VSync)"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_VSYNC,
-   "Синхронизировать изображение на выходе видеоадаптера с частотой обновления экрана. Рекомендуется."
+   "Синхронизирует частоту кадров на выходе графического процессора с частотой обновления экрана. Рекомендуется включить для плавного изображения."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL,
-   "Интервал обновления верт. синхронизации"
+   "Интервал обновления VSync"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_SWAP_INTERVAL,
-   "Подстройка интервала подкачки верт. синхронизации. Понижает частоту экрана на заданный коэффициент. В автом. режиме значение выбирается исходя из частоты обновления ядра, улучшая распределение кадров контента в 30 к/с на дисплеях 60 Гц или контента в 60 к/с на 120 Гц."
+   "Подстройка интервала подкачки для вертикальной синхронизации. Понижает частоту экрана на заданный коэффициент. В автоматическом режиме значение выбирается исходя из частоты обновления ядра, улучшая смену кадров контента с 30 к/с на дисплеях 60 Гц или контента с 60 к/с на 120 Г[...]"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_SWAP_INTERVAL_AUTO,
@@ -2776,11 +2792,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_ADAPTIVE_VSYNC,
-   "Адаптивная верт. синхронизация"
+   "Адаптивная VSync"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_ADAPTIVE_VSYNC,
-   "Вертикальная синхронизация будет оставаться включенной до снижения производительности ниже целевой частоты обновления. Повышает энергоэффективность и помогает минимизировать замедления при падении скорости. Несовместимо с 'Задержкой кадра'."
+   "VSync используется до снижения производительности ниже целевой частоты обновления. Повышает энергоэффективность и помогает минимизировать замедления при падении скорости. Несовместимо с 'Задержкой кадра'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_DELAY,
@@ -2792,7 +2808,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_VIDEO_FRAME_DELAY,
-   "Устанавливает количество миллисекунд бездействия перед запуском ядра после вывода изображения. Уменьшает запаздывание, но может ухудшать плавность. Значение выше или равное 20 обрабатывается как процент от времени кадра."
+   "Устанавливает период бездействия (в мс) перед запуском ядра после вывода изображения. Уменьшает запаздывание, но повышает риск снижения плавности. Значение больше или равное 20 мс обрабатывается как процент от времени кадра."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIDEO_FRAME_DELAY_AUTO,
@@ -2800,7 +2816,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VIDEO_FRAME_DELAY_AUTO,
-   "Динамическая подстройка действующей 'Задержки кадра'."
+   "Динамическая подстройка действующей 'Задержки кадра' для снижения задержки ввода."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_VIDEO_FRAME_DELAY_AUTO,
@@ -2836,7 +2852,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VRR_RUNLOOP_ENABLE,
-   "Синхронизация с точной частотой контента (G-Sync, Freesync)"
+   "Синхронизация с точной частотой контента"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_VRR_RUNLOOP_ENABLE,
@@ -2933,7 +2949,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_MUTE,
-   "Автоматически заглушать аудио при перемотке вперёд."
+   "Автоматически заглушать звук при ускоренной перемотке."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_FASTFORWARD_SPEEDUP,
@@ -2941,7 +2957,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_FASTFORWARD_SPEEDUP,
-   "Ускорять звук при включении ускоренной перемотки. Предотвращает треск, но влияет на высоту звука."
+   "Ускорять звук во время ускоренной перемотки. Предотвращает треск, но изменяет тональность."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_REWIND_MUTE,
@@ -2949,19 +2965,19 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_REWIND_MUTE,
-   "Автоматически заглушать аудио при обратной перемотке."
+   "Автоматически заглушать звук при обратной перемотке."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_VOLUME,
-   "Уровень громкости (дБ)"
+   "Уровень громкости"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_VOLUME,
-   "Громкость звука (в дБ). Значение 0 дБ соответствует стандартному уровню громкости без усиления."
+   "Громкость звука (в дБ). Значение 0 соответствует стандартному уровню громкости без усиления."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_HELP_AUDIO_VOLUME,
-   "Громкость звука (в дБ). Значение 0 соответствует стандартной громкости без усиления. Уровень усиления можно изменять во время игры клавишами Увеличить / Уменьшить громкость."
+   "Громкость звука (в дБ). Значение 0 соответствует стандартной громкости без усиления. Степень усиления можно изменять во время игры клавишами Увеличить / Уменьшить громкость."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AUDIO_MIXER_VOLUME,
@@ -3056,7 +3072,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AUDIO_LATENCY,
-   "Максимальная задержка звука (в миллисекундах). Драйвер будет пытаться сохранять задержку в пределах 50% от заданного значения. Может не учитываться, если значение не поддерживается звуковым драйвером."
+   "Максимальная задержка звука (в мс). Драйвер будет пытаться сохранять задержку в пределах 50% от заданного значения. Может не учитываться, если значение не поддерживается звуковым драйвером."
    )
 
 #ifdef HAVE_MICROPHONE
@@ -3103,7 +3119,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MICROPHONE_LATENCY,
-   "Целевая задержка ввода звука (в миллисекундах). Может не учитываться, если заданное значение не поддерживается драйвером микрофона."
+   "Целевая задержка ввода звука (в мс). Может не учитываться, если заданное значение не поддерживается драйвером микрофона."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MICROPHONE_WASAPI_EXCLUSIVE_MODE,
@@ -3699,7 +3715,7 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_VIBRATE_ON_KEYPRESS,
-   "Вибрация при нажатии кнопок"
+   "Отклик для экранных кнопок"
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_ENABLE_DEVICE_VIBRATION,
@@ -3778,7 +3794,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_SCROLL_DELAY,
-   "Начальная задержка в миллисекундах при удержании направления прокрутки."
+   "Начальная задержка (в мс) при удержании направления прокрутки."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_DISABLE_INFO_BUTTON,
@@ -3962,7 +3978,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_MUTE,
-   "Включает/отключает вывод звука."
+   "Включает/выключает вывод звука."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_VOLUME_UP,
@@ -4053,7 +4069,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_SHADER_HOLD,
-   "Включает/отключает текущий выбранный шейдер пока нажата кнопка."
+   "Включает/выключает текущий выбранный шейдер при удержании кнопки."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_SHADER_NEXT,
@@ -4078,7 +4094,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_CHEAT_TOGGLE,
-   "Включает/отключает выбранный чит-код."
+   "Включает/выключает выбранный чит-код."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_CHEAT_INDEX_PLUS,
@@ -4171,7 +4187,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_REPLAY_SLOT_PLUS,
-   "След. слот повтора"
+   "Следующий слот повтора"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_PLUS,
@@ -4179,7 +4195,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_REPLAY_SLOT_MINUS,
-   "Пред. слот повтора"
+   "Предыдущий слот повтора"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_REPLAY_SLOT_MINUS,
@@ -4199,7 +4215,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_GRAB_MOUSE_TOGGLE,
-   "Захватывает или отвязывает мышку. При захвате, системный курсор скрыт и ограничен окном RetroArch, улучшая относительный ввод при помощи мышки."
+   "Захватывает или отвязывает мышь. При захвате системный курсор будет скрыт и ограничен окном RetroArch, улучшая относительный ввод с помощью мыши."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_GAME_FOCUS_TOGGLE,
@@ -4257,7 +4273,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_FPS_TOGGLE,
-   "Включает/отключает индикатор частоты кадров в секунду."
+   "Включает/выключает индикатор частоты кадров в секунду."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_STATISTICS_TOGGLE,
@@ -4273,7 +4289,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_OSK,
-   "Включает/отключает оверлей клавиатуры."
+   "Включает/выключает оверлей клавиатуры."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_OVERLAY_NEXT,
@@ -4285,11 +4301,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_AI_SERVICE,
-   "ИИ-сервис"
+   "AI-сервис"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_AI_SERVICE,
-   "Захватывает изображение запущенного контента для перевода и/или озвучивает текст на экране. ИИ-сервис должен быть включен и настроен."
+   "Захватывает изображение текущего контента для перевода и/или озвучивает текст на экране. Требуется настройка и включение AI-сервиса."
    )
 
 MSG_HASH(
@@ -4298,7 +4314,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_NETPLAY_PING_TOGGLE,
-   "Включает/отключает данные пинга для текущей сетевой игры."
+   "Включает/выключает сведения о пинге для текущей сетевой игры."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_NETPLAY_HOST_TOGGLE,
@@ -4306,7 +4322,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_META_NETPLAY_HOST_TOGGLE,
-   "Включает/отключает хост сетевой игры."
+   "Включает/выключает хост сетевой игры."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_META_NETPLAY_GAME_WATCH,
@@ -5813,7 +5829,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_OVERLAY_MOUSE_HOLD_TO_DRAG,
-   "Сделайте долгое нажатие по экрану для удерживания кнопки."
+   "Сделайте долгое касание по экрану для удержания кнопки."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_HOLD_MSEC,
@@ -5821,7 +5837,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_OVERLAY_MOUSE_HOLD_MSEC,
-   "Время удерживания, необходимое для долгого нажатия."
+   "Период времени для активации долгого нажатия."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG,
@@ -5829,7 +5845,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_OVERLAY_MOUSE_DTAP_TO_DRAG,
-   "Дважды коснитесь экрана для удерживания кнопки после второго нажатия. Добавляет задержку к кликам мыши."
+   "Дважды коснитесь экрана для удержания кнопки после второго касания. Добавляет задержку к кликам мыши."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_OVERLAY_MOUSE_DTAP_MSEC,
@@ -6609,7 +6625,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_MUSIC,
-   "Показывать меню 'Музыка'."
+   "Показывать плейлист 'Музыка'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_VIDEO,
@@ -6617,7 +6633,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CONTENT_SHOW_VIDEO,
-   "Показывать меню 'Видео'."
+   "Показывать плейлист 'Видео'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CONTENT_SHOW_NETPLAY,
@@ -7095,11 +7111,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_AI_SERVICE,
-   "Показывать 'ИИ-сервис'"
+   "Показывать 'AI-сервисы'"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_SETTINGS_SHOW_AI_SERVICE,
-   "Показывать настройки 'ИИ-сервиса'."
+   "Показывать настройки 'AI-сервисов'."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_SETTINGS_SHOW_ACCESSIBILITY,
@@ -7290,15 +7306,23 @@ MSG_HASH(
 
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_MODE,
-   "Режим вывода ИИ-сервиса"
+   "Вывод AI-сервиса"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_MODE,
-   "Выводить перевод текстовым оверлеем (Режим изображения), преобразовывать текст в речь (Режим озвучивания) или использовать экранный диктор по типу NVDA (Режим диктора)."
+   "Показывать перевод наложением текста (Режим изображения), преобразовывать текст в речь (Режим озвучивания) или использовать экранный диктор по типу NVDA (Режим диктора)."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_AI_SERVICE_BACKEND,
+   "Бэкенд AI-сервиса"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_AI_SERVICE_BACKEND,
+   "Выберите бэкенд для перевода. HTTP использует удалённый сервер на заданном сетевом адресе. Apple использует распознавание и перевод на устройстве (macOS/iOS)."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_URL,
-   "Ссылка на ИИ-сервис"
+   "Адрес AI-сервиса"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_URL,
@@ -7306,11 +7330,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_ENABLE,
-   "Вкл. ИИ-сервис"
+   "Вкл. AI-сервис"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_ENABLE,
-   "Включает запуск ИИ-сервиса при нажатии горячей клавиши."
+   "Включает запуск AI-сервиса по нажатию горячей клавиши."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_PAUSE,
@@ -7318,7 +7342,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_PAUSE,
-   "Приостанавливать ядро во время перевода экрана."
+   "Приостанавливать ядро при переводе содержимого экрана."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_SOURCE_LANG,
@@ -7326,7 +7350,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_SOURCE_LANG,
-   "Язык, с которого будет осуществляться перевод. Если выбрано 'По умолчанию', сервис будет пытаться определить язык автоматически. Установка определённого языка повышает точность перевода."
+   "Язык, с которого будет осуществляться перевод. При выборе 'По умолчанию' сервис будет пытаться определять язык автоматически. Установка конкретного языка повышает точность перевода."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_AI_SERVICE_TARGET_LANG,
@@ -7334,7 +7358,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_AI_SERVICE_TARGET_LANG,
-   "Язык, на который будет осуществляться перевод. По умолчанию используется английский."
+   "Язык, на который будет осуществляться перевод. По умолчанию выбран английский."
    )
 
 /* Settings > Accessibility */
@@ -15361,7 +15385,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MSG_CHEEVOS_HARDCORE_PAUSED_VSYNC_SWAP_INTERVAL,
-   "Режим хардкора приостановлен. Значение интервала подкачки верт. синхронизации больше 1 запрещено."
+   "Режим хардкора приостановлен. Запрещён интервал подкачки VSync больше 1."
    )
 MSG_HASH(
    MSG_CHEEVOS_HARDCORE_PAUSED_BLACK_FRAME_INSERTION,
@@ -16134,7 +16158,7 @@ MSG_HASH(
 #ifdef GEKKO
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_MOUSE_SCALE,
-   "Шаг мышки"
+   "Шаг мыши"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_MOUSE_SCALE,
@@ -16160,11 +16184,11 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_MOUSE,
-   "Touch VMOUSE в режиме мышки"
+   "Вирт. мышь в качестве мышки"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_MOUSE,
-   "Включает эмуляцию вирт. мышки с помощью событий касания при вводе с сенсорного экрана."
+   "Включает эмуляцию виртуальной мыши, используя ввод с сенсорного экрана."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TOUCHPAD,
@@ -16172,7 +16196,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TOUCHPAD,
-   "Включите совместно с режимом мышки, чтобы использовать сенсорный экран в качестве тачпада."
+   "Включите совместно с режимом мыши, чтобы использовать сенсорный экран в качестве тачпада."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_TRACKBALL,
@@ -16180,7 +16204,7 @@ MSG_HASH(
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_INPUT_TOUCH_VMOUSE_TRACKBALL,
-   "Включите совместно с режимом мышки, чтобы использовать сенсорный экран в качестве трекбола с инерцией указателя."
+   "Включите совместно с режимом мыши, чтобы использовать сенсорный экран в качестве трекбола с инерцией указателя."
    )
 MSG_HASH(
    MENU_ENUM_LABEL_VALUE_INPUT_TOUCH_VMOUSE_GESTURE,

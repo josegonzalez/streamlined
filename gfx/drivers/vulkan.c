@@ -88,7 +88,7 @@ typedef struct VKALIGN(16)
    float             max_nits;         /* 1000.0f */
    unsigned          not_used3;        /* 0       */
    float             not_used4;        /* 1.0f    */
-   float             expand_gamut;     /* 1.0f    */
+   unsigned          expand_gamut;     /* 0       */
    float             inverse_tonemap;  /* 1.0f    */
    float             hdr10;            /* 1.0f    */
 } vulkan_hdr_uniform_t;
@@ -2663,53 +2663,55 @@ static void vulkan_init_pipelines(vk_t *vk)
    vkDestroyShaderModule(vk->context->device, shader_stages[1].module, NULL);
 
 #ifdef VULKAN_HDR_SWAPCHAIN
-if (vk->context->flags & VK_CTX_FLAG_HDR_SUPPORT)
-{
-   /* HDR pipeline. */
-   blend_attachment.blendEnable = VK_TRUE;
-
-
-   /* HDR pipeline. */
-   module_info.codeSize         = sizeof(hdr_frag);
-   module_info.pCode            = hdr_frag;
-   shader_stages[1].stage       = VK_SHADER_STAGE_FRAGMENT_BIT;
-   shader_stages[1].pName       = "main";
-   vkCreateShaderModule(vk->context->device,
-         &module_info, NULL, &shader_stages[1].module);
-
-   pipe.renderPass             = vk->render_pass;
-   vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
-         1, &pipe, NULL, &vk->pipelines.hdr);
-
-   /* Build display hdr pipelines. */
-   for (i = 4; i < 6; i++)
+   if (vk->context->flags & VK_CTX_FLAG_HDR_SUPPORT)
    {
-      input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+      /* HDR pipeline. */
+      blend_attachment.blendEnable = VK_TRUE;
+
+      blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+      blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+
+      /* HDR pipeline. */
+      module_info.codeSize         = sizeof(hdr_frag);
+      module_info.pCode            = hdr_frag;
+      shader_stages[1].stage       = VK_SHADER_STAGE_FRAGMENT_BIT;
+      shader_stages[1].pName       = "main";
+      vkCreateShaderModule(vk->context->device,
+            &module_info, NULL, &shader_stages[1].module);
+
+      pipe.renderPass             = vk->render_pass;
       vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
-            1, &pipe, NULL, &vk->display.pipelines[i]);
+            1, &pipe, NULL, &vk->pipelines.hdr);
+
+      /* Build display hdr pipelines. */
+      for (i = 4; i < 6; i++)
+      {
+         input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+         vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
+               1, &pipe, NULL, &vk->display.pipelines[i]);
+      }
+
+      vkDestroyShaderModule(vk->context->device, shader_stages[1].module, NULL);
+
+      /* HDR->SDR tonemapping readback pipeline. */
+      blend_attachment.blendEnable = VK_FALSE;
+
+      module_info.codeSize         = sizeof(hdr_tonemap_frag);
+      module_info.pCode            = hdr_tonemap_frag;
+      shader_stages[1].stage       = VK_SHADER_STAGE_FRAGMENT_BIT;
+      shader_stages[1].pName       = "main";
+      vkCreateShaderModule(vk->context->device,
+            &module_info, NULL, &shader_stages[1].module);
+
+      pipe.renderPass = vk->readback_render_pass;
+      vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
+            1, &pipe, NULL, &vk->pipelines.hdr_to_sdr);
+
+      vkDestroyShaderModule(vk->context->device, shader_stages[1].module, NULL);
+
+      pipe.renderPass = vk->sdr_render_pass;
+      blend_attachment.blendEnable = VK_TRUE;
    }
-
-   vkDestroyShaderModule(vk->context->device, shader_stages[1].module, NULL);
-
-   /* HDR->SDR tonemapping readback pipeline. */
-   blend_attachment.blendEnable = VK_FALSE;
-
-   module_info.codeSize         = sizeof(hdr_tonemap_frag);
-   module_info.pCode            = hdr_tonemap_frag;
-   shader_stages[1].stage       = VK_SHADER_STAGE_FRAGMENT_BIT;
-   shader_stages[1].pName       = "main";
-   vkCreateShaderModule(vk->context->device,
-         &module_info, NULL, &shader_stages[1].module);
-
-   pipe.renderPass = vk->readback_render_pass;
-   vkCreateGraphicsPipelines(vk->context->device, vk->pipelines.cache,
-         1, &pipe, NULL, &vk->pipelines.hdr_to_sdr);
-
-   vkDestroyShaderModule(vk->context->device, shader_stages[1].module, NULL);
-
-   pipe.renderPass = vk->render_pass;
-   blend_attachment.blendEnable = VK_TRUE;
-}
 #endif /* VULKAN_HDR_SWAPCHAIN */
 
    vkDestroyShaderModule(vk->context->device, shader_stages[0].module, NULL);
@@ -3072,11 +3074,11 @@ static void vulkan_set_hdr_paper_white_nits(void* data, float paper_white_nits)
    }
 }
 
-static void vulkan_set_hdr_expand_gamut(void* data, bool expand_gamut)
+static void vulkan_set_hdr_expand_gamut(void* data, unsigned expand_gamut)
 {
    vk_t *vk                            = (vk_t*)data;
 
-   vk->hdr.ubo_values.expand_gamut     = expand_gamut ? 1.0f : 0.0f;
+   vk->hdr.ubo_values.expand_gamut     = expand_gamut;
 
    if(vk->filter_chain)
    {
@@ -3193,7 +3195,7 @@ static bool vulkan_init_default_filter_chain(vk_t *vk)
 
       vulkan_filter_chain_set_max_nits(vk->filter_chain_default, settings->floats.video_hdr_max_nits);
       vulkan_filter_chain_set_paper_white_nits(vk->filter_chain_default, settings->floats.video_hdr_paper_white_nits);
-      vulkan_filter_chain_set_expand_gamut(vk->filter_chain_default, settings->bools.video_hdr_expand_gamut ? 1.0f : 0.0f);
+      vulkan_filter_chain_set_expand_gamut(vk->filter_chain_default, settings->uints.video_hdr_expand_gamut);
       vulkan_filter_chain_set_scanlines(vk->filter_chain_default, settings->bools.video_hdr_scanlines ? 1.0f : 0.0f);
       vulkan_filter_chain_set_subpixel_layout(vk->filter_chain_default, settings->uints.video_hdr_subpixel_layout);
 
@@ -3287,7 +3289,7 @@ static bool vulkan_init_filter_chain_preset(vk_t *vk, const char *shader_path)
 
       vulkan_filter_chain_set_max_nits(vk->filter_chain, settings->floats.video_hdr_max_nits);
       vulkan_filter_chain_set_paper_white_nits(vk->filter_chain, settings->floats.video_hdr_paper_white_nits);
-      vulkan_filter_chain_set_expand_gamut(vk->filter_chain, settings->bools.video_hdr_expand_gamut ? 1.0f : 0.0f);
+      vulkan_filter_chain_set_expand_gamut(vk->filter_chain, settings->uints.video_hdr_expand_gamut);
       vulkan_filter_chain_set_scanlines(vk->filter_chain, settings->bools.video_hdr_scanlines ? 1.0f : 0.0f);
       vulkan_filter_chain_set_subpixel_layout(vk->filter_chain, settings->uints.video_hdr_subpixel_layout);
 
@@ -3830,7 +3832,7 @@ static void *vulkan_init(const video_info_t *video,
    vk->hdr.ubo_values.max_nits            = settings->floats.video_hdr_max_nits;
    vk->hdr.ubo_values.paper_white_nits    = settings->floats.video_hdr_paper_white_nits;
 
-   vk->hdr.ubo_values.expand_gamut        = settings->bools.video_hdr_expand_gamut;
+   vk->hdr.ubo_values.expand_gamut        = settings->uints.video_hdr_expand_gamut;
 
    vk->hdr.ubo_values.inverse_tonemap     = 1.0f;     /* Use this to turn on/off the inverse tonemap */
    vk->hdr.ubo_values.hdr10               = 1.0f;     /* Use this to turn on/off the hdr10 */
@@ -4695,25 +4697,37 @@ static void vulkan_run_hdr_pipeline(VkPipeline pipeline, VkRenderPass render_pas
    {
       struct vk_buffer_range range;
 
-      vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo, 6 * sizeof(struct vk_vertex), &range);
-
+      if (vulkan_buffer_chain_alloc(vk->context, &vk->chain->vbo, 6 * sizeof(struct vk_vertex), &range))
       {
-         struct vk_vertex  *pv = (struct vk_vertex*)range.data;
-         struct vk_color   color;
+         struct vk_vertex *pv = (struct vk_vertex*)range.data;
+         int i;
 
-         color.r = 1.0f;
-         color.g = 1.0f;
-         color.b = 1.0f;
-         color.a = 1.0f;
+         /* Explicitly define the quad vertices to avoid macro issues.
+            Triangle 1: TL, BL, TR
+            Triangle 2: TR, BL, BR */
+            
+         pv[0].x = 0.0f; pv[0].y = 0.0f; pv[0].tex_x = 0.0f; pv[0].tex_y = 0.0f;
+         pv[1].x = 0.0f; pv[1].y = 1.0f; pv[1].tex_x = 0.0f; pv[1].tex_y = 1.0f;
+         pv[2].x = 1.0f; pv[2].y = 0.0f; pv[2].tex_x = 1.0f; pv[2].tex_y = 0.0f;
 
-         VULKAN_WRITE_QUAD_VBO(pv, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, &color);
+         pv[3].x = 1.0f; pv[3].y = 0.0f; pv[3].tex_x = 1.0f; pv[3].tex_y = 0.0f;
+         pv[4].x = 0.0f; pv[4].y = 1.0f; pv[4].tex_x = 0.0f; pv[4].tex_y = 1.0f;
+         pv[5].x = 1.0f; pv[5].y = 1.0f; pv[5].tex_x = 1.0f; pv[5].tex_y = 1.0f;
+
+         for (i = 0; i < 6; i++)
+         {
+            pv[i].color.r = 1.0f;
+            pv[i].color.g = 1.0f;
+            pv[i].color.b = 1.0f;
+            pv[i].color.a = 1.0f;
+         }
+
+         vkCmdBindVertexBuffers(vk->cmd, 0, 1,
+               &range.buffer, &range.offset);
+         
+         vkCmdDraw(vk->cmd, 6, 1, 0, 0);
       }
-
-      vkCmdBindVertexBuffers(vk->cmd, 0, 1,
-            &range.buffer, &range.offset);
    }
-
-   vkCmdDraw(vk->cmd, 6, 1, 0, 0);
 
    vkCmdEndRenderPass(vk->cmd);
 
@@ -5157,7 +5171,7 @@ static bool vulkan_frame(void *data, const void *frame,
          rp_info.framebuffer  = backbuffer->framebuffer;
 
          VULKAN_IMAGE_LAYOUT_TRANSITION(vk->cmd, vk->offscreen_buffer.image,
-                                use_offscreen_buffer ? 
+                                use_offscreen_buffer ?
                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
                                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                 use_offscreen_buffer ?
@@ -5229,7 +5243,7 @@ static bool vulkan_frame(void *data, const void *frame,
 #endif
 
       if (!string_is_empty(msg))
-         font_driver_render_msg(vk, msg, NULL, NULL);
+          font_driver_render_msg(vk, msg, NULL, NULL);
 
 #ifdef HAVE_GFX_WIDGETS
       if (widgets_active)
