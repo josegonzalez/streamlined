@@ -14,7 +14,7 @@
  */
 
 /*
- * Cannoli Menu Driver
+ * Streamlined Menu Driver
  *
  * A minimal menu driver for RetroArch.
  * Uses standard RetroArch menu navigation with custom in-game quick menu.
@@ -86,24 +86,24 @@
  *
  * Layout: [R0,G0,B0,A0, R1,G1,B1,A1, R2,G2,B2,A2, R3,G3,B3,A3]
  */
-#define CANNOLI_SOLID_COLOR(r, g, b, a) \
+#define STREAMLINED_SOLID_COLOR(r, g, b, a) \
    { r, g, b, a, r, g, b, a, r, g, b, a, r, g, b, a }
 
-static float cannoli_color_bg[16]        = CANNOLI_SOLID_COLOR(0.0f, 0.0f, 0.0f, 0.85f);
-static float cannoli_color_selection[16] = CANNOLI_SOLID_COLOR(1.0f, 1.0f, 1.0f, 1.0f);
-static float cannoli_color_accent[16]    = CANNOLI_SOLID_COLOR(0.18f, 0.55f, 0.53f, 1.0f);
-static float cannoli_color_black[16]     = CANNOLI_SOLID_COLOR(0.0f, 0.0f, 0.0f, 1.0f);
-static uint32_t cannoli_color_text        = 0xFFFFFFFF;  /* White (RGBA packed) */
-static uint32_t cannoli_color_text_dark   = 0x000000FF;  /* Black (RGBA packed) */
-static uint32_t cannoli_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packed) */
+static float streamlined_color_bg[16]        = STREAMLINED_SOLID_COLOR(0.0f, 0.0f, 0.0f, 0.85f);
+static float streamlined_color_selection[16] = STREAMLINED_SOLID_COLOR(1.0f, 1.0f, 1.0f, 1.0f);
+static float streamlined_color_accent[16]    = STREAMLINED_SOLID_COLOR(0.18f, 0.55f, 0.53f, 1.0f);
+static float streamlined_color_black[16]     = STREAMLINED_SOLID_COLOR(0.0f, 0.0f, 0.0f, 1.0f);
+static uint32_t streamlined_color_text        = 0xFFFFFFFF;  /* White (RGBA packed) */
+static uint32_t streamlined_color_text_dark   = 0x000000FF;  /* Black (RGBA packed) */
+static uint32_t streamlined_color_text_muted  = 0xAAAAAAFF;  /* Light gray (RGBA packed) */
+static uint32_t streamlined_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packed) */
 
 /* Layout constants - base sizes at 1.0x scale factor */
-#define CANNOLI_BASE_FONT_SIZE     32    /* Base font size in pixels */
-#define CANNOLI_MARGIN_RATIO       0.03f /* Screen edge margin as ratio of dimension */
-#define CANNOLI_LINE_HEIGHT        1.8f  /* Line height multiplier for menu items */
-#define CANNOLI_PILL_PADDING_RATIO 0.375f /* Horizontal padding as ratio of font size */
-#define CANNOLI_BUTTON_CIRCLE_SIZE 32    /* Size of button circles in legend */
-#define CANNOLI_MIN_FONT_SIZE      12    /* Minimum font size to ensure readability */
+#define STREAMLINED_BASE_FONT_SIZE     32    /* Base font size in pixels */
+#define STREAMLINED_MARGIN_RATIO       0.03f /* Screen edge margin as ratio of dimension */
+#define STREAMLINED_LINE_HEIGHT        1.8f  /* Line height multiplier for menu items */
+#define STREAMLINED_PILL_PADDING_RATIO 0.375f /* Horizontal padding as ratio of font size */
+#define STREAMLINED_MIN_FONT_SIZE      12    /* Minimum font size to ensure readability */
 
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
@@ -113,7 +113,7 @@ typedef struct
 {
    const char *label;
    enum msg_hash_enums action;
-} cannoli_quick_item_t;
+} streamlined_quick_item_t;
 
 /*
  * Sentinel value used to identify the "Advanced" menu entry.
@@ -122,26 +122,26 @@ typedef struct
  * The value 0xCAFE is arbitrary, chosen to not conflict with any
  * MENU_ENUM_LABEL_* values.
  */
-#define CANNOLI_SETTINGS_SUBMENU_MARKER 0xCAFE
+#define STREAMLINED_SETTINGS_SUBMENU_MARKER 0xCAFE
 
 /* Marker for conditional exit entry - shows "Exit" or "Quit" based on CLI launch */
-#define CANNOLI_EXIT_MARKER 0xCAFF
+#define STREAMLINED_EXIT_MARKER 0xCAFF
 
 /* Main custom quick menu
- * NOTE: Exit/Quit handled dynamically - see cannoli_populate_quick_menu() */
-static const cannoli_quick_item_t cannoli_quick_menu_items[] = {
+ * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
+static const streamlined_quick_item_t streamlined_quick_menu_items[] = {
    { "Resume",        MENU_ENUM_LABEL_RESUME_CONTENT },
    { "Save",          MENU_ENUM_LABEL_SAVE_STATE },
    { "Load",          MENU_ENUM_LABEL_LOAD_STATE },
-   { "Advanced",      CANNOLI_SETTINGS_SUBMENU_MARKER },  /* Opens combined settings submenu */
+   { "Advanced",      STREAMLINED_SETTINGS_SUBMENU_MARKER },  /* Opens combined settings submenu */
    { "Reset",         MENU_ENUM_LABEL_RESTART_CONTENT },
-   { NULL,            CANNOLI_EXIT_MARKER },  /* Dynamic: "Exit" or "Quit" based on CLI */
+   { NULL,            STREAMLINED_EXIT_MARKER },  /* Dynamic: "Exit" or "Quit" based on CLI */
    { NULL, 0 }
 };
 
 /* Combined settings submenu items for quick menu (alphabetized)
- * NOTE: Disc Control is handled dynamically - see cannoli_populate_settings_submenu() */
-static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
+ * NOTE: Disc Control is handled dynamically - see streamlined_populate_settings_submenu() */
+static const streamlined_quick_item_t streamlined_settings_menu_items[] = {
    { "Achievements",     MENU_ENUM_LABEL_ACHIEVEMENT_LIST },
    { "Audio",            MENU_ENUM_LABEL_AUDIO_SETTINGS },
    { "Cheats",           MENU_ENUM_LABEL_CORE_CHEAT_OPTIONS },
@@ -163,7 +163,7 @@ static const cannoli_quick_item_t cannoli_settings_menu_items[] = {
 };
 
 /* Main menu settings submenu items - all alphabetized */
-static const cannoli_quick_item_t cannoli_main_settings_items[] = {
+static const streamlined_quick_item_t streamlined_main_settings_items[] = {
    { "Accessibility",    MENU_ENUM_LABEL_ACCESSIBILITY_SETTINGS },
    { "Achievements",     MENU_ENUM_LABEL_RETRO_ACHIEVEMENTS_SETTINGS },
    { "Audio",            MENU_ENUM_LABEL_AUDIO_SETTINGS },
@@ -220,7 +220,6 @@ typedef struct
    int margin_x;
    int margin_y;
    int pill_padding;
-   int button_size;
    float scale_factor;
 
    /* State */
@@ -261,27 +260,27 @@ typedef struct
    bool return_to_main_settings_submenu; /* Flag to return to settings submenu after backing out */
    size_t saved_main_menu_selection; /* Remember position in main menu when entering settings */
    size_t saved_settings_selection; /* Remember position in settings submenu */
-} cannoli_t;
+} streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
-#define CANNOLI_NUM_SLOTS 9
-#define CANNOLI_AUTO_SLOT_INDEX 0  /* First dot is the auto slot (state_slot -1) */
+#define STREAMLINED_NUM_SLOTS 9
+#define STREAMLINED_AUTO_SLOT_INDEX 0  /* First dot is the auto slot (state_slot -1) */
 
 /* ======================================================================
  * DRAWING FUNCTIONS
  * ====================================================================== */
 
 /* Forward declarations */
-static const char *cannoli_strip_sort_prefix(const char *name);
+static const char *streamlined_strip_sort_prefix(const char *name);
 
-static void cannoli_draw_text(cannoli_t *cannoli,
+static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
       int x, int y,
       const char *text, uint32_t color, bool small_font);
-static int cannoli_get_text_width(cannoli_t *cannoli, const char *text, bool small_font);
+static int streamlined_get_text_width(streamlined_t *strm, const char *text, bool small_font);
 
-static void cannoli_draw_bg(cannoli_t *cannoli,
+static void streamlined_draw_bg(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
       unsigned video_width, unsigned video_height)
 {
@@ -292,10 +291,10 @@ static void cannoli_draw_bg(cannoli_t *cannoli,
          video_width, video_height,
          0, 0, video_width, video_height,
          video_width, video_height,
-         cannoli_color_bg, NULL);
+         streamlined_color_bg, NULL);
 }
 
-static void cannoli_draw_filled_circle(cannoli_t *cannoli,
+static void streamlined_draw_filled_circle(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
       int cx, int cy, int radius,
       unsigned video_width, unsigned video_height,
@@ -331,7 +330,7 @@ static void cannoli_draw_filled_circle(cannoli_t *cannoli,
  *   │ O               O │  <- semicircles at each end
  *   ╰───────────────────╯
  */
-static void cannoli_draw_rounded_pill(cannoli_t *cannoli,
+static void streamlined_draw_rounded_pill(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
       int x, int y, int width, int height,
       unsigned video_width, unsigned video_height,
@@ -342,12 +341,12 @@ static void cannoli_draw_rounded_pill(cannoli_t *cannoli,
    int rect_width = width - height;
 
    /* Left semicircle */
-   cannoli_draw_filled_circle(cannoli, p_disp, userdata,
+   streamlined_draw_filled_circle(strm, p_disp, userdata,
          x + radius, y + radius, radius,
          video_width, video_height, color);
 
    /* Right semicircle */
-   cannoli_draw_filled_circle(cannoli, p_disp, userdata,
+   streamlined_draw_filled_circle(strm, p_disp, userdata,
          x + width - radius, y + radius, radius,
          video_width, video_height, color);
 
@@ -360,56 +359,45 @@ static void cannoli_draw_rounded_pill(cannoli_t *cannoli,
    }
 }
 
-static void cannoli_draw_button_legend(cannoli_t *cannoli,
-      gfx_display_t *p_disp, void *userdata,
+/*
+ * Draw a button hint: accent-colored button letter + muted label.
+ * Clean text-only approach inspired by Ozone's footer layout.
+ *
+ *   B Back                              A Select
+ *   ^                                   ^
+ *   accent color                        accent color
+ *     ^^^^                                ^^^^^^
+ *     muted gray                          muted gray
+ *
+ * Returns total width of the drawn hint for layout purposes.
+ */
+static int streamlined_draw_button_legend(streamlined_t *strm,
+      gfx_display_t *p_disp,
       int x, int y, const char *button, const char *label,
       unsigned video_width, unsigned video_height)
 {
-   int circle_size = cannoli->button_size;
-   int circle_radius = circle_size / 2;
-   int label_width = cannoli_get_text_width(cannoli, label, true);
-   int pill_padding = (int)(6 * cannoli->scale_factor);
-   int inner_padding = (int)(6 * cannoli->scale_factor);
-   /* Layout: [padding][circle][inner_padding][label][padding + small extra] */
-   int pill_width = pill_padding * 2 + circle_size + inner_padding + label_width
-         + (int)(2 * cannoli->scale_factor);
-   int pill_height = circle_size + pill_padding * 2;
-   int pill_y = y - pill_padding;
-   int text_baseline = pill_y + pill_height / 2 + (int)(cannoli->font_size_small * 0.20f);
+   int gap          = (int)(4 * strm->scale_factor);
+   int btn_width    = streamlined_get_text_width(strm, button, true);
+   int label_width  = streamlined_get_text_width(strm, label, true);
 
-   /* Draw rounded teal pill background */
-   cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
-         x, pill_y, pill_width, pill_height,
-         video_width, video_height, cannoli_color_accent);
+   /* Button letter in accent color */
+   streamlined_draw_text(strm, p_disp, video_width, video_height,
+         x, y, button, streamlined_color_text_accent, true);
 
-   /* Draw white circle inside pill */
-   cannoli_draw_filled_circle(cannoli, p_disp, userdata,
-         x + pill_padding + circle_radius, pill_y + pill_height / 2, circle_radius,
-         video_width, video_height, cannoli_color_selection);
+   /* Label in muted gray */
+   streamlined_draw_text(strm, p_disp, video_width, video_height,
+         x + btn_width + gap, y, label, streamlined_color_text_muted, true);
 
-   /* Draw button letter centered in white circle */
-   {
-      int letter_width = cannoli_get_text_width(cannoli, button, true);
-      int letter_x = x + pill_padding + circle_radius - letter_width / 2;
-      cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-            letter_x, text_baseline, button, cannoli_color_text_dark, true);
-   }
-
-   /* Draw label text to the right of circle */
-   {
-      int text_x = x + pill_padding + circle_size + inner_padding;
-      cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-            text_x, text_baseline, label, cannoli_color_text_dark, true);
-   }
+   return btn_width + gap + label_width;
 }
 
-static void cannoli_draw_text(cannoli_t *cannoli,
+static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
       int x, int y,
       const char *text, uint32_t color, bool small_font)
 {
-   font_data_t *font = small_font ? cannoli->font_small.font : cannoli->font.font;
+   font_data_t *font = small_font ? strm->font_small.font : strm->font.font;
    if (font && text)
    {
       gfx_display_draw_text(font, text, x, y,
@@ -418,13 +406,13 @@ static void cannoli_draw_text(cannoli_t *cannoli,
    }
 }
 
-static void cannoli_draw_title(cannoli_t *cannoli,
+static void streamlined_draw_title(streamlined_t *strm,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
       int x, int y,
       const char *text, uint32_t color)
 {
-   font_data_t *font = cannoli->font_title.font ? cannoli->font_title.font : cannoli->font.font;
+   font_data_t *font = strm->font_title.font ? strm->font_title.font : strm->font.font;
    if (font && text)
    {
       gfx_display_draw_text(font, text, x, y,
@@ -433,21 +421,21 @@ static void cannoli_draw_title(cannoli_t *cannoli,
    }
 }
 
-static int cannoli_get_text_width(cannoli_t *cannoli, const char *text, bool small_font)
+static int streamlined_get_text_width(streamlined_t *strm, const char *text, bool small_font)
 {
-   font_data_t *font = small_font ? cannoli->font_small.font : cannoli->font.font;
+   font_data_t *font = small_font ? strm->font_small.font : strm->font.font;
    if (font && text)
       return font_driver_get_message_width(font, text, strlen(text), 1.0f);
    return 0;
 }
 
-static void cannoli_draw_text_tiny(cannoli_t *cannoli,
+static void streamlined_draw_text_tiny(streamlined_t *strm,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
       int x, int y,
       const char *text, uint32_t color)
 {
-   font_data_t *font = cannoli->font_tiny.font ? cannoli->font_tiny.font : cannoli->font_small.font;
+   font_data_t *font = strm->font_tiny.font ? strm->font_tiny.font : strm->font_small.font;
    if (font && text)
    {
       gfx_display_draw_text(font, text, x, y,
@@ -456,17 +444,17 @@ static void cannoli_draw_text_tiny(cannoli_t *cannoli,
    }
 }
 
-static int cannoli_get_text_width_tiny(cannoli_t *cannoli, const char *text)
+static int streamlined_get_text_width_tiny(streamlined_t *strm, const char *text)
 {
-   font_data_t *font = cannoli->font_tiny.font ? cannoli->font_tiny.font : cannoli->font_small.font;
+   font_data_t *font = strm->font_tiny.font ? strm->font_tiny.font : strm->font_small.font;
    if (font && text)
       return font_driver_get_message_width(font, text, strlen(text), 1.0f);
    return 0;
 }
 
-static int cannoli_get_title_width(cannoli_t *cannoli, const char *text)
+static int streamlined_get_title_width(streamlined_t *strm, const char *text)
 {
-   font_data_t *font = cannoli->font_title.font ? cannoli->font_title.font : cannoli->font.font;
+   font_data_t *font = strm->font_title.font ? strm->font_title.font : strm->font.font;
    if (font && text)
       return font_driver_get_message_width(font, text, strlen(text), 1.0f);
    return 0;
@@ -476,7 +464,7 @@ static int cannoli_get_title_width(cannoli_t *cannoli, const char *text)
  * Check if entry value indicates a directory and add slash prefix.
  * Returns true if entry is a directory.
  */
-static bool cannoli_process_entry_type(const char *value, char *label, size_t label_size)
+static bool streamlined_process_entry_type(const char *value, char *label, size_t label_size)
 {
    char temp[256];
 
@@ -494,7 +482,7 @@ static bool cannoli_process_entry_type(const char *value, char *label, size_t la
  * Check if value should be hidden (file type indicators).
  * These are hardcoded English strings in RetroArch, not translated.
  */
-static bool cannoli_should_hide_value(const char *value)
+static bool streamlined_should_hide_value(const char *value)
 {
    return string_is_equal(value, "(FILE)")
        || string_is_equal(value, "(DIR)")
@@ -511,7 +499,7 @@ static bool cannoli_should_hide_value(const char *value)
 }
 
 /* Truncate text to fit within max_width, adding ellipsis if needed */
-static void cannoli_truncate_text(cannoli_t *cannoli, const char *text,
+static void streamlined_truncate_text(streamlined_t *strm, const char *text,
       char *out, size_t out_size, int max_width, bool small_font)
 {
    int text_width;
@@ -521,7 +509,7 @@ static void cannoli_truncate_text(cannoli_t *cannoli, const char *text,
       return;
 
    strlcpy(out, text, out_size);
-   text_width = cannoli_get_text_width(cannoli, out, small_font);
+   text_width = streamlined_get_text_width(strm, out, small_font);
 
    if (text_width <= max_width)
       return;
@@ -539,7 +527,7 @@ static void cannoli_truncate_text(cannoli_t *cannoli, const char *text,
          out[len - 2] = '.';
          out[len - 3] = '.';
       }
-      text_width = cannoli_get_text_width(cannoli, out, small_font);
+      text_width = streamlined_get_text_width(strm, out, small_font);
    }
 }
 
@@ -553,7 +541,7 @@ static void cannoli_truncate_text(cannoli_t *cannoli, const char *text,
  *
  * @param preview_slot: 0 = Auto (state_slot -1), 1-8 = state_slot 0-7
  */
-static void cannoli_load_slot_thumbnail(cannoli_t *cannoli, int preview_slot)
+static void streamlined_load_slot_thumbnail(streamlined_t *strm, int preview_slot)
 {
    char state_path[PATH_MAX_LENGTH];
    settings_t *settings = config_get_ptr();
@@ -567,31 +555,31 @@ static void cannoli_load_slot_thumbnail(cannoli_t *cannoli, int preview_slot)
    strlcat(state_path, ".png", sizeof(state_path));
 
    /* Request thumbnail if path changed or status is unknown */
-   if (   (cannoli->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
-       || !string_is_equal(state_path, cannoli->savestate_thumbnail_path))
+   if (   (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+       || !string_is_equal(state_path, strm->savestate_thumbnail_path))
    {
-      strlcpy(cannoli->savestate_thumbnail_path, state_path,
-            sizeof(cannoli->savestate_thumbnail_path));
+      strlcpy(strm->savestate_thumbnail_path, state_path,
+            sizeof(strm->savestate_thumbnail_path));
 
       /* Free old texture before requesting new one */
-      gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
+      gfx_thumbnail_reset(&strm->savestate_thumbnail);
 
       /* Request new thumbnail - the thumbnail system handles missing files */
-      gfx_thumbnail_request_file(state_path, &cannoli->savestate_thumbnail,
+      gfx_thumbnail_request_file(state_path, &strm->savestate_thumbnail,
             settings->uints.gfx_thumbnail_upscale_threshold);
 
       /* Use core aspect ratio for proper rendering */
-      cannoli->savestate_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
+      strm->savestate_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
    }
 
-   cannoli->preview_slot = preview_slot;
+   strm->preview_slot = preview_slot;
 }
 
 /*
  * Draw the save slot selector UI: thumbnail preview with polaroid frame and dot indicators.
  * Positioned on the right side of the screen, vertically centered.
  */
-static void cannoli_draw_slot_selector(cannoli_t *cannoli,
+static void streamlined_draw_slot_selector(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
       unsigned video_width, unsigned video_height)
 {
@@ -601,8 +589,8 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
    int thumb_max_width  = (int)(thumb_max_height * 4.0f / 3.0f);
 
    /* Polaroid frame dimensions */
-   int frame_border     = (int)(5 * cannoli->scale_factor);   /* Side/top border */
-   int frame_bottom     = (int)(28 * cannoli->scale_factor);  /* Thicker bottom chin for dots */
+   int frame_border     = (int)(5 * strm->scale_factor);   /* Side/top border */
+   int frame_bottom     = (int)(28 * strm->scale_factor);  /* Thicker bottom chin for dots */
    int frame_width      = thumb_max_width + frame_border * 2;
    int frame_height     = thumb_max_height + frame_border + frame_bottom;
 
@@ -613,12 +601,12 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
    int dots_start_x;
 
    /* Calculate dot dimensions first (needed for vertical centering) */
-   dot_radius  = (int)(4 * cannoli->scale_factor);
-   dot_spacing = (int)(16 * cannoli->scale_factor);
+   dot_radius  = (int)(4 * strm->scale_factor);
+   dot_spacing = (int)(16 * strm->scale_factor);
 
    /* Position frame on right side, vertically centered with dots below */
-   frame_x = video_width - cannoli->margin_x - frame_width;
-   frame_y = (video_height - frame_height - dot_radius * 2 - (int)(16 * cannoli->scale_factor)) / 2;
+   frame_x = video_width - strm->margin_x - frame_width;
+   frame_y = (video_height - frame_height - dot_radius * 2 - (int)(16 * strm->scale_factor)) / 2;
 
    /* Thumbnail position inside frame */
    thumb_x = frame_x + frame_border;
@@ -627,16 +615,16 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
    /* Draw polaroid frame (white background) */
    gfx_display_draw_quad(p_disp, userdata, video_width, video_height,
          frame_x, frame_y, frame_width, frame_height,
-         video_width, video_height, cannoli_color_selection, NULL);
+         video_width, video_height, streamlined_color_selection, NULL);
 
    /* Draw thumbnail if available */
-   if (cannoli->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+   if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
    {
       float draw_width, draw_height;
 
       /* Calculate aspect-correct dimensions */
       gfx_thumbnail_get_draw_dimensions(
-            &cannoli->savestate_thumbnail,
+            &strm->savestate_thumbnail,
             thumb_max_width, thumb_max_height, 1.0f,
             &draw_width, &draw_height);
 
@@ -646,13 +634,13 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
          int offset_y = (thumb_max_height - (int)draw_height) / 2;
 
          gfx_thumbnail_draw(userdata, video_width, video_height,
-               &cannoli->savestate_thumbnail,
+               &strm->savestate_thumbnail,
                (float)(thumb_x + offset_x), (float)(thumb_y + offset_y),
                (unsigned)draw_width, (unsigned)draw_height,
                GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
       }
    }
-   else if (cannoli->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
+   else if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
    {
       /* Only show placeholder when we know the thumbnail is missing (not while loading) */
       const char *placeholder;
@@ -668,28 +656,28 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
 
       /* Draw placeholder text centered in thumbnail area */
       {
-         int text_width = cannoli_get_text_width(cannoli, placeholder, false);
+         int text_width = streamlined_get_text_width(strm, placeholder, false);
          int text_x = thumb_x + (thumb_max_width - text_width) / 2;
          /* Center vertically: account for font baseline by adding ~1/3 of font size */
-         int text_y = thumb_y + thumb_max_height / 2 + (int)(cannoli->font_size * 0.35f);
+         int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * 0.35f);
 
-         cannoli_draw_text(cannoli, p_disp, video_width, video_height,
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
                text_x, text_y,
-               placeholder, cannoli_color_text_dark, false);
+               placeholder, streamlined_color_text_dark, false);
       }
    }
 
    /* Draw slot indicators in the polaroid chin: 'A' for auto, dots for 0-7 */
-   total_dots_width = CANNOLI_NUM_SLOTS * (dot_radius * 2)
-         + (CANNOLI_NUM_SLOTS - 1) * (dot_spacing - dot_radius * 2);
+   total_dots_width = STREAMLINED_NUM_SLOTS * (dot_radius * 2)
+         + (STREAMLINED_NUM_SLOTS - 1) * (dot_spacing - dot_radius * 2);
    dot_y = thumb_y + thumb_max_height + (frame_bottom - dot_radius * 2) / 2;
    dots_start_x = frame_x + (frame_width - total_dots_width) / 2;
 
-   for (i = 0; i < CANNOLI_NUM_SLOTS; i++)
+   for (i = 0; i < STREAMLINED_NUM_SLOTS; i++)
    {
       int dot_cx = dots_start_x + i * dot_spacing + dot_radius;
-      bool is_selected = (i == cannoli->preview_slot);
-      float *color = is_selected ? cannoli_color_accent : cannoli_color_black;
+      bool is_selected = (i == strm->preview_slot);
+      float *color = is_selected ? streamlined_color_accent : streamlined_color_black;
       int r = is_selected ? dot_radius : (int)(dot_radius * 0.6f);
       /* Adjust y position to keep dots vertically centered regardless of size */
       int cy = dot_y + dot_radius;
@@ -697,17 +685,17 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
       if (i == 0)
       {
          /* Draw 'A' for Auto slot using tiny font, centered on dot line */
-         int text_width = cannoli_get_text_width_tiny(cannoli, "A");
+         int text_width = streamlined_get_text_width_tiny(strm, "A");
          int text_x = dot_cx - text_width / 2;
          /* Center 'A' vertically: baseline + 0.35*font_size ≈ visual center */
-         int text_y = cy + (int)(cannoli->font_size_tiny * 0.35f);
-         cannoli_draw_text_tiny(cannoli, p_disp, video_width, video_height,
+         int text_y = cy + (int)(strm->font_size_tiny * 0.35f);
+         streamlined_draw_text_tiny(strm, p_disp, video_width, video_height,
                text_x, text_y, "A",
-               is_selected ? cannoli_color_text_accent : cannoli_color_text_dark);
+               is_selected ? streamlined_color_text_accent : streamlined_color_text_dark);
       }
       else
       {
-         cannoli_draw_filled_circle(cannoli, p_disp, userdata,
+         streamlined_draw_filled_circle(strm, p_disp, userdata,
                dot_cx, cy, r,
                video_width, video_height, color);
       }
@@ -718,7 +706,7 @@ static void cannoli_draw_slot_selector(cannoli_t *cannoli,
  * MENU RENDERING
  * ====================================================================== */
 
-static void cannoli_render_menu(cannoli_t *cannoli,
+static void streamlined_render_menu(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
       unsigned video_width, unsigned video_height)
 {
@@ -726,10 +714,10 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    menu_list_t *menu_list;
    file_list_t *list;
    size_t list_size, selection, i, start_idx, max_visible;
-   int y, item_height, button_legend_y;
+   int y, item_height;
    char title_buf[256];
 
-   if (!cannoli->font.font || !p_disp || !menu_st)
+   if (!strm->font.font || !p_disp || !menu_st)
       return;
 
    menu_list = menu_st->entries.list;
@@ -742,7 +730,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
    list_size = list->size;
    selection = menu_st->selection_ptr;
-   item_height = cannoli->font.line_height;
+   item_height = strm->font.line_height;
    if (item_height <= 0)
       item_height = 20;
 
@@ -751,17 +739,17 @@ static void cannoli_render_menu(cannoli_t *cannoli,
     * Show the slot selector UI when these entries are selected.
     */
    {
-      bool was_showing = cannoli->show_slot_selector;
-      cannoli->show_slot_selector = false;
+      bool was_showing = strm->show_slot_selector;
+      strm->show_slot_selector = false;
 
-      if (cannoli->is_quick_menu && !cannoli->in_settings_submenu)
+      if (strm->is_quick_menu && !strm->in_settings_submenu)
       {
          if (selection == 1 || selection == 2)
-            cannoli->show_slot_selector = true;
+            strm->show_slot_selector = true;
       }
 
       /* When selection changes to save/load, load the current slot's thumbnail */
-      if (cannoli->show_slot_selector && (!was_showing || selection != cannoli->last_selection))
+      if (strm->show_slot_selector && (!was_showing || selection != strm->last_selection))
       {
          settings_t *settings = config_get_ptr();
          int state_slot = settings->ints.state_slot;
@@ -775,17 +763,17 @@ static void cannoli_render_menu(cannoli_t *cannoli,
          settings->ints.state_slot = state_slot;
 
          /* preview_slot = state_slot + 1 */
-         cannoli->preview_slot = state_slot + 1;
-         cannoli_load_slot_thumbnail(cannoli, cannoli->preview_slot);
+         strm->preview_slot = state_slot + 1;
+         streamlined_load_slot_thumbnail(strm, strm->preview_slot);
       }
 
-      cannoli->last_selection = selection;
+      strm->last_selection = selection;
    }
 
    /* Calculate visible items: screen height minus title area and button legend area */
    {
-      int title_area = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
-      int bottom_area = cannoli->margin_y + cannoli->button_size + (int)(20 * cannoli->scale_factor);
+      int title_area = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+      int bottom_area = strm->margin_y + (int)(strm->font_size_small * 1.5f);
       max_visible = (video_height - title_area - bottom_area) / item_height;
    }
    if (max_visible == 0)
@@ -793,30 +781,30 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
    /* Get title - show game name for quick menu, "Settings" for submenu */
    title_buf[0] = '\0';
-   if (cannoli->selecting_core)
+   if (strm->selecting_core)
    {
       strlcpy(title_buf, "Select Core", sizeof(title_buf));
    }
-   else if (cannoli->in_settings_submenu)
+   else if (strm->in_settings_submenu)
    {
       strlcpy(title_buf, "Advanced", sizeof(title_buf));
    }
-   else if (cannoli->in_main_settings_submenu)
+   else if (strm->in_main_settings_submenu)
    {
       strlcpy(title_buf, "Settings", sizeof(title_buf));
    }
-   else if (cannoli->is_custom_main_menu && cannoli->in_folder)
+   else if (strm->is_custom_main_menu && strm->in_folder)
    {
       /* Show folder/platform name as title */
-      const char *folder_name = path_basename(cannoli->current_folder_path);
+      const char *folder_name = path_basename(strm->current_folder_path);
       if (!string_is_empty(folder_name))
       {
          /* Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
-         const char *clean_name = cannoli_strip_sort_prefix(folder_name);
+         const char *clean_name = streamlined_strip_sort_prefix(folder_name);
          strlcpy(title_buf, clean_name, sizeof(title_buf));
       }
    }
-   else if (cannoli->is_quick_menu)
+   else if (strm->is_quick_menu)
    {
       /* Custom quick menu - show game name */
       const char *content_path = path_get(RARCH_PATH_CONTENT);
@@ -857,21 +845,21 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    }
 
    /* Increment ticker for this frame */
-   cannoli->ticker_idx++;
+   strm->ticker_idx++;
 
    /* Draw title with ticker-based scrolling for long titles
     * Skip title only for top-level custom main menu (show for platform screens and settings submenu) */
-   if (!(cannoli->is_custom_main_menu && !cannoli->in_folder && !cannoli->in_main_settings_submenu))
+   if (!(strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu))
    {
-      int max_title_width = video_width - cannoli->margin_x * 2;
-      int title_y = cannoli->margin_y + (int)(cannoli->font_size_title * 0.9f);
+      int max_title_width = video_width - strm->margin_x * 2;
+      int title_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
       char title_ticker[256];
       unsigned x_offset = 0;
-      font_data_t *title_font = cannoli->font_title.font
-            ? cannoli->font_title.font : cannoli->font.font;
+      font_data_t *title_font = strm->font_title.font
+            ? strm->font_title.font : strm->font.font;
 
       gfx_animation_ctx_ticker_smooth_t ticker;
-      ticker.idx           = cannoli->ticker_idx;
+      ticker.idx           = strm->ticker_idx;
       ticker.src_str       = title_buf;
       ticker.spacer        = NULL;
       ticker.dst_str       = title_ticker;
@@ -879,7 +867,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       ticker.x_offset      = &x_offset;
       ticker.font          = title_font;
       ticker.dst_str_len   = sizeof(title_ticker);
-      ticker.glyph_width   = (unsigned)cannoli->font_size_title;
+      ticker.glyph_width   = (unsigned)strm->font_size_title;
       ticker.field_width   = (unsigned)max_title_width;
       ticker.font_scale    = 1.0f;
       ticker.type_enum     = TICKER_TYPE_BOUNCE;
@@ -887,9 +875,9 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
       gfx_animation_ticker_smooth(&ticker);
 
-      cannoli_draw_title(cannoli, p_disp, video_width, video_height,
-            cannoli->margin_x + (int)x_offset, title_y,
-            title_ticker, cannoli_color_text);
+      streamlined_draw_title(strm, p_disp, video_width, video_height,
+            strm->margin_x + (int)x_offset, title_y,
+            title_ticker, streamlined_color_text);
    }
 
    /* Calculate scroll */
@@ -899,10 +887,10 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       start_idx = 0;
 
    /* Draw menu entries - tight spacing below title, or from top for top-level main menu */
-   if (cannoli->is_custom_main_menu && !cannoli->in_folder && !cannoli->in_main_settings_submenu)
-      y = cannoli->margin_y;
+   if (strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu)
+      y = strm->margin_y;
    else
-      y = cannoli->margin_y + (int)(cannoli->font_size_title * 1.4f);
+      y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
 
    for (i = 0; i < max_visible && (start_idx + i) < list_size; i++)
    {
@@ -913,9 +901,9 @@ static void cannoli_render_menu(cannoli_t *cannoli,
       bool is_selected = ((start_idx + i) == selection);
 
       /* Calculate consistent text position */
-      int pill_height = (int)(cannoli->font_size * 1.5f);
+      int pill_height = (int)(strm->font_size * 1.5f);
       int pill_y = y + (item_height - pill_height) / 2;
-      int text_y = pill_y + pill_height / 2 + (int)(cannoli->font_size * 0.30f);
+      int text_y = pill_y + pill_height / 2 + (int)(strm->font_size * 0.30f);
 
       MENU_ENTRY_INITIALIZE(entry);
       entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
@@ -926,15 +914,15 @@ static void cannoli_render_menu(cannoli_t *cannoli,
        * For custom main menu, use label (display name) since path contains full file path
        * For core selection, use path (display name) since label contains core path
        * For main settings submenu, use path (our custom label) */
-      if (cannoli->is_quick_menu || cannoli->in_settings_submenu || cannoli->selecting_core
-            || cannoli->in_main_settings_submenu)
+      if (strm->is_quick_menu || strm->in_settings_submenu || strm->selecting_core
+            || strm->in_main_settings_submenu)
       {
          entry_label = entry.path;
          /* Core Options has empty path - use rich_label instead */
          if (string_is_empty(entry_label) && !string_is_empty(entry.rich_label))
             entry_label = entry.rich_label;
       }
-      else if (cannoli->is_custom_main_menu && !string_is_empty(entry.label))
+      else if (strm->is_custom_main_menu && !string_is_empty(entry.label))
          entry_label = entry.label;
       else if (!string_is_empty(entry.rich_label))
          entry_label = entry.rich_label;
@@ -952,23 +940,23 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
       /* Process entry type - adds slash prefix for directories
        * Skip for top-level custom main menu (already handled in populate) */
-      if (!(cannoli->is_custom_main_menu && !cannoli->in_folder && !cannoli->in_main_settings_submenu))
-         cannoli_process_entry_type(entry.value, display_label, sizeof(display_label));
+      if (!(strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu))
+         streamlined_process_entry_type(entry.value, display_label, sizeof(display_label));
 
       /* Check if value should be displayed */
       bool show_value = !string_is_empty(entry.value)
                      && !string_is_equal(entry.value, "...")
-                     && !cannoli_should_hide_value(entry.value);
+                     && !streamlined_should_hide_value(entry.value);
 
       if (is_selected)
       {
          int pill_width;
-         int text_width = cannoli_get_text_width(cannoli, display_label, false);
-         int max_value_width = (video_width - cannoli->margin_x * 2) * 45 / 100;
-         int value_gap = (int)(16 * cannoli->scale_factor);
+         int text_width = streamlined_get_text_width(strm, display_label, false);
+         int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
+         int value_gap = (int)(16 * strm->scale_factor);
          int max_label_width = show_value
-               ? (video_width - cannoli->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - cannoli->margin_x * 2);
+               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
+               : (video_width - strm->margin_x * 2);
 
          /*
           * Pill width calculation:
@@ -976,15 +964,15 @@ static void cannoli_render_menu(cannoli_t *cannoli,
           * - Without value: fits snugly around label text with symmetric padding
           */
          if (show_value)
-            pill_width = video_width - cannoli->margin_x * 2 + cannoli->pill_padding * 2;
+            pill_width = video_width - strm->margin_x * 2 + strm->pill_padding * 2;
          else
             pill_width = (text_width > max_label_width ? max_label_width : text_width)
-                  + cannoli->pill_padding * 2;
+                  + strm->pill_padding * 2;
 
-         cannoli_draw_rounded_pill(cannoli, p_disp, userdata,
-               cannoli->margin_x - cannoli->pill_padding, pill_y,
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               strm->margin_x - strm->pill_padding, pill_y,
                pill_width, pill_height,
-               video_width, video_height, cannoli_color_selection);
+               video_width, video_height, streamlined_color_selection);
 
          /* Draw label with ticker scrolling if too long */
          {
@@ -993,12 +981,12 @@ static void cannoli_render_menu(cannoli_t *cannoli,
             uint64_t item_idx;
 
             /* Reset ticker when selection changes so scrolling starts from left */
-            if (selection != cannoli->item_ticker_selection)
+            if (selection != strm->item_ticker_selection)
             {
-               cannoli->item_ticker_selection = selection;
-               cannoli->item_ticker_start = cannoli->ticker_idx;
+               strm->item_ticker_selection = selection;
+               strm->item_ticker_start = strm->ticker_idx;
             }
-            item_idx = cannoli->ticker_idx - cannoli->item_ticker_start;
+            item_idx = strm->ticker_idx - strm->item_ticker_start;
 
             gfx_animation_ctx_ticker_smooth_t ticker;
             ticker.idx           = item_idx;
@@ -1007,9 +995,9 @@ static void cannoli_render_menu(cannoli_t *cannoli,
             ticker.dst_str       = label_ticker;
             ticker.dst_str_width = NULL;
             ticker.x_offset      = &x_offset;
-            ticker.font          = cannoli->font.font;
+            ticker.font          = strm->font.font;
             ticker.dst_str_len   = sizeof(label_ticker);
-            ticker.glyph_width   = (unsigned)cannoli->font_size;
+            ticker.glyph_width   = (unsigned)strm->font_size;
             ticker.field_width   = (unsigned)max_label_width;
             ticker.font_scale    = 1.0f;
             ticker.type_enum     = TICKER_TYPE_BOUNCE;
@@ -1017,9 +1005,9 @@ static void cannoli_render_menu(cannoli_t *cannoli,
 
             gfx_animation_ticker_smooth(&ticker);
 
-            cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-                  cannoli->margin_x + (int)x_offset, text_y,
-                  label_ticker, cannoli_color_text_dark, false);
+            streamlined_draw_text(strm, p_disp, video_width, video_height,
+                  strm->margin_x + (int)x_offset, text_y,
+                  label_ticker, streamlined_color_text_dark, false);
          }
 
          /* Value stays on the right, truncated to max width */
@@ -1028,45 +1016,45 @@ static void cannoli_render_menu(cannoli_t *cannoli,
             char truncated_value[256];
             int value_width;
 
-            cannoli_truncate_text(cannoli, entry.value, truncated_value,
+            streamlined_truncate_text(strm, entry.value, truncated_value,
                   sizeof(truncated_value), max_value_width, false);
-            value_width = cannoli_get_text_width(cannoli, truncated_value, false);
+            value_width = streamlined_get_text_width(strm, truncated_value, false);
 
-            cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-                  video_width - cannoli->margin_x - value_width, text_y,
-                  truncated_value, cannoli_color_text_dark, false);
+            streamlined_draw_text(strm, p_disp, video_width, video_height,
+                  video_width - strm->margin_x - value_width, text_y,
+                  truncated_value, streamlined_color_text_dark, false);
          }
       }
       else
       {
          /* Non-selected: truncate long labels */
-         int max_value_width = (video_width - cannoli->margin_x * 2) * 45 / 100;
-         int value_gap = (int)(16 * cannoli->scale_factor);
+         int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
+         int value_gap = (int)(16 * strm->scale_factor);
          int max_label_width = show_value
-               ? (video_width - cannoli->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - cannoli->margin_x * 2);
+               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
+               : (video_width - strm->margin_x * 2);
          char truncated_label[256];
 
-         cannoli_truncate_text(cannoli, display_label, truncated_label,
+         streamlined_truncate_text(strm, display_label, truncated_label,
                sizeof(truncated_label), max_label_width, false);
 
-         cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-               cannoli->margin_x, text_y,
-               truncated_label, cannoli_color_text, false);
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               strm->margin_x, text_y,
+               truncated_label, streamlined_color_text, false);
 
          if (show_value)
          {
             char truncated_value[256];
-            int max_value_width = (video_width - cannoli->margin_x * 2) * 45 / 100;
+            int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
             int value_width;
 
-            cannoli_truncate_text(cannoli, entry.value, truncated_value,
+            streamlined_truncate_text(strm, entry.value, truncated_value,
                   sizeof(truncated_value), max_value_width, false);
-            value_width = cannoli_get_text_width(cannoli, truncated_value, false);
+            value_width = streamlined_get_text_width(strm, truncated_value, false);
 
-            cannoli_draw_text(cannoli, p_disp, video_width, video_height,
-                  video_width - cannoli->margin_x - value_width, text_y,
-                  truncated_value, cannoli_color_text, false);
+            streamlined_draw_text(strm, p_disp, video_width, video_height,
+                  video_width - strm->margin_x - value_width, text_y,
+                  truncated_value, streamlined_color_text, false);
          }
       }
 
@@ -1074,27 +1062,26 @@ static void cannoli_render_menu(cannoli_t *cannoli,
    }
 
    /* Draw save slot selector if on Save/Load State entry */
-   if (cannoli->show_slot_selector)
-      cannoli_draw_slot_selector(cannoli, p_disp, userdata, video_width, video_height);
+   if (strm->show_slot_selector)
+      streamlined_draw_slot_selector(strm, p_disp, userdata, video_width, video_height);
 
    /* Button legends */
-   button_legend_y = video_height - cannoli->margin_y - cannoli->button_size;
-
-   cannoli_draw_button_legend(cannoli, p_disp, userdata,
-         cannoli->margin_x, button_legend_y,
-         "B", "Back",
-         video_width, video_height);
-
    {
-      int pill_padding = (int)(6 * cannoli->scale_factor);
-      int inner_padding = (int)(6 * cannoli->scale_factor);
-      int label_width = cannoli_get_text_width(cannoli, "Select", true);
-      int pill_width = pill_padding * 2 + cannoli->button_size + inner_padding + label_width
-            + (int)(2 * cannoli->scale_factor);
-      int legend_x = video_width - cannoli->margin_x - pill_width;
+      int hint_width;
+      int button_legend_y = video_height - strm->margin_y;
 
-      cannoli_draw_button_legend(cannoli, p_disp, userdata,
-            legend_x, button_legend_y,
+      /* "B Back" on the left */
+      streamlined_draw_button_legend(strm, p_disp,
+            strm->margin_x, button_legend_y,
+            "B", "Back",
+            video_width, video_height);
+
+      /* "A Select" on the right */
+      hint_width = streamlined_get_text_width(strm, "A", true)
+            + (int)(4 * strm->scale_factor)
+            + streamlined_get_text_width(strm, "Select", true);
+      streamlined_draw_button_legend(strm, p_disp,
+            video_width - strm->margin_x - hint_width, button_legend_y,
             "A", "Select",
             video_width, video_height);
    }
@@ -1104,7 +1091,7 @@ static void cannoli_render_menu(cannoli_t *cannoli,
  * QUICK MENU CUSTOMIZATION
  * ====================================================================== */
 
-static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
+static void streamlined_populate_menu_items(const streamlined_quick_item_t *items)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
@@ -1127,7 +1114,7 @@ static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
 
    for (i = 0; items[i].label != NULL; i++)
    {
-      const cannoli_quick_item_t *item = &items[i];
+      const streamlined_quick_item_t *item = &items[i];
       const char *action_label = msg_hash_to_str(item->action);
 
       /* Use proper internal label for callbacks, but set alt for display */
@@ -1141,7 +1128,7 @@ static void cannoli_populate_menu_items(const cannoli_quick_item_t *items)
 }
 
 /* Check if content was launched from command line */
-static bool cannoli_is_launched_from_cli(void)
+static bool streamlined_is_launched_from_cli(void)
 {
    global_t *global = global_get_ptr();
    if (!global)
@@ -1150,7 +1137,7 @@ static bool cannoli_is_launched_from_cli(void)
 }
 
 /* Check if disc control is available for current core */
-static bool cannoli_is_disc_control_available(void)
+static bool streamlined_is_disc_control_available(void)
 {
    rarch_system_info_t *sys_info = &runloop_state_get_ptr()->system;
    if (!sys_info)
@@ -1159,13 +1146,13 @@ static bool cannoli_is_disc_control_available(void)
 }
 
 /* Populate quick menu, with dynamic Exit/Quit based on CLI launch */
-static void cannoli_populate_quick_menu(void)
+static void streamlined_populate_quick_menu(void)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
    file_list_t *list;
-   const cannoli_quick_item_t *item;
-   bool from_cli = cannoli_is_launched_from_cli();
+   const streamlined_quick_item_t *item;
+   bool from_cli = streamlined_is_launched_from_cli();
 
    if (!menu_st)
       return;
@@ -1181,14 +1168,14 @@ static void cannoli_populate_quick_menu(void)
    /* Clear and repopulate with custom items */
    menu_entries_clear(list);
 
-   for (item = cannoli_quick_menu_items; item->label != NULL || item->action == CANNOLI_EXIT_MARKER; item++)
+   for (item = streamlined_quick_menu_items; item->label != NULL || item->action == STREAMLINED_EXIT_MARKER; item++)
    {
       const char *label;
       const char *action_label;
       enum msg_hash_enums action;
 
       /* Handle dynamic Quit entry - quits if CLI, exits to menu if not */
-      if (item->action == CANNOLI_EXIT_MARKER)
+      if (item->action == STREAMLINED_EXIT_MARKER)
       {
          label = "Quit";
          action = from_cli ? MENU_ENUM_LABEL_QUIT_RETROARCH : MENU_ENUM_LABEL_CLOSE_CONTENT;
@@ -1211,13 +1198,13 @@ static void cannoli_populate_quick_menu(void)
 }
 
 /* Populate settings submenu, conditionally including Disc Control */
-static void cannoli_populate_settings_submenu(void)
+static void streamlined_populate_settings_submenu(void)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
    file_list_t *list;
-   const cannoli_quick_item_t *item;
-   bool show_disc_control = cannoli_is_disc_control_available();
+   const streamlined_quick_item_t *item;
+   bool show_disc_control = streamlined_is_disc_control_available();
 
    if (!menu_st)
       return;
@@ -1233,7 +1220,7 @@ static void cannoli_populate_settings_submenu(void)
    /* Clear and repopulate with custom items */
    menu_entries_clear(list);
 
-   for (item = cannoli_settings_menu_items; item->label != NULL; item++)
+   for (item = streamlined_settings_menu_items; item->label != NULL; item++)
    {
       const char *action_label;
 
@@ -1283,12 +1270,12 @@ static void cannoli_populate_settings_submenu(void)
 }
 
 /* Populate main menu settings submenu (Settings categories + main menu items) */
-static void cannoli_populate_main_settings_submenu(void)
+static void streamlined_populate_main_settings_submenu(void)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
    file_list_t *list;
-   const cannoli_quick_item_t *item;
+   const streamlined_quick_item_t *item;
 
    if (!menu_st)
       return;
@@ -1304,7 +1291,7 @@ static void cannoli_populate_main_settings_submenu(void)
    /* Clear and repopulate with custom items */
    menu_entries_clear(list);
 
-   for (item = cannoli_main_settings_items; item->label != NULL; item++)
+   for (item = streamlined_main_settings_items; item->label != NULL; item++)
    {
       const char *action_label;
 
@@ -1369,7 +1356,7 @@ static void cannoli_populate_main_settings_submenu(void)
  * Matches against core_name, display_name, or filename (without _libretro suffix).
  * Returns true if found and writes path to core_path_out.
  */
-static bool cannoli_find_core_by_name(const char *name, char *core_path_out, size_t core_path_size)
+static bool streamlined_find_core_by_name(const char *name, char *core_path_out, size_t core_path_size)
 {
    core_info_list_t *core_info_list = NULL;
    size_t i;
@@ -1453,7 +1440,7 @@ static bool cannoli_find_core_by_name(const char *name, char *core_path_out, siz
  *
  * Returns true if a valid core path was found and written to core_path_out.
  */
-static bool cannoli_read_folder_core(const char *folder_path, char *core_path_out, size_t core_path_size)
+static bool streamlined_read_folder_core(const char *folder_path, char *core_path_out, size_t core_path_size)
 {
    char core_file_path[PATH_MAX_LENGTH];
    RFILE *file;
@@ -1488,7 +1475,7 @@ static bool cannoli_read_folder_core(const char *folder_path, char *core_path_ou
          continue;
 
       /* Try to find this core */
-      if (cannoli_find_core_by_name(line, core_path_out, core_path_size))
+      if (streamlined_find_core_by_name(line, core_path_out, core_path_size))
       {
          filestream_close(file);
          return true;
@@ -1503,7 +1490,7 @@ static bool cannoli_read_folder_core(const char *folder_path, char *core_path_ou
  * Save the selected core to the folder's core.txt file.
  * Uses the core's base name (without _libretro suffix) for portability.
  */
-static bool cannoli_save_folder_core(const char *folder_path, const char *core_path)
+static bool streamlined_save_folder_core(const char *folder_path, const char *core_path)
 {
    char core_file_path[PATH_MAX_LENGTH];
    char core_name[256];
@@ -1545,7 +1532,7 @@ static bool cannoli_save_folder_core(const char *folder_path, const char *core_p
  * Populate the menu with a list of all installed cores.
  * Used when the user needs to select which core to use for a folder.
  */
-static void cannoli_populate_core_selection(cannoli_t *cannoli, const char *content_path)
+static void streamlined_populate_core_selection(streamlined_t *strm, const char *content_path)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
@@ -1604,7 +1591,7 @@ static void cannoli_populate_core_selection(cannoli_t *cannoli, const char *cont
  * Pattern: one or more digits followed by ") "
  * Returns pointer to the start of the actual name (within the same string)
  */
-static const char *cannoli_strip_sort_prefix(const char *name)
+static const char *streamlined_strip_sort_prefix(const char *name)
 {
    const char *p = name;
 
@@ -1626,7 +1613,7 @@ static const char *cannoli_strip_sort_prefix(const char *name)
 
 /* Populate custom main menu with folders and files from the specified directory
  * show_folder_slash: if true, prefix folder names with "/" */
-static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directory, bool show_folder_slash)
+static void streamlined_populate_folder_menu(streamlined_t *strm, const char *directory, bool show_folder_slash)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    settings_t *settings = config_get_ptr();
@@ -1673,7 +1660,7 @@ static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directo
             /* Show directories, optionally with leading slash
              * Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
             char display_name[256];
-            const char *clean_name = cannoli_strip_sort_prefix(name);
+            const char *clean_name = streamlined_strip_sort_prefix(name);
 
             if (show_folder_slash)
                snprintf(display_name, sizeof(display_name), "/%s", clean_name);
@@ -1723,7 +1710,7 @@ static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directo
    {
       menu_entries_append(list,
             "Settings",
-            "cannoli_main_settings",
+            "streamlined_main_settings",
             MENU_ENUM_LABEL_SETTINGS,
             MENU_SETTING_ACTION,
             0, 0, NULL);
@@ -1745,7 +1732,7 @@ static void cannoli_populate_folder_menu(cannoli_t *cannoli, const char *directo
  * Try to load a font from the given path within the assets directory.
  * Returns the loaded font or NULL if not found.
  */
-static font_data_t *cannoli_try_load_font(gfx_display_t *p_disp,
+static font_data_t *streamlined_try_load_font(gfx_display_t *p_disp,
       const char *assets_dir, const char *font_subpath,
       float font_size, bool is_threaded, char *fontpath_out, size_t fontpath_size)
 {
@@ -1760,20 +1747,20 @@ static font_data_t *cannoli_try_load_font(gfx_display_t *p_disp,
    return font;
 }
 
-static void *cannoli_init(void **userdata, bool video_is_threaded)
+static void *streamlined_init(void **userdata, bool video_is_threaded)
 {
    gfx_display_t *p_disp = disp_get_ptr();
-   cannoli_t *cannoli = (cannoli_t*)calloc(1, sizeof(*cannoli));
+   streamlined_t *strm = (streamlined_t*)calloc(1, sizeof(*strm));
    menu_handle_t *menu = (menu_handle_t*)calloc(1, sizeof(*menu));
 
-   if (!cannoli || !menu)
+   if (!strm || !menu)
    {
-      if (cannoli) free(cannoli);
+      if (strm) free(strm);
       if (menu) free(menu);
       return NULL;
    }
 
-   *userdata = cannoli;
+   *userdata = strm;
 
    p_disp->framebuf_width = 0;
    p_disp->framebuf_height = 0;
@@ -1781,210 +1768,204 @@ static void *cannoli_init(void **userdata, bool video_is_threaded)
    return menu;
 }
 
-static void cannoli_free(void *data)
+static void streamlined_free(void *data)
 {
-   cannoli_t *cannoli = (cannoli_t*)data;
-   if (cannoli)
+   streamlined_t *strm = (streamlined_t*)data;
+   if (strm)
    {
-      cannoli->font.font = NULL;
-      cannoli->font_small.font = NULL;
-      cannoli->font_title.font = NULL;
+      strm->font.font = NULL;
+      strm->font_small.font = NULL;
+      strm->font_title.font = NULL;
    }
 }
 
-static void cannoli_context_reset(void *data, bool is_threaded)
+static void streamlined_context_reset(void *data, bool is_threaded)
 {
-   cannoli_t *cannoli = (cannoli_t*)data;
+   unsigned video_width, video_height;
+   streamlined_t *strm = (streamlined_t*)data;
    gfx_display_t *p_disp = disp_get_ptr();
    settings_t *settings = config_get_ptr();
    char fontpath[PATH_MAX_LENGTH];
    float scale_factor;
 
-   if (!cannoli)
+   if (!strm)
       return;
 
-   /*
-    * Use RetroArch's DPI-aware scaling system instead of simple pixel ratio.
-    * gfx_display_get_dpi_scale() intelligently handles:
-    * - Actual display DPI when available from the OS
-    * - Smart blending based on screen size (TVs get larger UI for couch viewing)
-    * - Fallback to pixel-based scaling when DPI info unavailable
-    *
-    * Parameters:
-    * - width/height: current framebuffer dimensions
-    * - fullscreen: affects DPI detection on some platforms
-    * - false: don't use widget scale (we're a menu driver, not widgets)
-    */
+   /* Get actual video dimensions (following Ozone/MaterialUI pattern).
+    * p_disp->framebuf_width/height may be 0 at this point since
+    * streamlined doesn't use a software framebuffer. */
+   video_driver_get_size(&video_width, &video_height);
+
+   /* gfx_display_get_dpi_scale() returns a DPI-aware scale factor
+    * that already incorporates settings->floats.menu_scale_factor.
+    * On macOS (where DPI queries crash), it falls back to a
+    * pixel-diagonal-based formula. */
    scale_factor = gfx_display_get_dpi_scale(p_disp,
          settings,
-         p_disp->framebuf_width,
-         p_disp->framebuf_height,
+         video_width,
+         video_height,
          settings->bools.video_fullscreen,
          false);
-
-   /* Apply user's menu scale preference from Settings > User Interface */
-   scale_factor *= settings->floats.menu_scale_factor;
 
    /* Ensure a minimum scale to prevent unusably small UI */
    if (scale_factor < 0.5f)
       scale_factor = 0.5f;
 
-   cannoli->scale_factor = scale_factor;
-   cannoli->font_size = CANNOLI_BASE_FONT_SIZE * scale_factor;
-   cannoli->font_size_small = CANNOLI_BASE_FONT_SIZE * scale_factor * 0.75f;
-   cannoli->font_size_title = CANNOLI_BASE_FONT_SIZE * scale_factor * 1.1f;
+   strm->scale_factor = scale_factor;
+   strm->font_size = STREAMLINED_BASE_FONT_SIZE * scale_factor;
+   strm->font_size_small = STREAMLINED_BASE_FONT_SIZE * scale_factor * 0.75f;
+   strm->font_size_title = STREAMLINED_BASE_FONT_SIZE * scale_factor * 1.1f;
    /* Tiny font sized to match dot indicators (dot_radius * 2 is diameter) */
-   cannoli->font_size_tiny = 4 * scale_factor * 2.5f;
+   strm->font_size_tiny = 4 * scale_factor * 2.5f;
 
    /* Clamp font sizes to ensure readability */
-   if (cannoli->font_size < CANNOLI_MIN_FONT_SIZE)
-      cannoli->font_size = CANNOLI_MIN_FONT_SIZE;
-   if (cannoli->font_size_small < CANNOLI_MIN_FONT_SIZE - 2)
-      cannoli->font_size_small = CANNOLI_MIN_FONT_SIZE - 2;
-   if (cannoli->font_size_tiny < 8)
-      cannoli->font_size_tiny = 8;
+   if (strm->font_size < STREAMLINED_MIN_FONT_SIZE)
+      strm->font_size = STREAMLINED_MIN_FONT_SIZE;
+   if (strm->font_size_small < STREAMLINED_MIN_FONT_SIZE - 2)
+      strm->font_size_small = STREAMLINED_MIN_FONT_SIZE - 2;
+   if (strm->font_size_tiny < 8)
+      strm->font_size_tiny = 8;
 
    /* Pill padding scales with font size so it stays proportional with different fonts */
-   cannoli->pill_padding = (int)(cannoli->font_size * CANNOLI_PILL_PADDING_RATIO);
-   cannoli->button_size = (int)(CANNOLI_BUTTON_CIRCLE_SIZE * scale_factor);
+   strm->pill_padding = (int)(strm->font_size * STREAMLINED_PILL_PADDING_RATIO);
 
    /* Free existing fonts before reloading */
-   if (cannoli->font.font)
+   if (strm->font.font)
    {
-      font_driver_free(cannoli->font.font);
-      cannoli->font.font = NULL;
+      font_driver_free(strm->font.font);
+      strm->font.font = NULL;
    }
-   if (cannoli->font_small.font)
+   if (strm->font_small.font)
    {
-      font_driver_free(cannoli->font_small.font);
-      cannoli->font_small.font = NULL;
+      font_driver_free(strm->font_small.font);
+      strm->font_small.font = NULL;
    }
-   if (cannoli->font_title.font)
+   if (strm->font_title.font)
    {
-      font_driver_free(cannoli->font_title.font);
-      cannoli->font_title.font = NULL;
+      font_driver_free(strm->font_title.font);
+      strm->font_title.font = NULL;
    }
-   if (cannoli->font_tiny.font)
+   if (strm->font_tiny.font)
    {
-      font_driver_free(cannoli->font_tiny.font);
-      cannoli->font_tiny.font = NULL;
+      font_driver_free(strm->font_tiny.font);
+      strm->font_tiny.font = NULL;
    }
 
    fontpath[0] = '\0';
 
    /*
     * Font loading priority:
-    * 1. Cannoli-specific font (assets/cannoli/font.ttf) for custom styling
+    * 1. Streamlined font (assets/streamlined/font.ttf) for custom styling
     * 2. XMB font (assets/xmb/monochrome/font.ttf) commonly available
     * 3. Ozone font (assets/ozone/regular.ttf) as final fallback
     */
-   cannoli->font.font = cannoli_try_load_font(p_disp,
-         settings->paths.directory_assets, "cannoli/font.ttf",
-         cannoli->font_size, is_threaded, fontpath, sizeof(fontpath));
+   strm->font.font = streamlined_try_load_font(p_disp,
+         settings->paths.directory_assets, "streamlined/font.ttf",
+         strm->font_size, is_threaded, fontpath, sizeof(fontpath));
 
-   if (!cannoli->font.font)
-      cannoli->font.font = cannoli_try_load_font(p_disp,
+   if (!strm->font.font)
+      strm->font.font = streamlined_try_load_font(p_disp,
             settings->paths.directory_assets, "xmb/monochrome/font.ttf",
-            cannoli->font_size, is_threaded, fontpath, sizeof(fontpath));
+            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
 
-   if (!cannoli->font.font)
-      cannoli->font.font = cannoli_try_load_font(p_disp,
+   if (!strm->font.font)
+      strm->font.font = streamlined_try_load_font(p_disp,
             settings->paths.directory_assets, "ozone/regular.ttf",
-            cannoli->font_size, is_threaded, fontpath, sizeof(fontpath));
+            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
 
    /* Load additional font sizes using the same font file that worked */
-   if (cannoli->font.font && fontpath[0] != '\0')
+   if (strm->font.font && fontpath[0] != '\0')
    {
-      cannoli->font_small.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_small, is_threaded);
-      cannoli->font_title.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_title, is_threaded);
-      cannoli->font_tiny.font = gfx_display_font_file(p_disp, fontpath, cannoli->font_size_tiny, is_threaded);
+      strm->font_small.font = gfx_display_font_file(p_disp, fontpath, strm->font_size_small, is_threaded);
+      strm->font_title.font = gfx_display_font_file(p_disp, fontpath, strm->font_size_title, is_threaded);
+      strm->font_tiny.font = gfx_display_font_file(p_disp, fontpath, strm->font_size_tiny, is_threaded);
    }
 
-   cannoli->font.line_height = (int)(cannoli->font_size * CANNOLI_LINE_HEIGHT);
-   cannoli->font.glyph_width = (int)(cannoli->font_size * 0.6f);
-   cannoli->font_small.line_height = (int)(cannoli->font_size_small * CANNOLI_LINE_HEIGHT);
-   cannoli->font_small.glyph_width = (int)(cannoli->font_size_small * 0.6f);
-   cannoli->font_title.line_height = (int)(cannoli->font_size_title * CANNOLI_LINE_HEIGHT);
-   cannoli->font_title.glyph_width = (int)(cannoli->font_size_title * 0.6f);
+   strm->font.line_height = (int)(strm->font_size * STREAMLINED_LINE_HEIGHT);
+   strm->font.glyph_width = (int)(strm->font_size * 0.6f);
+   strm->font_small.line_height = (int)(strm->font_size_small * STREAMLINED_LINE_HEIGHT);
+   strm->font_small.glyph_width = (int)(strm->font_size_small * 0.6f);
+   strm->font_title.line_height = (int)(strm->font_size_title * STREAMLINED_LINE_HEIGHT);
+   strm->font_title.glyph_width = (int)(strm->font_size_title * 0.6f);
 
-   if (cannoli->font.line_height < 20)
-      cannoli->font.line_height = 20;
-   if (cannoli->font_small.line_height < 15)
-      cannoli->font_small.line_height = 15;
+   if (strm->font.line_height < 20)
+      strm->font.line_height = 20;
+   if (strm->font_small.line_height < 15)
+      strm->font_small.line_height = 15;
 
    /* Initialize save slot selector state */
-   gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
-   cannoli->savestate_thumbnail_path[0] = '\0';
-   cannoli->preview_slot = 0;
-   cannoli->show_slot_selector = false;
-   cannoli->last_selection = 0;
+   gfx_thumbnail_reset(&strm->savestate_thumbnail);
+   strm->savestate_thumbnail_path[0] = '\0';
+   strm->preview_slot = 0;
+   strm->show_slot_selector = false;
+   strm->last_selection = 0;
 
    /* Initialize ticker for text scrolling */
-   cannoli->ticker_idx = 0;
-   cannoli->item_ticker_start = 0;
-   cannoli->item_ticker_selection = (size_t)-1;
+   strm->ticker_idx = 0;
+   strm->item_ticker_start = 0;
+   strm->item_ticker_selection = (size_t)-1;
 
    gfx_display_init_white_texture();
 }
 
-static void cannoli_context_destroy(void *data)
+static void streamlined_context_destroy(void *data)
 {
-   cannoli_t *cannoli = (cannoli_t*)data;
+   streamlined_t *strm = (streamlined_t*)data;
 
-   if (cannoli)
+   if (strm)
    {
-      if (cannoli->font.font)
+      if (strm->font.font)
       {
-         font_driver_free(cannoli->font.font);
-         cannoli->font.font = NULL;
+         font_driver_free(strm->font.font);
+         strm->font.font = NULL;
       }
-      if (cannoli->font_small.font)
+      if (strm->font_small.font)
       {
-         font_driver_free(cannoli->font_small.font);
-         cannoli->font_small.font = NULL;
+         font_driver_free(strm->font_small.font);
+         strm->font_small.font = NULL;
       }
-      if (cannoli->font_title.font)
+      if (strm->font_title.font)
       {
-         font_driver_free(cannoli->font_title.font);
-         cannoli->font_title.font = NULL;
+         font_driver_free(strm->font_title.font);
+         strm->font_title.font = NULL;
       }
-      if (cannoli->font_tiny.font)
+      if (strm->font_tiny.font)
       {
-         font_driver_free(cannoli->font_tiny.font);
-         cannoli->font_tiny.font = NULL;
+         font_driver_free(strm->font_tiny.font);
+         strm->font_tiny.font = NULL;
       }
 
       /* Clean up save slot thumbnail */
-      gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
+      gfx_thumbnail_reset(&strm->savestate_thumbnail);
    }
 
    gfx_display_deinit_white_texture();
 }
 
-static void cannoli_render(void *data, unsigned width, unsigned height, bool is_idle)
+static void streamlined_render(void *data, unsigned width, unsigned height, bool is_idle)
 {
-   cannoli_t *cannoli = (cannoli_t*)data;
+   streamlined_t *strm = (streamlined_t*)data;
 
-   if (!cannoli)
+   if (!strm)
       return;
 
-   if (cannoli->width != width || cannoli->height != height)
+   if (strm->width != width || strm->height != height)
    {
-      cannoli->width = width;
-      cannoli->height = height;
-      cannoli->margin_x = (int)(width * CANNOLI_MARGIN_RATIO);
-      cannoli->margin_y = (int)(height * CANNOLI_MARGIN_RATIO);
+      strm->width = width;
+      strm->height = height;
+      strm->margin_x = (int)(width * STREAMLINED_MARGIN_RATIO);
+      strm->margin_y = (int)(height * STREAMLINED_MARGIN_RATIO);
    }
 }
 
-static void cannoli_frame(void *data, video_frame_info_t *video_info)
+static void streamlined_frame(void *data, video_frame_info_t *video_info)
 {
-   cannoli_t *cannoli = (cannoli_t*)data;
+   streamlined_t *strm = (streamlined_t*)data;
    gfx_display_t *p_disp = disp_get_ptr();
    void *userdata;
    unsigned video_width, video_height;
 
-   if (!cannoli || !p_disp || !video_info)
+   if (!strm || !p_disp || !video_info)
       return;
 
    userdata = video_info->userdata;
@@ -1994,48 +1975,48 @@ static void cannoli_frame(void *data, video_frame_info_t *video_info)
    if (video_width == 0 || video_height == 0)
       return;
 
-   if (!cannoli->font.font)
+   if (!strm->font.font)
       return;
 
-   if (cannoli->margin_x == 0 || cannoli->margin_y == 0)
+   if (strm->margin_x == 0 || strm->margin_y == 0)
    {
-      cannoli->margin_x = (int)(video_width * CANNOLI_MARGIN_RATIO);
-      cannoli->margin_y = (int)(video_height * CANNOLI_MARGIN_RATIO);
-      if (cannoli->margin_x < 10) cannoli->margin_x = 10;
-      if (cannoli->margin_y < 10) cannoli->margin_y = 10;
+      strm->margin_x = (int)(video_width * STREAMLINED_MARGIN_RATIO);
+      strm->margin_y = (int)(video_height * STREAMLINED_MARGIN_RATIO);
+      if (strm->margin_x < 10) strm->margin_x = 10;
+      if (strm->margin_y < 10) strm->margin_y = 10;
    }
 
-   font_bind(&cannoli->font);
-   if (cannoli->font_small.font)
-      font_bind(&cannoli->font_small);
-   if (cannoli->font_title.font)
-      font_bind(&cannoli->font_title);
-   if (cannoli->font_tiny.font)
-      font_bind(&cannoli->font_tiny);
+   font_bind(&strm->font);
+   if (strm->font_small.font)
+      font_bind(&strm->font_small);
+   if (strm->font_title.font)
+      font_bind(&strm->font_title);
+   if (strm->font_tiny.font)
+      font_bind(&strm->font_tiny);
 
-   cannoli_draw_bg(cannoli, p_disp, userdata, video_width, video_height);
-   cannoli_render_menu(cannoli, p_disp, userdata, video_width, video_height);
+   streamlined_draw_bg(strm, p_disp, userdata, video_width, video_height);
+   streamlined_render_menu(strm, p_disp, userdata, video_width, video_height);
 
-   if (cannoli->font.font)
-      font_flush(video_width, video_height, &cannoli->font);
-   if (cannoli->font_small.font)
-      font_flush(video_width, video_height, &cannoli->font_small);
-   if (cannoli->font_title.font)
-      font_flush(video_width, video_height, &cannoli->font_title);
-   if (cannoli->font_tiny.font)
-      font_flush(video_width, video_height, &cannoli->font_tiny);
+   if (strm->font.font)
+      font_flush(video_width, video_height, &strm->font);
+   if (strm->font_small.font)
+      font_flush(video_width, video_height, &strm->font_small);
+   if (strm->font_title.font)
+      font_flush(video_width, video_height, &strm->font_title);
+   if (strm->font_tiny.font)
+      font_flush(video_width, video_height, &strm->font_tiny);
 }
 
-static void cannoli_populate_entries(void *data,
+static void streamlined_populate_entries(void *data,
       const char *path, const char *label, unsigned k)
 {
-   cannoli_t *cannoli = (cannoli_t*)data;
+   streamlined_t *strm = (streamlined_t*)data;
    const char *content_settings_label = msg_hash_to_str(MENU_ENUM_LABEL_CONTENT_SETTINGS);
    const char *main_menu_label = msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU);
    bool is_content_settings = false;
    bool is_main_menu = false;
 
-   if (!cannoli)
+   if (!strm)
       return;
 
    /* Check what menu we're in */
@@ -2071,95 +2052,95 @@ static void cannoli_populate_entries(void *data,
          if (!string_is_empty(start_dir))
          {
             /* Check if returning to main settings submenu */
-            if (cannoli->return_to_main_settings_submenu)
+            if (strm->return_to_main_settings_submenu)
             {
-               cannoli_populate_main_settings_submenu();
-               cannoli->is_custom_main_menu = true;
-               cannoli->in_main_settings_submenu = true;
-               cannoli->return_to_main_settings_submenu = false;
-               cannoli->in_folder = false;
+               streamlined_populate_main_settings_submenu();
+               strm->is_custom_main_menu = true;
+               strm->in_main_settings_submenu = true;
+               strm->return_to_main_settings_submenu = false;
+               strm->in_folder = false;
                /* Restore selection in settings submenu */
                if (menu_st_local)
-                  menu_st_local->selection_ptr = cannoli->saved_settings_selection;
+                  menu_st_local->selection_ptr = strm->saved_settings_selection;
             }
             /* Check if returning from a game - restore folder state */
-            else if (cannoli->return_to_folder && !string_is_empty(cannoli->last_launched_folder))
+            else if (strm->return_to_folder && !string_is_empty(strm->last_launched_folder))
             {
-               cannoli_populate_folder_menu(cannoli, cannoli->last_launched_folder, true);
-               strlcpy(cannoli->current_folder_path, cannoli->last_launched_folder,
-                     sizeof(cannoli->current_folder_path));
+               streamlined_populate_folder_menu(strm, strm->last_launched_folder, true);
+               strlcpy(strm->current_folder_path, strm->last_launched_folder,
+                     sizeof(strm->current_folder_path));
                /* Restore the folder's core path */
-               strlcpy(cannoli->folder_core_path, cannoli->last_folder_core_path,
-                     sizeof(cannoli->folder_core_path));
-               cannoli->is_custom_main_menu = true;
-               cannoli->in_folder = true;
-               cannoli->return_to_folder = false;
+               strlcpy(strm->folder_core_path, strm->last_folder_core_path,
+                     sizeof(strm->folder_core_path));
+               strm->is_custom_main_menu = true;
+               strm->in_folder = true;
+               strm->return_to_folder = false;
                /* Restore selection to the game that was played */
                if (menu_st_local)
-                  menu_st_local->selection_ptr = cannoli->folder_selection;
+                  menu_st_local->selection_ptr = strm->folder_selection;
             }
             else
             {
-               cannoli_populate_folder_menu(cannoli, start_dir, false);  /* Top level - no slash */
-               strlcpy(cannoli->current_folder_path, start_dir,
-                     sizeof(cannoli->current_folder_path));
-               cannoli->is_custom_main_menu = true;
-               cannoli->in_folder = false;
+               streamlined_populate_folder_menu(strm, start_dir, false);  /* Top level - no slash */
+               strlcpy(strm->current_folder_path, start_dir,
+                     sizeof(strm->current_folder_path));
+               strm->is_custom_main_menu = true;
+               strm->in_folder = false;
             }
          }
-         cannoli->is_quick_menu = false;
-         cannoli->in_settings_submenu = false;
+         strm->is_quick_menu = false;
+         strm->in_settings_submenu = false;
          return;
       }
 
       if (is_content_settings)
       {
          /* Check if we should return to the Advanced settings submenu */
-         if (cannoli->return_to_settings_submenu)
+         if (strm->return_to_settings_submenu)
          {
-            cannoli_populate_settings_submenu();
-            cannoli->in_settings_submenu = true;
-            cannoli->return_to_settings_submenu = false;
+            streamlined_populate_settings_submenu();
+            strm->in_settings_submenu = true;
+            strm->return_to_settings_submenu = false;
          }
          else
          {
-            cannoli_populate_quick_menu();
-            cannoli->in_settings_submenu = false;
+            streamlined_populate_quick_menu();
+            strm->in_settings_submenu = false;
          }
-         cannoli->is_quick_menu = true;
-         cannoli->is_custom_main_menu = false;
+         strm->is_quick_menu = true;
+         strm->is_custom_main_menu = false;
 
          /*
           * Reset thumbnail state when entering quick menu so it reloads.
           * This ensures the thumbnail is refreshed (e.g., if a new screenshot
           * was taken since last viewing).
           */
-         gfx_thumbnail_reset(&cannoli->savestate_thumbnail);
-         cannoli->savestate_thumbnail_path[0] = '\0';
-         cannoli->last_selection = (size_t)-1;  /* Force reload on next render */
+         gfx_thumbnail_reset(&strm->savestate_thumbnail);
+         strm->savestate_thumbnail_path[0] = '\0';
+         strm->last_selection = (size_t)-1;  /* Force reload on next render */
       }
       else
       {
          /* Don't reset return_to_settings_submenu here - we need it when coming back */
-         cannoli->is_quick_menu = false;
-         cannoli->in_settings_submenu = false;
-         cannoli->is_custom_main_menu = false;
+         strm->is_quick_menu = false;
+         strm->in_settings_submenu = false;
+         strm->is_custom_main_menu = false;
       }
    }
    else
    {
       /* Don't reset return_to_settings_submenu here - we need it when coming back */
-      cannoli->is_quick_menu = false;
-      cannoli->in_settings_submenu = false;
-      cannoli->is_custom_main_menu = false;
+      strm->is_quick_menu = false;
+      strm->in_settings_submenu = false;
+      strm->is_custom_main_menu = false;
    }
 }
 
-static void cannoli_navigation_set(void *data, bool scroll) { }
-static void cannoli_navigation_clear(void *data, bool pending_push) { }
-static void cannoli_navigation_set_last(void *data) { }
+static void streamlined_navigation_set(void *data, bool scroll) { }
+static void streamlined_navigation_clear(void *data, bool pending_push) { }
+static void streamlined_navigation_set_last(void *data) { }
 
-static int cannoli_pointer_up(void *data,
+static int streamlined_pointer_up(void *data,
       unsigned x, unsigned y, unsigned ptr,
       enum menu_input_pointer_gesture gesture,
       menu_file_list_cbs_t *cbs,
@@ -2168,7 +2149,7 @@ static int cannoli_pointer_up(void *data,
    return 0;
 }
 
-static int cannoli_environ(enum menu_environ_cb type, void *data, void *userdata)
+static int streamlined_environ(enum menu_environ_cb type, void *data, void *userdata)
 {
    return -1;
 }
@@ -2195,19 +2176,19 @@ static int cannoli_environ(enum menu_environ_cb type, void *data, void *userdata
  * - A on "Advanced": enters the custom settings submenu
  * - A on any other item: executes the associated RetroArch action
  */
-static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
+static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       size_t i, enum menu_action action)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
-   cannoli_t *cannoli = NULL;
+   streamlined_t *strm = NULL;
 
    if (menu_st)
-      cannoli = (cannoli_t*)menu_st->userdata;
+      strm = (streamlined_t*)menu_st->userdata;
 
-   if (cannoli && cannoli->is_quick_menu)
+   if (strm && strm->is_quick_menu)
    {
       /* Handle input for save slot selection when on Save/Load entry */
-      if (cannoli->show_slot_selector)
+      if (strm->show_slot_selector)
       {
          settings_t *settings = config_get_ptr();
          struct menu_state *menu_state = menu_state_get_ptr();
@@ -2220,21 +2201,21 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
           */
          if (action == MENU_ACTION_LEFT)
          {
-            cannoli->preview_slot--;
-            if (cannoli->preview_slot < 0)
-               cannoli->preview_slot = CANNOLI_NUM_SLOTS - 1;
-            settings->ints.state_slot = cannoli->preview_slot - 1;
-            cannoli_load_slot_thumbnail(cannoli, cannoli->preview_slot);
+            strm->preview_slot--;
+            if (strm->preview_slot < 0)
+               strm->preview_slot = STREAMLINED_NUM_SLOTS - 1;
+            settings->ints.state_slot = strm->preview_slot - 1;
+            streamlined_load_slot_thumbnail(strm, strm->preview_slot);
             return 0;  /* Consume input */
          }
 
          if (action == MENU_ACTION_RIGHT)
          {
-            cannoli->preview_slot++;
-            if (cannoli->preview_slot >= CANNOLI_NUM_SLOTS)
-               cannoli->preview_slot = 0;
-            settings->ints.state_slot = cannoli->preview_slot - 1;
-            cannoli_load_slot_thumbnail(cannoli, cannoli->preview_slot);
+            strm->preview_slot++;
+            if (strm->preview_slot >= STREAMLINED_NUM_SLOTS)
+               strm->preview_slot = 0;
+            settings->ints.state_slot = strm->preview_slot - 1;
+            streamlined_load_slot_thumbnail(strm, strm->preview_slot);
             return 0;  /* Consume input */
          }
 
@@ -2252,24 +2233,24 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       }
 
       /* Back button in Advanced submenu: return to main quick menu */
-      if (action == MENU_ACTION_CANCEL && cannoli->in_settings_submenu)
+      if (action == MENU_ACTION_CANCEL && strm->in_settings_submenu)
       {
-         cannoli->in_settings_submenu = false;
-         cannoli->return_to_settings_submenu = false;
-         cannoli_populate_quick_menu();
-         menu_st->selection_ptr = cannoli->saved_quick_menu_selection;
+         strm->in_settings_submenu = false;
+         strm->return_to_settings_submenu = false;
+         streamlined_populate_quick_menu();
+         menu_st->selection_ptr = strm->saved_quick_menu_selection;
          return 0;
       }
 
       /* Back button in main quick menu: close menu entirely and resume game */
-      if (action == MENU_ACTION_CANCEL && !cannoli->in_settings_submenu)
+      if (action == MENU_ACTION_CANCEL && !strm->in_settings_submenu)
       {
          command_event(CMD_EVENT_MENU_TOGGLE, NULL);
          return 0;
       }
 
       /* Select "Advanced" entry: enter the settings submenu */
-      if (action == MENU_ACTION_OK && entry && !cannoli->in_settings_submenu)
+      if (action == MENU_ACTION_OK && entry && !strm->in_settings_submenu)
       {
          const char *entry_label = NULL;
 
@@ -2280,10 +2261,10 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
 
          if (entry_label && string_is_equal(entry_label, "Advanced"))
          {
-            cannoli->saved_quick_menu_selection = menu_st->selection_ptr;
-            cannoli->in_settings_submenu = true;
-            cannoli->return_to_settings_submenu = false;
-            cannoli_populate_settings_submenu();
+            strm->saved_quick_menu_selection = menu_st->selection_ptr;
+            strm->in_settings_submenu = true;
+            strm->return_to_settings_submenu = false;
+            streamlined_populate_settings_submenu();
             menu_st->selection_ptr = 0;
             return 0;
          }
@@ -2291,12 +2272,12 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
          /* Handle "Quit" - if not CLI, close content and go to main menu */
          if (entry_label && string_is_equal(entry_label, "Quit"))
          {
-            if (!cannoli_is_launched_from_cli())
+            if (!streamlined_is_launched_from_cli())
             {
-               /* Reset cannoli state */
-               cannoli->is_quick_menu = false;
-               cannoli->in_settings_submenu = false;
-               cannoli->return_to_settings_submenu = false;
+               /* Reset strm state */
+               strm->is_quick_menu = false;
+               strm->in_settings_submenu = false;
+               strm->return_to_settings_submenu = false;
 
                /* Unload core and flush to main menu */
                command_event(CMD_EVENT_UNLOAD_CORE, NULL);
@@ -2311,21 +2292,21 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
        * When entering an RA settings screen from Advanced submenu,
        * set flag to return to Advanced (not main menu) when backing out.
        */
-      if (action == MENU_ACTION_OK && cannoli->in_settings_submenu)
+      if (action == MENU_ACTION_OK && strm->in_settings_submenu)
       {
-         cannoli->return_to_settings_submenu = true;
+         strm->return_to_settings_submenu = true;
       }
    }
 
    /* Handle core selection mode */
-   if (cannoli && cannoli->selecting_core)
+   if (strm && strm->selecting_core)
    {
       /* Cancel core selection - go back to folder */
       if (action == MENU_ACTION_CANCEL)
       {
-         cannoli->selecting_core = false;
-         cannoli->pending_content_path[0] = '\0';
-         cannoli_populate_folder_menu(cannoli, cannoli->current_folder_path, true);
+         strm->selecting_core = false;
+         strm->pending_content_path[0] = '\0';
+         streamlined_populate_folder_menu(strm, strm->current_folder_path, true);
          return 0;
       }
 
@@ -2339,11 +2320,11 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
             content_ctx_info_t content_info;
 
             /* Save the selected core to .core.txt for this folder */
-            cannoli_save_folder_core(cannoli->current_folder_path, selected_core);
+            streamlined_save_folder_core(strm->current_folder_path, selected_core);
 
             /* Update the folder's core path */
-            strlcpy(cannoli->folder_core_path, selected_core,
-                  sizeof(cannoli->folder_core_path));
+            strlcpy(strm->folder_core_path, selected_core,
+                  sizeof(strm->folder_core_path));
 
             content_info.argc        = 0;
             content_info.argv        = NULL;
@@ -2351,27 +2332,27 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
             content_info.environ_get = NULL;
 
             /* Save folder state so we can return after quitting */
-            cannoli->folder_selection = menu_st->selection_ptr;
-            strlcpy(cannoli->last_launched_folder, cannoli->current_folder_path,
-                  sizeof(cannoli->last_launched_folder));
-            strlcpy(cannoli->last_folder_core_path, cannoli->folder_core_path,
-                  sizeof(cannoli->last_folder_core_path));
-            cannoli->return_to_folder = true;
+            strm->folder_selection = menu_st->selection_ptr;
+            strlcpy(strm->last_launched_folder, strm->current_folder_path,
+                  sizeof(strm->last_launched_folder));
+            strlcpy(strm->last_folder_core_path, strm->folder_core_path,
+                  sizeof(strm->last_folder_core_path));
+            strm->return_to_folder = true;
 
-            cannoli->selecting_core = false;
-            cannoli->is_custom_main_menu = false;
-            cannoli->in_folder = false;
+            strm->selecting_core = false;
+            strm->is_custom_main_menu = false;
+            strm->in_folder = false;
 
             /* Close menu before loading content */
             command_event(CMD_EVENT_MENU_TOGGLE, NULL);
 
             task_push_load_content_with_new_core_from_menu(
                   selected_core,
-                  cannoli->pending_content_path,
+                  strm->pending_content_path,
                   &content_info,
                   CORE_TYPE_PLAIN, NULL, NULL);
 
-            cannoli->pending_content_path[0] = '\0';
+            strm->pending_content_path[0] = '\0';
             return 0;
          }
       }
@@ -2387,10 +2368,10 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
    }
 
    /* Handle custom main menu (launcher mode) navigation */
-   if (cannoli && cannoli->is_custom_main_menu)
+   if (strm && strm->is_custom_main_menu)
    {
       /* Block back navigation when inside a folder */
-      if (action == MENU_ACTION_CANCEL && cannoli->in_folder)
+      if (action == MENU_ACTION_CANCEL && strm->in_folder)
       {
          /* Go back to top-level folder listing */
          settings_t *settings = config_get_ptr();
@@ -2398,37 +2379,37 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
 
          if (!string_is_empty(start_dir))
          {
-            cannoli_populate_folder_menu(cannoli, start_dir, false);  /* Back to top - no slash */
-            strlcpy(cannoli->current_folder_path, start_dir,
-                  sizeof(cannoli->current_folder_path));
-            cannoli->in_folder = false;
+            streamlined_populate_folder_menu(strm, start_dir, false);  /* Back to top - no slash */
+            strlcpy(strm->current_folder_path, start_dir,
+                  sizeof(strm->current_folder_path));
+            strm->in_folder = false;
             /* Restore saved main menu selection */
-            menu_st->selection_ptr = cannoli->main_menu_selection;
+            menu_st->selection_ptr = strm->main_menu_selection;
          }
          return 0;
       }
 
       /* Back button in main settings submenu: return to main menu */
-      if (action == MENU_ACTION_CANCEL && cannoli->in_main_settings_submenu)
+      if (action == MENU_ACTION_CANCEL && strm->in_main_settings_submenu)
       {
          settings_t *settings = config_get_ptr();
          const char *start_dir = settings->paths.directory_menu_content;
 
-         cannoli->in_main_settings_submenu = false;
-         cannoli->return_to_main_settings_submenu = false;
+         strm->in_main_settings_submenu = false;
+         strm->return_to_main_settings_submenu = false;
          if (!string_is_empty(start_dir))
          {
-            cannoli_populate_folder_menu(cannoli, start_dir, false);
-            strlcpy(cannoli->current_folder_path, start_dir,
-                  sizeof(cannoli->current_folder_path));
+            streamlined_populate_folder_menu(strm, start_dir, false);
+            strlcpy(strm->current_folder_path, start_dir,
+                  sizeof(strm->current_folder_path));
          }
          /* Restore saved main menu selection */
-         menu_st->selection_ptr = cannoli->saved_main_menu_selection;
+         menu_st->selection_ptr = strm->saved_main_menu_selection;
          return 0;
       }
 
       /* Block back navigation at top level (nowhere to go) */
-      if (action == MENU_ACTION_CANCEL && !cannoli->in_folder && !cannoli->in_main_settings_submenu)
+      if (action == MENU_ACTION_CANCEL && !strm->in_folder && !strm->in_main_settings_submenu)
       {
          return 0;  /* Do nothing - can't go up from top level */
       }
@@ -2437,25 +2418,25 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
       if (action == MENU_ACTION_OK && entry)
       {
          /* Check for Settings entry - show custom settings submenu */
-         if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS && !cannoli->in_main_settings_submenu)
+         if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS && !strm->in_main_settings_submenu)
          {
-            cannoli->saved_main_menu_selection = menu_st->selection_ptr;
-            cannoli->in_main_settings_submenu = true;
-            cannoli_populate_main_settings_submenu();
+            strm->saved_main_menu_selection = menu_st->selection_ptr;
+            strm->in_main_settings_submenu = true;
+            streamlined_populate_main_settings_submenu();
             menu_st->selection_ptr = 0;
             return 0;
          }
 
          /* Handle selection within main settings submenu */
-         if (cannoli->in_main_settings_submenu)
+         if (strm->in_main_settings_submenu)
          {
             /* Save selection so we can return to same position */
-            cannoli->saved_settings_selection = menu_st->selection_ptr;
+            strm->saved_settings_selection = menu_st->selection_ptr;
             /* Set flag to return to settings submenu when backing out */
-            cannoli->return_to_main_settings_submenu = true;
+            strm->return_to_main_settings_submenu = true;
             /* Let generic handler process the RA menu item */
-            cannoli->is_custom_main_menu = false;
-            cannoli->in_main_settings_submenu = false;
+            strm->is_custom_main_menu = false;
+            strm->in_main_settings_submenu = false;
             return generic_menu_entry_action(userdata, entry, i, action);
          }
 
@@ -2468,19 +2449,19 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
             if (path_is_directory(item_path))
             {
                /* Save current selection before entering folder */
-               cannoli->main_menu_selection = menu_st->selection_ptr;
+               strm->main_menu_selection = menu_st->selection_ptr;
 
                /* Enter the selected folder */
-               cannoli_populate_folder_menu(cannoli, item_path, true);  /* Inside folder - show slash */
-               strlcpy(cannoli->current_folder_path, item_path,
-                     sizeof(cannoli->current_folder_path));
+               streamlined_populate_folder_menu(strm, item_path, true);  /* Inside folder - show slash */
+               strlcpy(strm->current_folder_path, item_path,
+                     sizeof(strm->current_folder_path));
 
                /* Try to read folder's core.txt */
-               if (!cannoli_read_folder_core(item_path, cannoli->folder_core_path,
-                     sizeof(cannoli->folder_core_path)))
-                  cannoli->folder_core_path[0] = '\0';  /* No core.txt found */
+               if (!streamlined_read_folder_core(item_path, strm->folder_core_path,
+                     sizeof(strm->folder_core_path)))
+                  strm->folder_core_path[0] = '\0';  /* No core.txt found */
 
-               cannoli->in_folder = true;
+               strm->in_folder = true;
                menu_st->selection_ptr = 0;
                return 0;
             }
@@ -2491,17 +2472,17 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
                content_ctx_info_t content_info;
 
                /* Check if folder has a specific core assigned via .core.txt */
-               if (!string_is_empty(cannoli->folder_core_path))
+               if (!string_is_empty(strm->folder_core_path))
                {
-                  core_path = cannoli->folder_core_path;
+                  core_path = strm->folder_core_path;
                }
                else
                {
                   /* No .core.txt - show core selection screen */
-                  strlcpy(cannoli->pending_content_path, item_path,
-                        sizeof(cannoli->pending_content_path));
-                  cannoli->selecting_core = true;
-                  cannoli_populate_core_selection(cannoli, item_path);
+                  strlcpy(strm->pending_content_path, item_path,
+                        sizeof(strm->pending_content_path));
+                  strm->selecting_core = true;
+                  streamlined_populate_core_selection(strm, item_path);
                   menu_st->selection_ptr = 0;
                   return 0;
                }
@@ -2514,15 +2495,15 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
                   content_info.environ_get = NULL;
 
                   /* Save folder state so we can return after quitting */
-                  cannoli->folder_selection = menu_st->selection_ptr;
-                  strlcpy(cannoli->last_launched_folder, cannoli->current_folder_path,
-                        sizeof(cannoli->last_launched_folder));
-                  strlcpy(cannoli->last_folder_core_path, cannoli->folder_core_path,
-                        sizeof(cannoli->last_folder_core_path));
-                  cannoli->return_to_folder = true;
+                  strm->folder_selection = menu_st->selection_ptr;
+                  strlcpy(strm->last_launched_folder, strm->current_folder_path,
+                        sizeof(strm->last_launched_folder));
+                  strlcpy(strm->last_folder_core_path, strm->folder_core_path,
+                        sizeof(strm->last_folder_core_path));
+                  strm->return_to_folder = true;
 
-                  cannoli->is_custom_main_menu = false;
-                  cannoli->in_folder = false;
+                  strm->is_custom_main_menu = false;
+                  strm->in_folder = false;
 
                   /* Close menu before loading content */
                   command_event(CMD_EVENT_MENU_TOGGLE, NULL);
@@ -2540,28 +2521,36 @@ static int cannoli_entry_action(void *userdata, menu_entry_t *entry,
             }
          }
       }
+
+      /* Block non-navigation actions (SCAN, SEARCH, INFO, etc.)
+       * from reaching the generic handler - custom menu entries
+       * lack the path setup that those handlers expect */
+      if (   action == MENU_ACTION_SCAN
+          || action == MENU_ACTION_SEARCH
+          || action == MENU_ACTION_INFO)
+         return 0;
    }
 
    /* Delegate all other input to RetroArch's generic menu handler */
    return generic_menu_entry_action(userdata, entry, i, action);
 }
 
-menu_ctx_driver_t menu_ctx_cannoli = {
+menu_ctx_driver_t menu_ctx_streamlined = {
    NULL,                         /* set_texture */
    NULL,                         /* render_messagebox */
-   cannoli_render,
-   cannoli_frame,
-   cannoli_init,
-   cannoli_free,
-   cannoli_context_reset,
-   cannoli_context_destroy,
-   cannoli_populate_entries,
+   streamlined_render,
+   streamlined_frame,
+   streamlined_init,
+   streamlined_free,
+   streamlined_context_reset,
+   streamlined_context_destroy,
+   streamlined_populate_entries,
    NULL,                         /* toggle */
-   cannoli_navigation_clear,
+   streamlined_navigation_clear,
    NULL,                         /* navigation_decrement */
    NULL,                         /* navigation_increment */
-   cannoli_navigation_set,
-   cannoli_navigation_set_last,
+   streamlined_navigation_set,
+   streamlined_navigation_set_last,
    NULL,                         /* navigation_descend_alphabet */
    NULL,                         /* navigation_ascend_alphabet */
    NULL,                         /* lists_init */
@@ -2577,8 +2566,8 @@ menu_ctx_driver_t menu_ctx_cannoli = {
    NULL,                         /* list_set_selection */
    NULL,                         /* bind_init */
    NULL,                         /* load_image */
-   "cannoli",
-   cannoli_environ,
+   "streamlined",
+   streamlined_environ,
    NULL,                         /* update_thumbnail_path */
    NULL,                         /* update_thumbnail_image */
    NULL,                         /* refresh_thumbnail_image */
@@ -2587,6 +2576,6 @@ menu_ctx_driver_t menu_ctx_cannoli = {
    NULL,                         /* update_savestate_thumbnail_path */
    NULL,                         /* update_savestate_thumbnail_image */
    NULL,                         /* pointer_down */
-   cannoli_pointer_up,
-   cannoli_entry_action
+   streamlined_pointer_up,
+   streamlined_entry_action
 };

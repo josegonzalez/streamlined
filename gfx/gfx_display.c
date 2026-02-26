@@ -289,7 +289,7 @@ float gfx_display_get_dpi_scale(
           * is ignored
           * > If we are not using a widget scale factor override,
           *   just set menu_scale_factor to 1.0 */
-         if (p_disp->menu_driver_id == MENU_DRIVER_ID_RGUI)
+         if (   p_disp->menu_driver_id == MENU_DRIVER_ID_RGUI)
             menu_scale_factor        = 1.0f;
          else
 #endif

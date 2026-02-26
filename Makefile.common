@@ -1055,9 +1055,9 @@ ifeq ($(HAVE_MENU), 1)
       DEFINES += -DHAVE_RGUI
    endif
 
-   ifeq ($(HAVE_CANNOLI), 1)
-      OBJ += menu/drivers/cannoli.o
-      DEFINES += -DHAVE_CANNOLI
+   ifeq ($(HAVE_STREAMLINED), 1)
+      OBJ += menu/drivers/streamlined.o
+      DEFINES += -DHAVE_STREAMLINED
    endif
 
    ifeq ($(HAVE_MATERIALUI), 1)
