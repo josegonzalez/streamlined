@@ -1,6 +1,6 @@
 package com.retroarch.browser.retroactivity;
 
-import com.retroarch.BuildConfig;
+import com.retroarch.btk.BuildConfig;
 import com.retroarch.browser.preferences.util.UserPreferences;
 import com.retroarch.playcore.PlayCoreManager;
 

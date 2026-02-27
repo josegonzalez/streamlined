@@ -260,6 +260,7 @@ typedef struct
    bool return_to_main_settings_submenu; /* Flag to return to settings submenu after backing out */
    size_t saved_main_menu_selection; /* Remember position in main menu when entering settings */
    size_t saved_settings_selection; /* Remember position in settings submenu */
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -357,38 +358,6 @@ static void streamlined_draw_rounded_pill(streamlined_t *strm,
             rect_x, y, rect_width, height,
             video_width, video_height, color, NULL);
    }
-}
-
-/*
- * Draw a button hint: accent-colored button letter + muted label.
- * Clean text-only approach inspired by Ozone's footer layout.
- *
- *   B Back                              A Select
- *   ^                                   ^
- *   accent color                        accent color
- *     ^^^^                                ^^^^^^
- *     muted gray                          muted gray
- *
- * Returns total width of the drawn hint for layout purposes.
- */
-static int streamlined_draw_button_legend(streamlined_t *strm,
-      gfx_display_t *p_disp,
-      int x, int y, const char *button, const char *label,
-      unsigned video_width, unsigned video_height)
-{
-   int gap          = (int)(4 * strm->scale_factor);
-   int btn_width    = streamlined_get_text_width(strm, button, true);
-   int label_width  = streamlined_get_text_width(strm, label, true);
-
-   /* Button letter in accent color */
-   streamlined_draw_text(strm, p_disp, video_width, video_height,
-         x, y, button, streamlined_color_text_accent, true);
-
-   /* Label in muted gray */
-   streamlined_draw_text(strm, p_disp, video_width, video_height,
-         x + btn_width + gap, y, label, streamlined_color_text_muted, true);
-
-   return btn_width + gap + label_width;
 }
 
 static void streamlined_draw_text(streamlined_t *strm,
@@ -773,7 +742,7 @@ static void streamlined_render_menu(streamlined_t *strm,
    /* Calculate visible items: screen height minus title area and button legend area */
    {
       int title_area = strm->margin_y + (int)(strm->font_size_title * 1.4f);
-      int bottom_area = strm->margin_y + (int)(strm->font_size_small * 1.5f);
+      int bottom_area = (int)(78.0f * strm->scale_factor);
       max_visible = (video_height - title_area - bottom_area) / item_height;
    }
    if (max_visible == 0)
@@ -1065,25 +1034,79 @@ static void streamlined_render_menu(streamlined_t *strm,
    if (strm->show_slot_selector)
       streamlined_draw_slot_selector(strm, p_disp, userdata, video_width, video_height);
 
-   /* Button legends */
+   /* Footer - Back on left, OK on right, white pills with black letter + white label */
    {
-      int hint_width;
-      int button_legend_y = video_height - strm->margin_y;
+      float scale            = strm->scale_factor;
+      float footer_height    = 78.0f * scale;
+      float footer_margin    = 40.0f * scale;
+      float pill_h           = strm->font_size_small + 8.0f * scale;
+      float pill_pad         = 10.0f * scale;
+      float pill_text_gap    = 8.0f * scale;
 
-      /* "B Back" on the left */
-      streamlined_draw_button_legend(strm, p_disp,
-            strm->margin_x, button_legend_y,
-            "B", "Back",
-            video_width, video_height);
+      float footer_center_y  = (float)video_height - (footer_height / 2.0f);
+      float pill_y           = footer_center_y - (pill_h / 2.0f);
+      float text_y           = footer_center_y + (strm->font_size_small * 0.35f);
 
-      /* "A Select" on the right */
-      hint_width = streamlined_get_text_width(strm, "A", true)
-            + (int)(4 * strm->scale_factor)
-            + streamlined_get_text_width(strm, "Select", true);
-      streamlined_draw_button_legend(strm, p_disp,
-            video_width - strm->margin_x - hint_width, button_legend_y,
-            "A", "Select",
-            video_width, video_height);
+      int back_key_w, ok_key_w;
+      int back_pill_w, ok_pill_w;
+      const char *back_key   = "B";
+      const char *ok_key     = "A";
+      const char *back_str   = msg_hash_to_str(
+            MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
+      const char *ok_str     = msg_hash_to_str(
+            MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
+
+      back_key_w  = font_driver_get_message_width(
+            strm->font_small.font, back_key, strlen(back_key), 1.0f);
+      ok_key_w    = font_driver_get_message_width(
+            strm->font_small.font, ok_key, strlen(ok_key), 1.0f);
+      back_pill_w = back_key_w + (int)(pill_pad * 2.0f);
+      ok_pill_w   = ok_key_w + (int)(pill_pad * 2.0f);
+
+      /* Left side: [margin] [B pill] [gap] Back */
+      streamlined_draw_rounded_pill(strm, p_disp, userdata,
+            (int)footer_margin, (int)pill_y, back_pill_w, (int)pill_h,
+            video_width, video_height, streamlined_color_selection);
+      gfx_display_draw_text(strm->font_small.font,
+            back_key,
+            (int)(footer_margin + pill_pad),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text_dark,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      gfx_display_draw_text(strm->font_small.font,
+            back_str,
+            (int)(footer_margin + (float)back_pill_w + pill_text_gap),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+      /* Right side: [A pill] [gap] OK [margin] */
+      {
+         int ok_label_w = font_driver_get_message_width(
+               strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
+         float ok_pill_x = (float)video_width - footer_margin
+               - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
+
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
+               video_width, video_height, streamlined_color_selection);
+         gfx_display_draw_text(strm->font_small.font,
+               ok_key,
+               (int)(ok_pill_x + pill_pad),
+               (int)text_y,
+               video_width, video_height,
+               streamlined_color_text_dark,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         gfx_display_draw_text(strm->font_small.font,
+               ok_str,
+               (int)(ok_pill_x + (float)ok_pill_w + pill_text_gap),
+               (int)text_y,
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      }
    }
 }
 
@@ -1906,6 +1929,7 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    strm->item_ticker_selection = (size_t)-1;
 
    gfx_display_init_white_texture();
+
 }
 
 static void streamlined_context_destroy(void *data)
@@ -1937,6 +1961,7 @@ static void streamlined_context_destroy(void *data)
 
       /* Clean up save slot thumbnail */
       gfx_thumbnail_reset(&strm->savestate_thumbnail);
+
    }
 
    gfx_display_deinit_white_texture();

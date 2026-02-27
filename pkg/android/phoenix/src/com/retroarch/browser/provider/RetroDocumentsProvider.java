@@ -18,8 +18,8 @@ import android.provider.DocumentsContract.Root;
 import android.provider.DocumentsProvider;
 import android.webkit.MimeTypeMap;
 
-import com.retroarch.BuildConfig;
-import com.retroarch.R;
+import com.retroarch.btk.BuildConfig;
+import com.retroarch.btk.R;
 
 import java.io.File;
 import java.io.FileNotFoundException;
