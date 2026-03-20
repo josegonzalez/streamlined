@@ -73,6 +73,7 @@
 #include <file/file_path.h>
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
+#include "../../verbosity.h"
 
 /* ======================================================================
  * CONFIGURATION
@@ -250,6 +251,13 @@ typedef struct
    char last_launched_folder[PATH_MAX_LENGTH]; /* Folder from which game was launched */
    char last_folder_core_path[PATH_MAX_LENGTH]; /* Core path for last launched folder */
    bool return_to_folder;         /* Flag to return to folder after game exit */
+
+   /* ROM thumbnail display */
+   gfx_thumbnail_t rom_thumbnail;
+   char rom_thumbnail_path[PATH_MAX_LENGTH];
+   size_t rom_thumbnail_selection;
+   bool rom_thumbnail_load_logged;
+   bool savestate_thumbnail_load_logged;
 
    /* Core selection mode */
    bool selecting_core;           /* True when showing core selection list */
@@ -537,11 +545,150 @@ static void streamlined_load_slot_thumbnail(streamlined_t *strm, int preview_slo
       gfx_thumbnail_request_file(state_path, &strm->savestate_thumbnail,
             settings->uints.gfx_thumbnail_upscale_threshold);
 
+      RARCH_DBG("[streamlined] Attempting to load save state thumbnail: %s\n", state_path);
+      if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_PENDING)
+      {
+         RARCH_DBG("[streamlined] File found: %s\n", state_path);
+         strm->savestate_thumbnail_load_logged = false;
+      }
+      else
+         RARCH_DBG("[streamlined] File not found: %s\n", state_path);
+
       /* Use core aspect ratio for proper rendering */
       strm->savestate_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
    }
 
    strm->preview_slot = preview_slot;
+}
+
+/*
+ * Load a ROM thumbnail from the .media folder relative to the ROM's directory.
+ * Path: {current_folder}/.media/{type}/{rom_basename_without_ext}.png
+ * Type mapping: 1->Screenshot, 2->Title, 3->Boxart (0 = off)
+ */
+static void streamlined_load_rom_thumbnail(streamlined_t *strm, const char *rom_file_path)
+{
+   char thumb_path[PATH_MAX_LENGTH];
+   char name_buf[PATH_MAX_LENGTH];
+   const char *type_folder;
+   const char *base_name;
+   char *ext;
+   settings_t *settings = config_get_ptr();
+
+   if (!strm || string_is_empty(rom_file_path))
+      return;
+
+   /* Check thumbnail type setting */
+   if (settings->uints.gfx_thumbnails == 0)
+   {
+      gfx_thumbnail_reset(&strm->rom_thumbnail);
+      strm->rom_thumbnail_path[0] = '\0';
+      return;
+   }
+
+   /* Map type: 1->Screenshot, 2->Title, 3->Boxart */
+   switch (settings->uints.gfx_thumbnails)
+   {
+      case 1:  type_folder = "Screenshot"; break;
+      case 2:  type_folder = "Title";      break;
+      case 3:  type_folder = "Boxart";     break;
+      default: return;
+   }
+
+   /* Get ROM base filename and strip extension */
+   base_name = path_basename(rom_file_path);
+   if (string_is_empty(base_name))
+      return;
+
+   strlcpy(name_buf, base_name, sizeof(name_buf));
+   ext = strrchr(name_buf, '.');
+   if (ext)
+      *ext = '\0';
+
+   /* Build path: {current_folder}/.media/{type}/{name}.png */
+   fill_pathname_join_special(thumb_path, strm->current_folder_path,
+         ".media", sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         type_folder, sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         name_buf, sizeof(thumb_path));
+   strlcat(thumb_path, ".png", sizeof(thumb_path));
+
+   /* Skip if same path already loaded */
+   if (string_is_equal(thumb_path, strm->rom_thumbnail_path))
+      return;
+
+   strlcpy(strm->rom_thumbnail_path, thumb_path,
+         sizeof(strm->rom_thumbnail_path));
+
+   gfx_thumbnail_reset(&strm->rom_thumbnail);
+   gfx_thumbnail_request_file(thumb_path, &strm->rom_thumbnail,
+         settings->uints.gfx_thumbnail_upscale_threshold);
+
+   RARCH_DBG("[streamlined] Attempting to load ROM thumbnail: %s\n", thumb_path);
+   if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_PENDING)
+   {
+      RARCH_DBG("[streamlined] File found: %s\n", thumb_path);
+      strm->rom_thumbnail_load_logged = false;
+   }
+   else
+      RARCH_DBG("[streamlined] File not found: %s\n", thumb_path);
+}
+
+/*
+ * Load a directory thumbnail from the parent folder's .media folder.
+ * Path: {parent_path}/.media/{folder_name}.png
+ * No type subfolder needed for directories.
+ */
+static void streamlined_load_dir_thumbnail(streamlined_t *strm,
+      const char *dir_path, const char *parent_path)
+{
+   char thumb_path[PATH_MAX_LENGTH];
+   const char *dir_name;
+   settings_t *settings = config_get_ptr();
+
+   if (!strm || string_is_empty(dir_path) || string_is_empty(parent_path))
+      return;
+
+   /* Check folder thumbnails setting */
+   if (!settings->bools.menu_streamlined_show_folder_thumbnails)
+   {
+      gfx_thumbnail_reset(&strm->rom_thumbnail);
+      strm->rom_thumbnail_path[0] = '\0';
+      return;
+   }
+
+   /* Get directory basename */
+   dir_name = path_basename(dir_path);
+   if (string_is_empty(dir_name))
+      return;
+
+   /* Build path: {parent_path}/.media/{dirname}.png */
+   fill_pathname_join_special(thumb_path, parent_path,
+         ".media", sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         dir_name, sizeof(thumb_path));
+   strlcat(thumb_path, ".png", sizeof(thumb_path));
+
+   /* Skip if same path already loaded */
+   if (string_is_equal(thumb_path, strm->rom_thumbnail_path))
+      return;
+
+   strlcpy(strm->rom_thumbnail_path, thumb_path,
+         sizeof(strm->rom_thumbnail_path));
+
+   gfx_thumbnail_reset(&strm->rom_thumbnail);
+   gfx_thumbnail_request_file(thumb_path, &strm->rom_thumbnail,
+         settings->uints.gfx_thumbnail_upscale_threshold);
+
+   RARCH_DBG("[streamlined] Attempting to load directory thumbnail: %s\n", thumb_path);
+   if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_PENDING)
+   {
+      RARCH_DBG("[streamlined] File found: %s\n", thumb_path);
+      strm->rom_thumbnail_load_logged = false;
+   }
+   else
+      RARCH_DBG("[streamlined] File not found: %s\n", thumb_path);
 }
 
 /*
@@ -671,6 +818,48 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
    }
 }
 
+/*
+ * Draw the ROM/directory thumbnail on the right side of the screen.
+ * Aspect-correct, max 50% width, padded from edges, positioned below title.
+ */
+static void streamlined_draw_rom_thumbnail(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   float draw_width, draw_height;
+   int max_w, max_h, avail_top, avail_bottom, avail_h;
+   int draw_x, draw_y;
+
+   /* Max width: 50% of screen */
+   max_w = (int)(video_width * 0.5f) - strm->margin_x;
+
+   /* Available vertical area: below title, above footer */
+   avail_top    = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+   avail_bottom = (int)(video_height - 78.0f * strm->scale_factor);
+   avail_h      = avail_bottom - avail_top - strm->margin_y * 2;
+
+   if (avail_h <= 0 || max_w <= 0)
+      return;
+
+   max_h = avail_h;
+
+   /* Calculate aspect-correct dimensions */
+   gfx_thumbnail_get_draw_dimensions(
+         &strm->rom_thumbnail,
+         max_w, max_h, 1.0f,
+         &draw_width, &draw_height);
+
+   /* Position: right-aligned with margin, vertically centered in available area */
+   draw_x = video_width - strm->margin_x - (int)draw_width;
+   draw_y = avail_top + strm->margin_y + (avail_h - (int)draw_height) / 2;
+
+   gfx_thumbnail_draw(userdata, video_width, video_height,
+         &strm->rom_thumbnail,
+         (float)draw_x, (float)draw_y,
+         (unsigned)draw_width, (unsigned)draw_height,
+         GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
+}
+
 /* ======================================================================
  * MENU RENDERING
  * ====================================================================== */
@@ -737,6 +926,62 @@ static void streamlined_render_menu(streamlined_t *strm,
       }
 
       strm->last_selection = selection;
+   }
+
+   /* One-time log of menu mode for diagnostics */
+   {
+      static bool logged_menu_mode = false;
+      if (!logged_menu_mode)
+      {
+         RARCH_DBG("[streamlined] render_menu: is_custom_main_menu=%d, in_folder=%d, rom_thumbnail_selection=%u\n",
+               strm->is_custom_main_menu, strm->in_folder,
+               (unsigned)strm->rom_thumbnail_selection);
+         logged_menu_mode = true;
+      }
+   }
+
+   /* Load ROM/directory thumbnail on selection change in custom main menu */
+   if (strm->is_custom_main_menu && selection != strm->rom_thumbnail_selection)
+   {
+      strm->rom_thumbnail_selection = selection;
+
+      if (selection < list_size)
+      {
+         menu_entry_t entry;
+         MENU_ENTRY_INITIALIZE(entry);
+         entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
+                      | MENU_ENTRY_FLAG_VALUE_ENABLED
+                      | MENU_ENTRY_FLAG_LABEL_ENABLED;
+         menu_entry_get(&entry, 0, (unsigned)selection, NULL, true);
+
+         RARCH_DBG("[streamlined] Selection changed to %u, entry.path='%s', entry.label='%s', type=%u, in_folder=%d\n",
+               (unsigned)selection,
+               string_is_empty(entry.path) ? "(empty)" : entry.path,
+               string_is_empty(entry.label) ? "(empty)" : entry.label,
+               entry.type,
+               strm->in_folder);
+
+         if (entry.type == FILE_TYPE_DIRECTORY
+               && !string_is_empty(entry.label))
+         {
+            RARCH_DBG("[streamlined] Entry is directory, loading dir thumbnail\n");
+            streamlined_load_dir_thumbnail(strm, entry.label,
+                  strm->current_folder_path);
+         }
+         else if (strm->in_folder
+               && !string_is_empty(entry.label)
+               && path_is_valid(entry.label))
+         {
+            RARCH_DBG("[streamlined] Entry is ROM file, loading ROM thumbnail\n");
+            streamlined_load_rom_thumbnail(strm, entry.label);
+         }
+         else
+         {
+            RARCH_DBG("[streamlined] Non-file entry or invalid path, resetting thumbnail\n");
+            gfx_thumbnail_reset(&strm->rom_thumbnail);
+            strm->rom_thumbnail_path[0] = '\0';
+         }
+      }
    }
 
    /* Calculate visible items: screen height minus title area and button legend area */
@@ -860,6 +1105,25 @@ static void streamlined_render_menu(streamlined_t *strm,
    /* Draw menu entries */
    y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
 
+   /* Reserve space on the right for thumbnail when one is visible */
+   {
+      int thumb_reserve = 0;
+      if (strm->is_custom_main_menu
+          && strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+      {
+         float tw, th;
+         int max_tw = (int)(video_width * 0.5f) - strm->margin_x;
+         int avail_top = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+         int avail_bot = (int)(video_height - 78.0f * strm->scale_factor);
+         int max_th = avail_bot - avail_top - strm->margin_y * 2;
+         if (max_tw > 0 && max_th > 0)
+         {
+            gfx_thumbnail_get_draw_dimensions(
+                  &strm->rom_thumbnail, max_tw, max_th, 1.0f, &tw, &th);
+            thumb_reserve = (int)tw + strm->margin_x;
+         }
+      }
+
    for (i = 0; i < max_visible && (start_idx + i) < list_size; i++)
    {
       menu_entry_t entry;
@@ -872,6 +1136,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       int pill_height = (int)(strm->font_size * 1.5f);
       int pill_y = y + (item_height - pill_height) / 2;
       int text_y = pill_y + pill_height / 2 + (int)(strm->font_size * 0.30f);
+      int content_width = video_width - strm->margin_x * 2 - thumb_reserve;
 
       MENU_ENTRY_INITIALIZE(entry);
       entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
@@ -920,11 +1185,11 @@ static void streamlined_render_menu(streamlined_t *strm,
       {
          int pill_width;
          int text_width = streamlined_get_text_width(strm, display_label, false);
-         int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
+         int max_value_width = content_width * 45 / 100;
          int value_gap = (int)(16 * strm->scale_factor);
          int max_label_width = show_value
-               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - strm->margin_x * 2);
+               ? (content_width - max_value_width - value_gap)
+               : content_width;
 
          /*
           * Pill width calculation:
@@ -932,7 +1197,7 @@ static void streamlined_render_menu(streamlined_t *strm,
           * - Without value: fits snugly around label text with symmetric padding
           */
          if (show_value)
-            pill_width = video_width - strm->margin_x * 2 + strm->pill_padding * 2;
+            pill_width = content_width + strm->pill_padding * 2;
          else
             pill_width = (text_width > max_label_width ? max_label_width : text_width)
                   + strm->pill_padding * 2;
@@ -983,24 +1248,25 @@ static void streamlined_render_menu(streamlined_t *strm,
          {
             char truncated_value[256];
             int value_width;
+            int value_right_edge = strm->margin_x + content_width;
 
             streamlined_truncate_text(strm, entry.value, truncated_value,
                   sizeof(truncated_value), max_value_width, false);
             value_width = streamlined_get_text_width(strm, truncated_value, false);
 
             streamlined_draw_text(strm, p_disp, video_width, video_height,
-                  video_width - strm->margin_x - value_width, text_y,
+                  value_right_edge - value_width, text_y,
                   truncated_value, streamlined_color_text_dark, false);
          }
       }
       else
       {
          /* Non-selected: truncate long labels */
-         int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
+         int max_value_width = content_width * 45 / 100;
          int value_gap = (int)(16 * strm->scale_factor);
          int max_label_width = show_value
-               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - strm->margin_x * 2);
+               ? (content_width - max_value_width - value_gap)
+               : content_width;
          char truncated_label[256];
 
          streamlined_truncate_text(strm, display_label, truncated_label,
@@ -1013,25 +1279,67 @@ static void streamlined_render_menu(streamlined_t *strm,
          if (show_value)
          {
             char truncated_value[256];
-            int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
+            int max_value_width = content_width * 45 / 100;
             int value_width;
+            int value_right_edge = strm->margin_x + content_width;
 
             streamlined_truncate_text(strm, entry.value, truncated_value,
                   sizeof(truncated_value), max_value_width, false);
             value_width = streamlined_get_text_width(strm, truncated_value, false);
 
             streamlined_draw_text(strm, p_disp, video_width, video_height,
-                  video_width - strm->margin_x - value_width, text_y,
+                  value_right_edge - value_width, text_y,
                   truncated_value, streamlined_color_text, false);
          }
       }
 
       y += item_height;
    }
+   } /* end thumb_reserve block */
+
+   /* Log async thumbnail load results (once per load attempt) */
+   if (!strm->savestate_thumbnail_load_logged
+       && strm->savestate_thumbnail_path[0] != '\0')
+   {
+      if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+      {
+         RARCH_DBG("[streamlined] Image loaded successfully: %s\n",
+               strm->savestate_thumbnail_path);
+         strm->savestate_thumbnail_load_logged = true;
+      }
+      else if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
+      {
+         RARCH_DBG("[streamlined] Image load failed: %s\n",
+               strm->savestate_thumbnail_path);
+         strm->savestate_thumbnail_load_logged = true;
+      }
+   }
+
+   if (!strm->rom_thumbnail_load_logged
+       && strm->rom_thumbnail_path[0] != '\0')
+   {
+      if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+      {
+         RARCH_DBG("[streamlined] Image loaded successfully: %s\n",
+               strm->rom_thumbnail_path);
+         strm->rom_thumbnail_load_logged = true;
+      }
+      else if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
+      {
+         RARCH_DBG("[streamlined] Image load failed: %s\n",
+               strm->rom_thumbnail_path);
+         strm->rom_thumbnail_load_logged = true;
+      }
+   }
 
    /* Draw save slot selector if on Save/Load State entry */
    if (strm->show_slot_selector)
       streamlined_draw_slot_selector(strm, p_disp, userdata, video_width, video_height);
+
+   /* Draw ROM/directory thumbnail if available in custom main menu */
+   if (strm->is_custom_main_menu
+       && strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+      streamlined_draw_rom_thumbnail(strm, p_disp, userdata, video_width, video_height);
 
    /* Footer - Back on left, OK on right, white pills with black letter + white label */
    {
@@ -1961,6 +2269,9 @@ static void streamlined_context_destroy(void *data)
       /* Clean up save slot thumbnail */
       gfx_thumbnail_reset(&strm->savestate_thumbnail);
 
+      /* Clean up ROM/directory thumbnail */
+      gfx_thumbnail_reset(&strm->rom_thumbnail);
+
    }
 
    gfx_display_deinit_white_texture();
@@ -2099,6 +2410,7 @@ static void streamlined_populate_entries(void *data,
                strm->is_custom_main_menu = true;
                strm->in_folder = true;
                strm->return_to_folder = false;
+               strm->rom_thumbnail_selection = (size_t)-1;
                /* Restore selection to the game that was played */
                if (menu_st_local)
                   menu_st_local->selection_ptr = strm->folder_selection;
@@ -2110,6 +2422,7 @@ static void streamlined_populate_entries(void *data,
                      sizeof(strm->current_folder_path));
                strm->is_custom_main_menu = true;
                strm->in_folder = false;
+               strm->rom_thumbnail_selection = (size_t)-1;
             }
          }
          strm->is_quick_menu = false;
@@ -2407,6 +2720,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strlcpy(strm->current_folder_path, start_dir,
                   sizeof(strm->current_folder_path));
             strm->in_folder = false;
+            gfx_thumbnail_reset(&strm->rom_thumbnail);
+            strm->rom_thumbnail_path[0] = '\0';
+            strm->rom_thumbnail_selection = (size_t)-1;
             /* Restore saved main menu selection */
             menu_st->selection_ptr = strm->main_menu_selection;
          }
@@ -2486,6 +2802,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   strm->folder_core_path[0] = '\0';  /* No core.txt found */
 
                strm->in_folder = true;
+               gfx_thumbnail_reset(&strm->rom_thumbnail);
+               strm->rom_thumbnail_path[0] = '\0';
+               strm->rom_thumbnail_selection = (size_t)-1;
                menu_st->selection_ptr = 0;
                return 0;
             }

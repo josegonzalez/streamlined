@@ -12503,6 +12503,14 @@ MSG_HASH(
    "Display the left thumbnail under the right one, on the right side of the screen."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_SHOW_FOLDER_THUMBNAILS,
+   "Folder Thumbnails"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_SHOW_FOLDER_THUMBNAILS,
+   "Show thumbnails for folders from the .media directory."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "Thumbnail Scale Factor"
    )

@@ -3990,6 +3990,10 @@ MSG_HASH(
    "xmb_vertical_thumbnails"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_SHOW_FOLDER_THUMBNAILS,
+   "streamlined_show_folder_thumbnails"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "menu_xmb_thumbnail_scale_factor"
    )
