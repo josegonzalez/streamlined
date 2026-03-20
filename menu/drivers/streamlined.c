@@ -1155,8 +1155,16 @@ static void streamlined_render_menu(streamlined_t *strm,
          if (string_is_empty(entry_label) && !string_is_empty(entry.rich_label))
             entry_label = entry.rich_label;
       }
-      else if (strm->is_custom_main_menu && !string_is_empty(entry.label))
-         entry_label = entry.label;
+      else if (strm->is_custom_main_menu)
+      {
+         if (!string_is_empty(entry.label))
+            entry_label = entry.label;
+         else
+         {
+            const char *raw_path = list->list[start_idx + i].path;
+            entry_label = !string_is_empty(raw_path) ? raw_path : entry.path;
+         }
+      }
       else if (!string_is_empty(entry.rich_label))
          entry_label = entry.rich_label;
       else
