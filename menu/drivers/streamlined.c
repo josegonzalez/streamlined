@@ -70,9 +70,11 @@
 #include "../../disk_control_interface.h"
 #include "../../tasks/task_content.h"
 #include "../../core_info.h"
+#include "../../file_path_special.h"
 #include <file/file_path.h>
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
+#include "../../content.h"
 #include "../../verbosity.h"
 
 #if TARGET_OS_TV
@@ -273,6 +275,10 @@ typedef struct
    size_t saved_main_menu_selection; /* Remember position in main menu when entering settings */
    size_t saved_settings_selection; /* Remember position in settings submenu */
 
+   /* Save state detection for resume */
+   bool selected_is_file;         /* True when selection is a ROM (not folder) */
+   bool selected_has_savestate;   /* True when selected ROM has a save state */
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -285,6 +291,11 @@ typedef struct
 
 /* Forward declarations */
 static const char *streamlined_strip_sort_prefix(const char *name);
+static void streamlined_build_savestate_base_path(
+      const char *rom_path, const char *core_path,
+      char *out, size_t out_size);
+static bool streamlined_check_savestate(
+      const char *rom_path, const char *core_path);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -1028,6 +1039,21 @@ static void streamlined_render_menu(streamlined_t *strm,
             gfx_thumbnail_reset(&strm->rom_thumbnail);
             strm->rom_thumbnail_path[0] = '\0';
          }
+
+         /* Check if selected ROM has a save state (only in folder with core.txt) */
+         strm->selected_is_file = false;
+         strm->selected_has_savestate = false;
+
+         if (strm->in_folder && entry.type == FILE_TYPE_PLAIN
+               && !string_is_empty(strm->folder_core_path)
+               && !string_is_empty(entry.label))
+         {
+            strm->selected_is_file = true;
+            strm->selected_has_savestate = streamlined_check_savestate(
+                  entry.label, strm->folder_core_path);
+         }
+         else if (entry.type == FILE_TYPE_PLAIN)
+            strm->selected_is_file = true;
       }
    }
 
@@ -1396,7 +1422,7 @@ static void streamlined_render_menu(streamlined_t *strm,
        && strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
       streamlined_draw_rom_thumbnail(strm, p_disp, userdata, video_width, video_height);
 
-   /* Footer - Back on left, OK on right, white pills with black letter + white label */
+   /* Footer - Back on left, OK/Play on right, optionally Resume before Play */
    {
       float scale            = strm->scale_factor;
       float footer_height    = 78.0f * scale;
@@ -1404,6 +1430,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       float pill_h           = strm->font_size_small + 8.0f * scale;
       float pill_pad         = 10.0f * scale;
       float pill_text_gap    = 8.0f * scale;
+      float btn_spacing      = 20.0f * scale;
 
       float footer_center_y  = (float)video_height - (footer_height / 2.0f);
       float pill_y           = footer_center_y - (pill_h / 2.0f);
@@ -1415,8 +1442,10 @@ static void streamlined_render_menu(streamlined_t *strm,
       const char *ok_key     = "A";
       const char *back_str   = msg_hash_to_str(
             MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
-      const char *ok_str     = msg_hash_to_str(
-            MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
+      const char *ok_str     = (strm->in_folder && strm->selected_is_file)
+                               ? "Play"
+                               : msg_hash_to_str(
+                                    MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
 
       back_key_w  = font_driver_get_message_width(
             strm->font_small.font, back_key, strlen(back_key), 1.0f);
@@ -1444,12 +1473,14 @@ static void streamlined_render_menu(streamlined_t *strm,
             streamlined_color_text,
             TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
-      /* Right side: [A pill] [gap] OK [margin] */
+      /* Right side: optionally [X pill] [gap] Resume [spacing] then [A pill] [gap] Play/OK [margin] */
       {
          int ok_label_w = font_driver_get_message_width(
                strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
-         float ok_pill_x = (float)video_width - footer_margin
-               - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
+         float right_x  = (float)video_width - footer_margin;
+
+         /* Position A pill + label from right edge */
+         float ok_pill_x = right_x - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
          streamlined_draw_rounded_pill(strm, p_disp, userdata,
                (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
@@ -1468,6 +1499,38 @@ static void streamlined_render_menu(streamlined_t *strm,
                video_width, video_height,
                streamlined_color_text,
                TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+         /* Draw [X] Resume pill to the left of [A] Play when save state exists */
+         if (strm->in_folder && strm->selected_has_savestate)
+         {
+            const char *resume_key = "X";
+            const char *resume_str = "Resume";
+            int resume_key_w   = font_driver_get_message_width(
+                  strm->font_small.font, resume_key, strlen(resume_key), 1.0f);
+            int resume_pill_w  = resume_key_w + (int)(pill_pad * 2.0f);
+            int resume_label_w = font_driver_get_message_width(
+                  strm->font_small.font, resume_str, strlen(resume_str), 1.0f);
+            float resume_pill_x = ok_pill_x - btn_spacing
+                  - (float)resume_label_w - pill_text_gap - (float)resume_pill_w;
+
+            streamlined_draw_rounded_pill(strm, p_disp, userdata,
+                  (int)resume_pill_x, (int)pill_y, resume_pill_w, (int)pill_h,
+                  video_width, video_height, streamlined_color_selection);
+            gfx_display_draw_text(strm->font_small.font,
+                  resume_key,
+                  (int)(resume_pill_x + pill_pad),
+                  (int)text_y,
+                  video_width, video_height,
+                  streamlined_color_text_dark,
+                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+            gfx_display_draw_text(strm->font_small.font,
+                  resume_str,
+                  (int)(resume_pill_x + (float)resume_pill_w + pill_text_gap),
+                  (int)text_y,
+                  video_width, video_height,
+                  streamlined_color_text,
+                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         }
       }
    }
 }
@@ -1734,6 +1797,100 @@ static void streamlined_populate_main_settings_submenu(void)
             MENU_SETTING_ACTION,
             0, 0, NULL);
    }
+}
+
+/*
+ * Build the base save state path for a ROM, replicating RetroArch's
+ * directory logic (savestates_in_content_dir, sort_savestates_by_content,
+ * sort_savestates). Result is like: {dir}/{rom_basename}.state
+ */
+static void streamlined_build_savestate_base_path(
+      const char *rom_path, const char *core_path,
+      char *out, size_t out_size)
+{
+   settings_t *settings          = config_get_ptr();
+   const char *savestate_dir     = dir_get_ptr(RARCH_DIR_SAVESTATE);
+   bool savestates_in_content    = settings->bools.savestates_in_content_dir;
+   bool sort_by_content          = settings->bools.sort_savestates_by_content_enable;
+   bool sort_by_core             = settings->bools.sort_savestates_enable;
+   char dir[DIR_MAX_LENGTH];
+
+   dir[0] = '\0';
+
+   /* Step 1: Base directory */
+   if (string_is_empty(savestate_dir) || savestates_in_content)
+      fill_pathname_basedir(dir, rom_path, sizeof(dir));
+   else
+      strlcpy(dir, savestate_dir, sizeof(dir));
+
+   /* Step 2: Append content parent dir name if sort_by_content */
+   if (sort_by_content)
+   {
+      char content_dir_name[DIR_MAX_LENGTH];
+      content_dir_name[0] = '\0';
+      fill_pathname_parent_dir_name(content_dir_name, rom_path,
+            sizeof(content_dir_name));
+      if (!string_is_empty(content_dir_name))
+      {
+         char tmp[DIR_MAX_LENGTH];
+         fill_pathname_join_special(tmp, dir, content_dir_name, sizeof(tmp));
+         strlcpy(dir, tmp, sizeof(dir));
+      }
+   }
+
+   /* Step 3: Append core library_name if sort_by_core */
+   if (sort_by_core && !string_is_empty(core_path))
+   {
+      core_info_t *info = NULL;
+      if (core_info_find(core_path, &info) && info && info->core_name)
+      {
+         char tmp[DIR_MAX_LENGTH];
+         fill_pathname_join(tmp, dir, info->core_name, sizeof(tmp));
+         strlcpy(dir, tmp, sizeof(dir));
+      }
+   }
+
+   /* Step 4: Build final path: dir/rom_basename.state
+    * Use fill_pathname to strip the ROM extension first,
+    * matching standard RetroArch savestate naming. */
+   {
+      char tmp[PATH_MAX_LENGTH];
+      fill_pathname_join_special(tmp, dir, path_basename(rom_path), sizeof(tmp));
+      fill_pathname(out, tmp, FILE_PATH_STATE_EXTENSION, out_size);
+   }
+}
+
+/*
+ * Check if an auto-save state exists for the given ROM.
+ * Returns true if an auto-save state file exists.
+ */
+static bool streamlined_check_savestate(
+      const char *rom_path, const char *core_path)
+{
+   char base_path[PATH_MAX_LENGTH];
+   char check_path[PATH_MAX_LENGTH];
+
+   base_path[0] = '\0';
+   streamlined_build_savestate_base_path(rom_path, core_path,
+         base_path, sizeof(base_path));
+
+   RARCH_DBG("[streamlined] check_savestate: base_path='%s'\n", base_path);
+
+   if (string_is_empty(base_path))
+   {
+      RARCH_DBG("[streamlined] check_savestate: base_path is empty, skipping\n");
+      return false;
+   }
+
+   /* Check auto state: {base_path}.auto */
+   snprintf(check_path, sizeof(check_path), "%s.auto", base_path);
+   if (path_is_valid(check_path))
+   {
+      RARCH_DBG("[streamlined] check_savestate: '%s' -> found\n", check_path);
+      return true;
+   }
+   RARCH_DBG("[streamlined] check_savestate: no auto-save state found for '%s'\n", check_path);
+   return false;
 }
 
 /*
@@ -2503,10 +2660,13 @@ static void streamlined_populate_entries(void *data,
                strm->is_custom_main_menu = true;
                strm->in_folder = true;
                strm->return_to_folder = false;
+               gfx_thumbnail_reset(&strm->rom_thumbnail);
+               strm->rom_thumbnail_path[0] = '\0';
                strm->rom_thumbnail_selection = (size_t)-1;
                /* Restore selection to the game that was played */
                if (menu_st_local)
                   menu_st_local->selection_ptr = strm->folder_selection;
+
             }
             else
             {
@@ -2813,6 +2973,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strlcpy(strm->current_folder_path, start_dir,
                   sizeof(strm->current_folder_path));
             strm->in_folder = false;
+            strm->selected_has_savestate = false;
+            strm->selected_is_file = false;
             gfx_thumbnail_reset(&strm->rom_thumbnail);
             strm->rom_thumbnail_path[0] = '\0';
             strm->rom_thumbnail_selection = (size_t)-1;
@@ -2895,6 +3057,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   strm->folder_core_path[0] = '\0';  /* No core.txt found */
 
                strm->in_folder = true;
+               strm->selected_has_savestate = false;
+               strm->selected_is_file = false;
                gfx_thumbnail_reset(&strm->rom_thumbnail);
                strm->rom_thumbnail_path[0] = '\0';
                strm->rom_thumbnail_selection = (size_t)-1;
@@ -2938,6 +3102,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         sizeof(strm->last_folder_core_path));
                   strm->return_to_folder = true;
 
+                  /* Ensure clean launch — no entry state loading */
+                  runloop_state_get_ptr()->entry_state_slot = -1;
+
                   strm->is_custom_main_menu = false;
                   strm->in_folder = false;
 
@@ -2955,6 +3122,69 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                /* No compatible core found - do nothing for now */
                return 0;
             }
+         }
+      }
+
+      /* Y button = Resume with save state */
+      if (action == MENU_ACTION_SCAN
+            && strm->in_folder
+            && strm->selected_has_savestate
+            && entry)
+      {
+         const char *item_path = entry->label;
+         const char *core_path = strm->folder_core_path;
+
+         if (!string_is_empty(item_path) && path_is_valid(item_path)
+               && !string_is_empty(core_path) && path_is_valid(core_path))
+         {
+            content_ctx_info_t content_info;
+
+            content_info.argc        = 0;
+            content_info.argv        = NULL;
+            content_info.args        = NULL;
+            content_info.environ_get = NULL;
+
+            /* Save folder state for return */
+            strm->folder_selection = menu_st->selection_ptr;
+            strlcpy(strm->last_launched_folder, strm->current_folder_path,
+                  sizeof(strm->last_launched_folder));
+            strlcpy(strm->last_folder_core_path, strm->folder_core_path,
+                  sizeof(strm->last_folder_core_path));
+            strm->return_to_folder = true;
+
+            RARCH_DBG("[streamlined] Launching with resume: rom='%s' core='%s'\n",
+                  item_path, core_path);
+
+            strm->is_custom_main_menu = false;
+            strm->in_folder = false;
+
+            command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+
+            task_push_load_content_with_new_core_from_menu(
+                  core_path, item_path, &content_info,
+                  CORE_TYPE_PLAIN, NULL, NULL);
+
+            /* Load auto-save state now that core is initialized.
+             * Skip if the user already has savestate_auto_load enabled
+             * (the built-in mechanism would have loaded it during init). */
+            {
+               settings_t *settings       = config_get_ptr();
+               runloop_state_t *runloop_st = runloop_state_get_ptr();
+               if (!settings->bools.savestate_auto_load)
+               {
+                  char auto_path[PATH_MAX_LENGTH];
+                  size_t _len = strlcpy(auto_path, runloop_st->name.savestate,
+                        sizeof(auto_path));
+                  strlcpy(auto_path + _len, ".auto", sizeof(auto_path) - _len);
+
+                  RARCH_DBG("[streamlined] Loading auto-save state: '%s'\n", auto_path);
+
+                  if (path_is_valid(auto_path))
+                     content_load_state(auto_path, false, true);
+               }
+            }
+
+            return 0;
          }
       }
 
