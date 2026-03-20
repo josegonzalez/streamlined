@@ -262,8 +262,7 @@ typedef struct
    gfx_thumbnail_t rom_thumbnail;
    char rom_thumbnail_path[PATH_MAX_LENGTH];
    size_t rom_thumbnail_selection;
-   bool rom_thumbnail_load_logged;
-   bool savestate_thumbnail_load_logged;
+
 
    /* Core selection mode */
    bool selecting_core;           /* True when showing core selection list */
@@ -560,15 +559,6 @@ static void streamlined_load_slot_thumbnail(streamlined_t *strm, int preview_slo
       gfx_thumbnail_request_file(state_path, &strm->savestate_thumbnail,
             settings->uints.gfx_thumbnail_upscale_threshold);
 
-      RARCH_DBG("[streamlined] Attempting to load save state thumbnail: %s\n", state_path);
-      if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_PENDING)
-      {
-         RARCH_DBG("[streamlined] File found: %s\n", state_path);
-         strm->savestate_thumbnail_load_logged = false;
-      }
-      else
-         RARCH_DBG("[streamlined] File not found: %s\n", state_path);
-
       /* Use core aspect ratio for proper rendering */
       strm->savestate_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
    }
@@ -640,14 +630,6 @@ static void streamlined_load_rom_thumbnail(streamlined_t *strm, const char *rom_
    gfx_thumbnail_request_file(thumb_path, &strm->rom_thumbnail,
          settings->uints.gfx_thumbnail_upscale_threshold);
 
-   RARCH_DBG("[streamlined] Attempting to load ROM thumbnail: %s\n", thumb_path);
-   if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_PENDING)
-   {
-      RARCH_DBG("[streamlined] File found: %s\n", thumb_path);
-      strm->rom_thumbnail_load_logged = false;
-   }
-   else
-      RARCH_DBG("[streamlined] File not found: %s\n", thumb_path);
 }
 
 /*
@@ -696,14 +678,6 @@ static void streamlined_load_dir_thumbnail(streamlined_t *strm,
    gfx_thumbnail_request_file(thumb_path, &strm->rom_thumbnail,
          settings->uints.gfx_thumbnail_upscale_threshold);
 
-   RARCH_DBG("[streamlined] Attempting to load directory thumbnail: %s\n", thumb_path);
-   if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_PENDING)
-   {
-      RARCH_DBG("[streamlined] File found: %s\n", thumb_path);
-      strm->rom_thumbnail_load_logged = false;
-   }
-   else
-      RARCH_DBG("[streamlined] File not found: %s\n", thumb_path);
 }
 
 /*
@@ -986,18 +960,6 @@ static void streamlined_render_menu(streamlined_t *strm,
       strm->last_selection = selection;
    }
 
-   /* One-time log of menu mode for diagnostics */
-   {
-      static bool logged_menu_mode = false;
-      if (!logged_menu_mode)
-      {
-         RARCH_DBG("[streamlined] render_menu: is_custom_main_menu=%d, in_folder=%d, rom_thumbnail_selection=%u\n",
-               strm->is_custom_main_menu, strm->in_folder,
-               (unsigned)strm->rom_thumbnail_selection);
-         logged_menu_mode = true;
-      }
-   }
-
    /* Load ROM/directory thumbnail on selection change in custom main menu */
    if (strm->is_custom_main_menu && selection != strm->rom_thumbnail_selection)
    {
@@ -1012,17 +974,9 @@ static void streamlined_render_menu(streamlined_t *strm,
                       | MENU_ENTRY_FLAG_LABEL_ENABLED;
          menu_entry_get(&entry, 0, (unsigned)selection, NULL, true);
 
-         RARCH_DBG("[streamlined] Selection changed to %u, entry.path='%s', entry.label='%s', type=%u, in_folder=%d\n",
-               (unsigned)selection,
-               string_is_empty(entry.path) ? "(empty)" : entry.path,
-               string_is_empty(entry.label) ? "(empty)" : entry.label,
-               entry.type,
-               strm->in_folder);
-
          if (entry.type == FILE_TYPE_DIRECTORY
                && !string_is_empty(entry.label))
          {
-            RARCH_DBG("[streamlined] Entry is directory, loading dir thumbnail\n");
             streamlined_load_dir_thumbnail(strm, entry.label,
                   strm->current_folder_path);
          }
@@ -1030,12 +984,10 @@ static void streamlined_render_menu(streamlined_t *strm,
                && !string_is_empty(entry.label)
                && path_is_valid(entry.label))
          {
-            RARCH_DBG("[streamlined] Entry is ROM file, loading ROM thumbnail\n");
             streamlined_load_rom_thumbnail(strm, entry.label);
          }
          else
          {
-            RARCH_DBG("[streamlined] Non-file entry or invalid path, resetting thumbnail\n");
             gfx_thumbnail_reset(&strm->rom_thumbnail);
             strm->rom_thumbnail_path[0] = '\0';
          }
@@ -1377,41 +1329,6 @@ static void streamlined_render_menu(streamlined_t *strm,
       y += item_height;
    }
    } /* end thumb_reserve block */
-
-   /* Log async thumbnail load results (once per load attempt) */
-   if (!strm->savestate_thumbnail_load_logged
-       && strm->savestate_thumbnail_path[0] != '\0')
-   {
-      if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
-      {
-         RARCH_DBG("[streamlined] Image loaded successfully: %s\n",
-               strm->savestate_thumbnail_path);
-         strm->savestate_thumbnail_load_logged = true;
-      }
-      else if (strm->savestate_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
-      {
-         RARCH_DBG("[streamlined] Image load failed: %s\n",
-               strm->savestate_thumbnail_path);
-         strm->savestate_thumbnail_load_logged = true;
-      }
-   }
-
-   if (!strm->rom_thumbnail_load_logged
-       && strm->rom_thumbnail_path[0] != '\0')
-   {
-      if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
-      {
-         RARCH_DBG("[streamlined] Image loaded successfully: %s\n",
-               strm->rom_thumbnail_path);
-         strm->rom_thumbnail_load_logged = true;
-      }
-      else if (strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_MISSING)
-      {
-         RARCH_DBG("[streamlined] Image load failed: %s\n",
-               strm->rom_thumbnail_path);
-         strm->rom_thumbnail_load_logged = true;
-      }
-   }
 
    /* Draw save slot selector if on Save/Load State entry */
    if (strm->show_slot_selector)
@@ -1874,22 +1791,13 @@ static bool streamlined_check_savestate(
    streamlined_build_savestate_base_path(rom_path, core_path,
          base_path, sizeof(base_path));
 
-   RARCH_DBG("[streamlined] check_savestate: base_path='%s'\n", base_path);
-
    if (string_is_empty(base_path))
-   {
-      RARCH_DBG("[streamlined] check_savestate: base_path is empty, skipping\n");
       return false;
-   }
 
    /* Check auto state: {base_path}.auto */
    snprintf(check_path, sizeof(check_path), "%s.auto", base_path);
    if (path_is_valid(check_path))
-   {
-      RARCH_DBG("[streamlined] check_savestate: '%s' -> found\n", check_path);
       return true;
-   }
-   RARCH_DBG("[streamlined] check_savestate: no auto-save state found for '%s'\n", check_path);
    return false;
 }
 
@@ -3152,9 +3060,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   sizeof(strm->last_folder_core_path));
             strm->return_to_folder = true;
 
-            RARCH_DBG("[streamlined] Launching with resume: rom='%s' core='%s'\n",
-                  item_path, core_path);
-
             strm->is_custom_main_menu = false;
             strm->in_folder = false;
 
@@ -3176,8 +3081,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   size_t _len = strlcpy(auto_path, runloop_st->name.savestate,
                         sizeof(auto_path));
                   strlcpy(auto_path + _len, ".auto", sizeof(auto_path) - _len);
-
-                  RARCH_DBG("[streamlined] Loading auto-save state: '%s'\n", auto_path);
 
                   if (path_is_valid(auto_path))
                      content_load_state(auto_path, false, true);
