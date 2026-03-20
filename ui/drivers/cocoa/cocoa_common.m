@@ -279,7 +279,9 @@ void rarch_stop_draw_observer(void)
         return false;
     if (menu_st->flags & MENU_ST_FLAG_INP_DLG_KB_DISPLAY) /* search */
         return false;
-    if (menu_st->selection_ptr != 0) /* not the first item */
+    if (menu_st->selection_ptr != 0
+        && !(menu_st->driver_ctx && menu_st->driver_ctx->ident
+             && string_is_equal(menu_st->driver_ctx->ident, "streamlined")))
         return false;
     if (menu_st->entries.list->menu_stack[0]->size != 1) /* submenu */
         return false;

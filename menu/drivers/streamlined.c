@@ -861,6 +861,46 @@ static void streamlined_draw_rom_thumbnail(streamlined_t *strm,
 }
 
 /* ======================================================================
+ * MENU STACK SYNC (tvOS back button support)
+ * ====================================================================== */
+
+static void streamlined_sync_menu_stack(streamlined_t *strm)
+{
+   struct menu_state *menu_st;
+   menu_list_t *menu_list;
+   file_list_t *menu_stack;
+   bool in_submenu;
+
+   if (!strm || !strm->is_custom_main_menu)
+      return;
+
+   menu_st = menu_state_get_ptr();
+   if (!menu_st)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list || !menu_list->menu_stack[0])
+      return;
+
+   menu_stack = menu_list->menu_stack[0];
+   in_submenu = strm->in_folder
+      || strm->in_main_settings_submenu
+      || strm->selecting_core;
+
+   if (in_submenu && menu_stack->size == 1)
+   {
+      /* Push marker so tvOS menuIsAtTop() sees size > 1 */
+      file_list_append(menu_stack, "",
+            msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0, 0, 0);
+   }
+   else if (!in_submenu && menu_stack->size > 1)
+   {
+      /* Pop marker — back at top level */
+      file_list_pop(menu_stack, NULL);
+   }
+}
+
+/* ======================================================================
  * MENU RENDERING
  * ====================================================================== */
 
@@ -877,6 +917,9 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    if (!strm->font.font || !p_disp || !menu_st)
       return;
+
+   /* Keep menu stack in sync for tvOS back button handling */
+   streamlined_sync_menu_stack(strm);
 
    menu_list = menu_st->entries.list;
    if (!menu_list)
@@ -2053,12 +2096,14 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
             MENU_SETTING_ACTION,
             0, 0, NULL);
 
+#if !TARGET_OS_TV
       menu_entries_append(list,
             "Quit",
             msg_hash_to_str(MENU_ENUM_LABEL_QUIT_RETROARCH),
             MENU_ENUM_LABEL_QUIT_RETROARCH,
             MENU_SETTING_ACTION,
             0, 0, NULL);
+#endif
    }
 }
 
