@@ -75,6 +75,10 @@
 #include <streams/file_stream.h>
 #include "../../verbosity.h"
 
+#if TARGET_OS_TV
+#include <CoreText/CoreText.h>
+#endif
+
 /* ======================================================================
  * CONFIGURATION
  * ====================================================================== */
@@ -2111,6 +2115,35 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
  * MENU DRIVER INTERFACE
  * ====================================================================== */
 
+#if TARGET_OS_TV
+/* Resolve the system UI font file path on tvOS using CoreText.
+ * Uses CTFontCreateUIFontForLanguage which returns the actual system
+ * font regardless of its internal name across tvOS versions. */
+static bool streamlined_get_system_font_path(char *buf, size_t buf_size)
+{
+   bool result = false;
+   CTFontRef font = CTFontCreateUIFontForLanguage(
+         kCTFontUIFontSystem, 12.0, NULL);
+   if (font)
+   {
+      CFURLRef url = (CFURLRef)CTFontCopyAttribute(font, kCTFontURLAttribute);
+      if (url)
+      {
+         CFStringRef path = CFURLCopyFileSystemPath(url, kCFURLPOSIXPathStyle);
+         if (path)
+         {
+            result = CFStringGetCString(path, buf, (CFIndex)buf_size,
+                  kCFStringEncodingUTF8);
+            CFRelease(path);
+         }
+         CFRelease(url);
+      }
+      CFRelease(font);
+   }
+   return result;
+}
+#endif
+
 /*
  * Try to load a font from the given path within the assets directory.
  * Returns the loaded font or NULL if not found.
@@ -2242,9 +2275,16 @@ static void streamlined_context_reset(void *data, bool is_threaded)
     * 2. XMB font (assets/xmb/monochrome/font.ttf) commonly available
     * 3. Ozone font (assets/ozone/regular.ttf) as final fallback
     */
-   strm->font.font = streamlined_try_load_font(p_disp,
-         settings->paths.directory_assets, "streamlined/font.ttf",
-         strm->font_size, is_threaded, fontpath, sizeof(fontpath));
+#if TARGET_OS_TV
+   /* Prefer system font on tvOS for native feel */
+   if (!strm->font.font && streamlined_get_system_font_path(fontpath, sizeof(fontpath)))
+      strm->font.font = gfx_display_font_file(p_disp, fontpath, strm->font_size, is_threaded);
+#endif
+   /* Existing fallback chain follows... */
+   if (!strm->font.font)
+      strm->font.font = streamlined_try_load_font(p_disp,
+            settings->paths.directory_assets, "streamlined/font.ttf",
+            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
 
    if (!strm->font.font)
       strm->font.font = streamlined_try_load_font(p_disp,
