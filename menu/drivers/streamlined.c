@@ -810,15 +810,17 @@ static void streamlined_render_menu(streamlined_t *strm,
             memmove(title_buf, title_buf + prefix_len + 2,
                   strlen(title_buf + prefix_len + 2) + 1);
          }
+         else
+         {
+            strlcpy(title_buf, "Main Menu", sizeof(title_buf));
+         }
       }
    }
 
    /* Increment ticker for this frame */
    strm->ticker_idx++;
 
-   /* Draw title with ticker-based scrolling for long titles
-    * Skip title only for top-level custom main menu (show for platform screens and settings submenu) */
-   if (!(strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu))
+   /* Draw title with ticker-based scrolling for long titles */
    {
       int max_title_width = video_width - strm->margin_x * 2;
       int title_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
@@ -855,11 +857,8 @@ static void streamlined_render_menu(streamlined_t *strm,
    else
       start_idx = 0;
 
-   /* Draw menu entries - tight spacing below title, or from top for top-level main menu */
-   if (strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu)
-      y = strm->margin_y;
-   else
-      y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+   /* Draw menu entries */
+   y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
 
    for (i = 0; i < max_visible && (start_idx + i) < list_size; i++)
    {
