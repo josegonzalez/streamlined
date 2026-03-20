@@ -74,6 +74,7 @@
 #include <file/file_path.h>
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
+#include <formats/m3u_file.h>
 #include "../../content.h"
 #include "../../verbosity.h"
 
@@ -257,6 +258,8 @@ typedef struct
    char last_launched_folder[PATH_MAX_LENGTH]; /* Folder from which game was launched */
    char last_folder_core_path[PATH_MAX_LENGTH]; /* Core path for last launched folder */
    bool return_to_folder;         /* Flag to return to folder after game exit */
+   bool return_to_top_level;      /* Flag to return to top level after game exit */
+   size_t top_level_selection;    /* Remember selection at top level when launching game */
 
    /* ROM thumbnail display */
    gfx_thumbnail_t rom_thumbnail;
@@ -295,6 +298,10 @@ static void streamlined_build_savestate_base_path(
       char *out, size_t out_size);
 static bool streamlined_check_savestate(
       const char *rom_path, const char *core_path);
+static bool streamlined_read_folder_core(
+      const char *folder_path, char *core_path_out, size_t core_path_size);
+static bool streamlined_check_m3u_folder(const char *dir_path,
+      char *m3u_path_out, size_t m3u_path_size);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -980,8 +987,7 @@ static void streamlined_render_menu(streamlined_t *strm,
             streamlined_load_dir_thumbnail(strm, entry.label,
                   strm->current_folder_path);
          }
-         else if (strm->in_folder
-               && !string_is_empty(entry.label)
+         else if (!string_is_empty(entry.label)
                && path_is_valid(entry.label))
          {
             streamlined_load_rom_thumbnail(strm, entry.label);
@@ -996,13 +1002,23 @@ static void streamlined_render_menu(streamlined_t *strm,
          strm->selected_is_file = false;
          strm->selected_has_savestate = false;
 
-         if (strm->in_folder && entry.type == FILE_TYPE_PLAIN
-               && !string_is_empty(strm->folder_core_path)
-               && !string_is_empty(entry.label))
+         if (entry.type == FILE_TYPE_PLAIN && !string_is_empty(entry.label))
          {
             strm->selected_is_file = true;
-            strm->selected_has_savestate = streamlined_check_savestate(
-                  entry.label, strm->folder_core_path);
+            if (!string_is_empty(strm->folder_core_path))
+            {
+               strm->selected_has_savestate = streamlined_check_savestate(
+                     entry.label, strm->folder_core_path);
+            }
+            else
+            {
+               char temp_core[PATH_MAX_LENGTH];
+               char parent_dir[PATH_MAX_LENGTH];
+               fill_pathname_parent_dir(parent_dir, entry.label, sizeof(parent_dir));
+               if (streamlined_read_folder_core(parent_dir, temp_core, sizeof(temp_core)))
+                  strm->selected_has_savestate = streamlined_check_savestate(
+                        entry.label, temp_core);
+            }
          }
          else if (entry.type == FILE_TYPE_PLAIN)
             strm->selected_is_file = true;
@@ -1049,15 +1065,37 @@ static void streamlined_render_menu(streamlined_t *strm,
       const char *content_path = path_get(RARCH_PATH_CONTENT);
       if (!string_is_empty(content_path))
       {
-         const char *game_name = path_basename(content_path);
-         if (!string_is_empty(game_name))
+         /* Check if content lives in an M3U game folder —
+          * if so, use the folder name as the game title */
+         char parent_dir[PATH_MAX_LENGTH];
+         char m3u_path[PATH_MAX_LENGTH];
+         fill_pathname_parent_dir(parent_dir, content_path, sizeof(parent_dir));
+
+         /* Remove trailing slash so path_basename returns the folder name */
          {
-            /* Copy and remove extension */
-            char *ext;
-            strlcpy(title_buf, game_name, sizeof(title_buf));
-            ext = strrchr(title_buf, '.');
-            if (ext)
-               *ext = '\0';
+            size_t len = strlen(parent_dir);
+            if (len > 0 && parent_dir[len - 1] == '/')
+               parent_dir[len - 1] = '\0';
+         }
+
+         if (streamlined_check_m3u_folder(parent_dir, m3u_path, sizeof(m3u_path)))
+         {
+            const char *folder_name = path_basename(parent_dir);
+            if (!string_is_empty(folder_name))
+               strlcpy(title_buf, folder_name, sizeof(title_buf));
+         }
+         else
+         {
+            const char *game_name = path_basename(content_path);
+            if (!string_is_empty(game_name))
+            {
+               /* Copy and remove extension */
+               char *ext;
+               strlcpy(title_buf, game_name, sizeof(title_buf));
+               ext = strrchr(title_buf, '.');
+               if (ext)
+                  *ext = '\0';
+            }
          }
       }
       if (title_buf[0] == '\0')
@@ -1359,7 +1397,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       const char *ok_key     = "A";
       const char *back_str   = msg_hash_to_str(
             MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
-      const char *ok_str     = (strm->in_folder && strm->selected_is_file)
+      const char *ok_str     = strm->selected_is_file
                                ? "Play"
                                : msg_hash_to_str(
                                     MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
@@ -1418,7 +1456,7 @@ static void streamlined_render_menu(streamlined_t *strm,
                TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
          /* Draw [X] Resume pill to the left of [A] Play when save state exists */
-         if (strm->in_folder && strm->selected_has_savestate)
+         if (strm->selected_has_savestate)
          {
             const char *resume_key = "X";
             const char *resume_str = "Resume";
@@ -2061,6 +2099,51 @@ static const char *streamlined_strip_sort_prefix(const char *name)
    return name;
 }
 
+/* Check if a directory contains an M3U file whose name matches the folder name */
+static bool streamlined_check_m3u_folder(const char *dir_path,
+      char *m3u_path_out, size_t m3u_path_size)
+{
+   char m3u_file[PATH_MAX_LENGTH];
+   const char *dir_name = path_basename(dir_path);
+   if (string_is_empty(dir_name))
+      return false;
+   fill_pathname_join_special(m3u_file, dir_path, dir_name, sizeof(m3u_file));
+   strlcat(m3u_file, ".m3u", sizeof(m3u_file));
+   if (path_is_valid(m3u_file))
+   {
+      strlcpy(m3u_path_out, m3u_file, m3u_path_size);
+      return true;
+   }
+   return false;
+}
+
+/* Check if a core supports M3U files natively */
+static bool streamlined_core_supports_m3u(const char *core_path)
+{
+   core_info_t *info = NULL;
+   if (!core_info_find(core_path, &info) || !info || !info->supported_extensions_list)
+      return false;
+   return string_list_find_elem_prefix(info->supported_extensions_list, ".", "m3u");
+}
+
+/* Parse M3U and return the first entry's full path */
+static bool streamlined_resolve_m3u_content(const char *m3u_path,
+      char *content_path_out, size_t content_path_size)
+{
+   m3u_file_t *m3u       = m3u_file_init(m3u_path);
+   m3u_file_entry_t *entry = NULL;
+   if (!m3u)
+      return false;
+   if (m3u_file_get_size(m3u) == 0 || !m3u_file_get_entry(m3u, 0, &entry))
+   {
+      m3u_file_free(m3u);
+      return false;
+   }
+   strlcpy(content_path_out, entry->full_path, content_path_size);
+   m3u_file_free(m3u);
+   return true;
+}
+
 /* Populate custom main menu with folders and files from the specified directory
  * show_folder_slash: if true, prefix folder names with "/" */
 static void streamlined_populate_folder_menu(streamlined_t *strm, const char *directory, bool show_folder_slash)
@@ -2107,22 +2190,41 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
 
          if (attr == RARCH_DIRECTORY)
          {
-            /* Show directories, optionally with leading slash
-             * Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
-            char display_name[256];
-            const char *clean_name = streamlined_strip_sort_prefix(name);
+            char m3u_path[PATH_MAX_LENGTH];
 
-            if (show_folder_slash)
-               snprintf(display_name, sizeof(display_name), "/%s", clean_name);
-            else
+            if (streamlined_check_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+            {
+               /* M3U game folder — show as launchable game */
+               char display_name[256];
+               const char *clean_name = streamlined_strip_sort_prefix(name);
                strlcpy(display_name, clean_name, sizeof(display_name));
 
-            menu_entries_append(list,
-                  display_name,     /* Display name (entry->path for rendering) */
-                  path,             /* Full path (entry->label for navigation) */
-                  MSG_UNKNOWN,
-                  FILE_TYPE_DIRECTORY,
-                  0, 0, NULL);
+               menu_entries_append(list,
+                     display_name,     /* folder name = game title */
+                     m3u_path,         /* M3U file path for loading */
+                     MSG_UNKNOWN,
+                     FILE_TYPE_PLAIN,
+                     0, 0, NULL);
+            }
+            else
+            {
+               /* Show directories, optionally with leading slash
+                * Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
+               char display_name[256];
+               const char *clean_name = streamlined_strip_sort_prefix(name);
+
+               if (show_folder_slash)
+                  snprintf(display_name, sizeof(display_name), "/%s", clean_name);
+               else
+                  strlcpy(display_name, clean_name, sizeof(display_name));
+
+               menu_entries_append(list,
+                     display_name,     /* Display name (entry->path for rendering) */
+                     path,             /* Full path (entry->label for navigation) */
+                     MSG_UNKNOWN,
+                     FILE_TYPE_DIRECTORY,
+                     0, 0, NULL);
+            }
          }
          else
          {
@@ -2556,6 +2658,21 @@ static void streamlined_populate_entries(void *data,
                if (menu_st_local)
                   menu_st_local->selection_ptr = strm->saved_settings_selection;
             }
+            /* Check if returning from a top-level M3U game */
+            else if (strm->return_to_top_level)
+            {
+               streamlined_populate_folder_menu(strm, start_dir, false);
+               strlcpy(strm->current_folder_path, start_dir,
+                     sizeof(strm->current_folder_path));
+               strm->is_custom_main_menu = true;
+               strm->in_folder = false;
+               strm->return_to_top_level = false;
+               gfx_thumbnail_reset(&strm->rom_thumbnail);
+               strm->rom_thumbnail_path[0] = '\0';
+               strm->rom_thumbnail_selection = (size_t)-1;
+               if (menu_st_local)
+                  menu_st_local->selection_ptr = strm->top_level_selection;
+            }
             /* Check if returning from a game - restore folder state */
             else if (strm->return_to_folder && !string_is_empty(strm->last_launched_folder))
             {
@@ -2986,13 +3103,22 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                }
                else
                {
-                  /* No .core.txt - show core selection screen */
-                  strlcpy(strm->pending_content_path, item_path,
-                        sizeof(strm->pending_content_path));
-                  strm->selecting_core = true;
-                  streamlined_populate_core_selection(strm, item_path);
-                  menu_st->selection_ptr = 0;
-                  return 0;
+                  /* Top-level M3U: try .core.txt from the M3U's parent folder */
+                  char m3u_parent[PATH_MAX_LENGTH];
+                  fill_pathname_parent_dir(m3u_parent, item_path, sizeof(m3u_parent));
+                  if (streamlined_read_folder_core(m3u_parent,
+                        strm->folder_core_path, sizeof(strm->folder_core_path)))
+                     core_path = strm->folder_core_path;
+                  else
+                  {
+                     /* No .core.txt - show core selection screen */
+                     strlcpy(strm->pending_content_path, item_path,
+                           sizeof(strm->pending_content_path));
+                     strm->selecting_core = true;
+                     streamlined_populate_core_selection(strm, item_path);
+                     menu_st->selection_ptr = 0;
+                     return 0;
+                  }
                }
 
                if (core_path && path_is_valid(core_path))
@@ -3002,13 +3128,21 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   content_info.args        = NULL;
                   content_info.environ_get = NULL;
 
-                  /* Save folder state so we can return after quitting */
+                  /* Save state so we can return after quitting */
                   strm->folder_selection = menu_st->selection_ptr;
-                  strlcpy(strm->last_launched_folder, strm->current_folder_path,
-                        sizeof(strm->last_launched_folder));
-                  strlcpy(strm->last_folder_core_path, strm->folder_core_path,
-                        sizeof(strm->last_folder_core_path));
-                  strm->return_to_folder = true;
+                  if (strm->in_folder)
+                  {
+                     strlcpy(strm->last_launched_folder, strm->current_folder_path,
+                           sizeof(strm->last_launched_folder));
+                     strlcpy(strm->last_folder_core_path, strm->folder_core_path,
+                           sizeof(strm->last_folder_core_path));
+                     strm->return_to_folder = true;
+                  }
+                  else
+                  {
+                     strm->return_to_top_level = true;
+                     strm->top_level_selection = menu_st->selection_ptr;
+                  }
 
                   /* Ensure clean launch — no entry state loading */
                   runloop_state_get_ptr()->entry_state_slot = -1;
@@ -3019,11 +3153,24 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   /* Close menu before loading content */
                   command_event(CMD_EVENT_MENU_TOGGLE, NULL);
 
-                  task_push_load_content_with_new_core_from_menu(
-                        core_path,           /* Core to use */
-                        item_path,           /* Content path */
-                        &content_info,
-                        CORE_TYPE_PLAIN, NULL, NULL);
+                  /* Resolve M3U if core doesn't support it natively */
+                  {
+                     const char *content_to_load = item_path;
+                     char resolved_content[PATH_MAX_LENGTH];
+                     if (m3u_file_is_m3u(item_path)
+                           && !streamlined_core_supports_m3u(core_path))
+                     {
+                        if (streamlined_resolve_m3u_content(item_path,
+                              resolved_content, sizeof(resolved_content)))
+                           content_to_load = resolved_content;
+                     }
+
+                     task_push_load_content_with_new_core_from_menu(
+                           core_path,           /* Core to use */
+                           content_to_load,     /* Content path */
+                           &content_info,
+                           CORE_TYPE_PLAIN, NULL, NULL);
+                  }
 
                   return 0;
                }
@@ -3035,12 +3182,21 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
       /* Y button = Resume with save state */
       if (action == MENU_ACTION_SCAN
-            && strm->in_folder
             && strm->selected_has_savestate
             && entry)
       {
          const char *item_path = entry->label;
          const char *core_path = strm->folder_core_path;
+         char resolved_core[PATH_MAX_LENGTH];
+
+         /* Resolve core for top-level M3U entries */
+         if (string_is_empty(core_path))
+         {
+            char parent_dir[PATH_MAX_LENGTH];
+            fill_pathname_parent_dir(parent_dir, item_path, sizeof(parent_dir));
+            if (streamlined_read_folder_core(parent_dir, resolved_core, sizeof(resolved_core)))
+               core_path = resolved_core;
+         }
 
          if (!string_is_empty(item_path) && path_is_valid(item_path)
                && !string_is_empty(core_path) && path_is_valid(core_path))
@@ -3052,22 +3208,43 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             content_info.args        = NULL;
             content_info.environ_get = NULL;
 
-            /* Save folder state for return */
+            /* Save state for return */
             strm->folder_selection = menu_st->selection_ptr;
-            strlcpy(strm->last_launched_folder, strm->current_folder_path,
-                  sizeof(strm->last_launched_folder));
-            strlcpy(strm->last_folder_core_path, strm->folder_core_path,
-                  sizeof(strm->last_folder_core_path));
-            strm->return_to_folder = true;
+            if (strm->in_folder)
+            {
+               strlcpy(strm->last_launched_folder, strm->current_folder_path,
+                     sizeof(strm->last_launched_folder));
+               strlcpy(strm->last_folder_core_path, strm->folder_core_path,
+                     sizeof(strm->last_folder_core_path));
+               strm->return_to_folder = true;
+            }
+            else
+            {
+               strm->return_to_top_level = true;
+               strm->top_level_selection = menu_st->selection_ptr;
+            }
 
             strm->is_custom_main_menu = false;
             strm->in_folder = false;
 
             command_event(CMD_EVENT_MENU_TOGGLE, NULL);
 
-            task_push_load_content_with_new_core_from_menu(
-                  core_path, item_path, &content_info,
-                  CORE_TYPE_PLAIN, NULL, NULL);
+            /* Resolve M3U if core doesn't support it natively */
+            {
+               const char *content_to_load = item_path;
+               char resolved_m3u[PATH_MAX_LENGTH];
+               if (m3u_file_is_m3u(item_path)
+                     && !streamlined_core_supports_m3u(core_path))
+               {
+                  if (streamlined_resolve_m3u_content(item_path,
+                        resolved_m3u, sizeof(resolved_m3u)))
+                     content_to_load = resolved_m3u;
+               }
+
+               task_push_load_content_with_new_core_from_menu(
+                     core_path, content_to_load, &content_info,
+                     CORE_TYPE_PLAIN, NULL, NULL);
+            }
 
             /* Load auto-save state now that core is initialized.
              * Skip if the user already has savestate_auto_load enabled
