@@ -414,6 +414,16 @@ static void streamlined_build_savestate_base_path(
       char *out, size_t out_size);
 static bool streamlined_check_savestate(
       const char *rom_path, const char *core_path);
+static void streamlined_build_autosave_path(
+      const char *rom_path, const char *core_path,
+      const char *suffix,
+      char *out, size_t out_size);
+static bool streamlined_find_autosave_path(
+      const char *rom_path, const char *core_path,
+      const char *suffix,
+      char *out, size_t out_size);
+static bool streamlined_resolve_m3u_content(const char *m3u_path,
+      char *content_path_out, size_t content_path_size);
 static bool streamlined_read_folder_core(
       const char *folder_path, char *core_path_out, size_t core_path_size);
 static bool streamlined_check_m3u_folder(const char *dir_path,
@@ -1133,7 +1143,6 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
 {
    char thumb_path[PATH_MAX_LENGTH];
    char name_buf[PATH_MAX_LENGTH];
-   char base_path[PATH_MAX_LENGTH];
    char parent_dir[PATH_MAX_LENGTH];
    const char *type_folder;
    const char *base_name;
@@ -1148,26 +1157,19 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
       return;
 
    /* Tier 1: Autosave screenshot (.auto.png) */
-   if (!string_is_empty(strm->game_switcher_core_path))
+   if (!string_is_empty(strm->game_switcher_core_path)
+         && streamlined_find_autosave_path(
+               strm->game_switcher_content_path,
+               strm->game_switcher_core_path,
+               ".auto.png", thumb_path, sizeof(thumb_path)))
    {
-      streamlined_build_savestate_base_path(
-            strm->game_switcher_content_path,
-            strm->game_switcher_core_path,
-            base_path, sizeof(base_path));
-      if (!string_is_empty(base_path))
-      {
-         snprintf(thumb_path, sizeof(thumb_path), "%s.auto.png", base_path);
-         if (path_is_valid(thumb_path))
-         {
-            strlcpy(strm->game_switcher_thumbnail_path, thumb_path,
-                  sizeof(strm->game_switcher_thumbnail_path));
-            gfx_thumbnail_request_file(thumb_path, &strm->game_switcher_thumbnail,
-                  settings->uints.gfx_thumbnail_upscale_threshold);
-            strm->game_switcher_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
-            strm->game_switcher_has_thumbnail = true;
-            return;
-         }
-      }
+      strlcpy(strm->game_switcher_thumbnail_path, thumb_path,
+            sizeof(strm->game_switcher_thumbnail_path));
+      gfx_thumbnail_request_file(thumb_path, &strm->game_switcher_thumbnail,
+            settings->uints.gfx_thumbnail_upscale_threshold);
+      strm->game_switcher_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
+      strm->game_switcher_has_thumbnail = true;
+      return;
    }
 
    /* Tier 2: Primary thumbnail from .media folder */
@@ -3016,27 +3018,71 @@ static void streamlined_build_savestate_base_path(
 }
 
 /*
+ * Build an autosave path by appending a suffix (e.g. ".auto" or ".auto.png")
+ * to the savestate base path.
+ */
+static void streamlined_build_autosave_path(
+      const char *rom_path, const char *core_path,
+      const char *suffix,
+      char *out, size_t out_size)
+{
+   char base_path[PATH_MAX_LENGTH];
+   base_path[0] = '\0';
+   streamlined_build_savestate_base_path(rom_path, core_path,
+         base_path, sizeof(base_path));
+   if (string_is_empty(base_path))
+   {
+      out[0] = '\0';
+      return;
+   }
+   snprintf(out, out_size, "%s%s", base_path, suffix);
+}
+
+/*
+ * Find an existing autosave file, with M3U fallback.
+ * Tries the given path first, then for M3U files tries the resolved
+ * first disc file (since non-M3U-supporting cores create autosaves
+ * from the disc path).
+ */
+static bool streamlined_find_autosave_path(
+      const char *rom_path, const char *core_path,
+      const char *suffix,
+      char *out, size_t out_size)
+{
+   /* Try with the given path */
+   streamlined_build_autosave_path(rom_path, core_path, suffix,
+         out, out_size);
+   if (!string_is_empty(out) && path_is_valid(out))
+      return true;
+
+   /* For M3U: also try with the resolved first disc file */
+   if (m3u_file_is_m3u(rom_path))
+   {
+      char resolved[PATH_MAX_LENGTH];
+      if (streamlined_resolve_m3u_content(rom_path,
+            resolved, sizeof(resolved)))
+      {
+         streamlined_build_autosave_path(resolved, core_path, suffix,
+               out, out_size);
+         if (!string_is_empty(out) && path_is_valid(out))
+            return true;
+      }
+   }
+
+   out[0] = '\0';
+   return false;
+}
+
+/*
  * Check if an auto-save state exists for the given ROM.
  * Returns true if an auto-save state file exists.
  */
 static bool streamlined_check_savestate(
       const char *rom_path, const char *core_path)
 {
-   char base_path[PATH_MAX_LENGTH];
-   char check_path[PATH_MAX_LENGTH];
-
-   base_path[0] = '\0';
-   streamlined_build_savestate_base_path(rom_path, core_path,
-         base_path, sizeof(base_path));
-
-   if (string_is_empty(base_path))
-      return false;
-
-   /* Check auto state: {base_path}.auto */
-   snprintf(check_path, sizeof(check_path), "%s.auto", base_path);
-   if (path_is_valid(check_path))
-      return true;
-   return false;
+   char path[PATH_MAX_LENGTH];
+   return streamlined_find_autosave_path(rom_path, core_path,
+         ".auto", path, sizeof(path));
 }
 
 /*
@@ -3047,18 +3093,27 @@ static bool streamlined_check_savestate(
 static void streamlined_delete_autosave_file(
       const char *rom_path, const char *core_path)
 {
-   char base_path[PATH_MAX_LENGTH];
    char auto_path[PATH_MAX_LENGTH];
 
-   base_path[0] = '\0';
-   streamlined_build_savestate_base_path(rom_path, core_path,
-         base_path, sizeof(base_path));
+   /* Delete autosave for the given path */
+   streamlined_build_autosave_path(rom_path, core_path, ".auto",
+         auto_path, sizeof(auto_path));
+   if (!string_is_empty(auto_path))
+      filestream_delete(auto_path);
 
-   if (string_is_empty(base_path))
-      return;
-
-   snprintf(auto_path, sizeof(auto_path), "%s.auto", base_path);
-   filestream_delete(auto_path);
+   /* For M3U: also delete the autosave for the resolved first disc file */
+   if (m3u_file_is_m3u(rom_path))
+   {
+      char resolved[PATH_MAX_LENGTH];
+      if (streamlined_resolve_m3u_content(rom_path,
+            resolved, sizeof(resolved)))
+      {
+         streamlined_build_autosave_path(resolved, core_path, ".auto",
+               auto_path, sizeof(auto_path));
+         if (!string_is_empty(auto_path))
+            filestream_delete(auto_path);
+      }
+   }
 }
 
 /*
