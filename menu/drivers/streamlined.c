@@ -90,8 +90,8 @@
 /* Forward declarations for helpers defined later in the file */
 static const char *streamlined_strip_sort_prefix(const char *name);
 static void streamlined_get_display_name(
-      const char *path, bool is_m3u_folder,
-      char *out, size_t out_size);
+      const char *path, char *out, size_t out_size,
+      bool is_m3u_folder);
 static int streamlined_entry_cmp(const void *a, const void *b);
 
 /* ======================================================================
@@ -158,6 +158,8 @@ typedef struct
 #define STREAMLINED_OPTIONS_ADD_FAVORITE    0xCB07
 #define STREAMLINED_OPTIONS_REMOVE_FAVORITE 0xCB08
 #define STREAMLINED_FAVORITES_ENTRY         0xCB09
+#define STREAMLINED_GAME_SWITCHER_ENTRY    0xCB0A
+#define STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER 0xCB0B
 
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
@@ -351,6 +353,19 @@ typedef struct
    gfx_thumbnail_t random_thumbnail;
    char random_thumbnail_path[PATH_MAX_LENGTH];
 
+   /* Game Switcher state */
+   bool in_game_switcher;
+   bool game_switcher_in_glo;
+   size_t game_switcher_index;
+   gfx_thumbnail_t game_switcher_thumbnail;
+   char game_switcher_thumbnail_path[PATH_MAX_LENGTH];
+   char game_switcher_display_name[256];
+   char game_switcher_content_path[PATH_MAX_LENGTH];
+   char game_switcher_core_path[PATH_MAX_LENGTH];
+   bool game_switcher_has_savestate;
+   bool game_switcher_has_thumbnail;
+   size_t game_switcher_saved_selection;
+
    /* Delete autosave confirmation/result state */
    bool in_delete_confirm;
    bool delete_done;
@@ -403,11 +418,14 @@ static bool streamlined_read_folder_core(
       const char *folder_path, char *core_path_out, size_t core_path_size);
 static bool streamlined_check_m3u_folder(const char *dir_path,
       char *m3u_path_out, size_t m3u_path_size);
+static bool streamlined_find_m3u_for_content(const char *content_path,
+      char *m3u_out, size_t m3u_size);
 static void streamlined_populate_search_results(streamlined_t *strm);
-static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites);
+static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites, bool in_game_switcher);
 static void streamlined_populate_favorites_menu(streamlined_t *strm);
-static void streamlined_get_favorites_folder_path(const char *game_path, char *folder_out, size_t folder_size);
-static bool streamlined_resolve_favorites_core(const char *game_path, char *core_out, size_t core_size);
+static void streamlined_strip_trailing_slash(char *path);
+static void streamlined_get_content_folder_path(const char *game_path, char *folder_out, size_t folder_size);
+static bool streamlined_resolve_content_core(const char *game_path, char *core_out, size_t core_size, char *game_core_out, size_t game_core_size, playlist_t *playlist);
 static void streamlined_populate_core_selection(streamlined_t *strm, const char *content_path);
 static const char *streamlined_get_core_display_name(const char *core_path);
 static const char *streamlined_effective_core(streamlined_t *strm);
@@ -416,6 +434,7 @@ static void streamlined_get_game_core_name(
       char *out, size_t out_size);
 static bool streamlined_read_game_core(const char *folder_path,
       const char *game_name, char *core_path_out, size_t size);
+static void streamlined_select_options_entry(unsigned target_enum);
 
 enum streamlined_font_type { FONT_NORMAL, FONT_SMALL, FONT_TINY };
 
@@ -1019,6 +1038,7 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       || strm->in_options_menu
       || strm->in_search_mode
       || strm->in_random_preview
+      || strm->in_game_switcher
       || strm->in_delete_confirm
       || strm->delete_done;
 
@@ -1098,6 +1118,406 @@ static void streamlined_load_random_thumbnail(streamlined_t *strm)
    gfx_thumbnail_request_file(thumb_path, &strm->random_thumbnail,
          settings->uints.gfx_thumbnail_upscale_threshold);
    strm->random_has_thumbnail = true;
+}
+
+/* ======================================================================
+ * GAME SWITCHER HELPERS
+ * ====================================================================== */
+
+/*
+ * Load the thumbnail for the current game switcher entry.
+ * Priority: 1. Autosave screenshot (.auto.png)
+ *           2. Primary thumbnail from .media folder
+ */
+static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
+{
+   char thumb_path[PATH_MAX_LENGTH];
+   char name_buf[PATH_MAX_LENGTH];
+   char base_path[PATH_MAX_LENGTH];
+   char parent_dir[PATH_MAX_LENGTH];
+   const char *type_folder;
+   const char *base_name;
+   char *ext;
+   settings_t *settings = config_get_ptr();
+
+   strm->game_switcher_has_thumbnail = false;
+   gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+   strm->game_switcher_thumbnail_path[0] = '\0';
+
+   if (string_is_empty(strm->game_switcher_content_path))
+      return;
+
+   /* Tier 1: Autosave screenshot (.auto.png) */
+   if (!string_is_empty(strm->game_switcher_core_path))
+   {
+      streamlined_build_savestate_base_path(
+            strm->game_switcher_content_path,
+            strm->game_switcher_core_path,
+            base_path, sizeof(base_path));
+      if (!string_is_empty(base_path))
+      {
+         snprintf(thumb_path, sizeof(thumb_path), "%s.auto.png", base_path);
+         if (path_is_valid(thumb_path))
+         {
+            strlcpy(strm->game_switcher_thumbnail_path, thumb_path,
+                  sizeof(strm->game_switcher_thumbnail_path));
+            gfx_thumbnail_request_file(thumb_path, &strm->game_switcher_thumbnail,
+                  settings->uints.gfx_thumbnail_upscale_threshold);
+            strm->game_switcher_thumbnail.flags |= GFX_THUMB_FLAG_CORE_ASPECT;
+            strm->game_switcher_has_thumbnail = true;
+            return;
+         }
+      }
+   }
+
+   /* Tier 2: Primary thumbnail from .media folder */
+   if (settings->uints.gfx_thumbnails == 0)
+      return;
+
+   switch (settings->uints.gfx_thumbnails)
+   {
+      case 1:  type_folder = "Screenshot"; break;
+      case 2:  type_folder = "Title";      break;
+      case 3:  type_folder = "Boxart";     break;
+      default: return;
+   }
+
+   {
+      char m3u_path[PATH_MAX_LENGTH];
+      const char *thumb_content = strm->game_switcher_content_path;
+
+      if (streamlined_find_m3u_for_content(strm->game_switcher_content_path,
+            m3u_path, sizeof(m3u_path)))
+         thumb_content = m3u_path;
+
+      base_name = path_basename(thumb_content);
+      if (string_is_empty(base_name))
+         return;
+
+      strlcpy(name_buf, base_name, sizeof(name_buf));
+      ext = strrchr(name_buf, '.');
+      if (ext)
+         *ext = '\0';
+
+      streamlined_get_content_folder_path(thumb_content,
+            parent_dir, sizeof(parent_dir));
+   }
+
+   fill_pathname_join_special(thumb_path, parent_dir,
+         ".media", sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         type_folder, sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         name_buf, sizeof(thumb_path));
+   strlcat(thumb_path, ".png", sizeof(thumb_path));
+
+   if (!path_is_valid(thumb_path))
+      return;
+
+   strlcpy(strm->game_switcher_thumbnail_path, thumb_path,
+         sizeof(strm->game_switcher_thumbnail_path));
+   gfx_thumbnail_request_file(thumb_path, &strm->game_switcher_thumbnail,
+         settings->uints.gfx_thumbnail_upscale_threshold);
+   strm->game_switcher_has_thumbnail = true;
+}
+
+/*
+ * Load the game switcher entry at the current index from the history playlist.
+ * Resolves paths, builds display name, checks savestate, loads thumbnail.
+ */
+static void streamlined_load_game_switcher_entry(streamlined_t *strm)
+{
+   playlist_t *history = g_defaults.content_history;
+   const struct playlist_entry *pl_entry = NULL;
+   char resolved_path[PATH_MAX_LENGTH];
+   char parent_dir[PATH_MAX_LENGTH];
+
+   strm->game_switcher_display_name[0] = '\0';
+   strm->game_switcher_content_path[0] = '\0';
+   strm->game_switcher_core_path[0] = '\0';
+   strm->game_switcher_has_savestate = false;
+
+   if (!history || playlist_size(history) == 0)
+      return;
+
+   if (strm->game_switcher_index >= playlist_size(history))
+      strm->game_switcher_index = 0;
+
+   playlist_get_index(history, strm->game_switcher_index, &pl_entry);
+   if (!pl_entry || string_is_empty(pl_entry->path))
+      return;
+
+   /* Resolve path (iOS abbreviation fix) */
+   strlcpy(resolved_path, pl_entry->path, sizeof(resolved_path));
+   playlist_resolve_path(PLAYLIST_LOAD, false,
+         resolved_path, sizeof(resolved_path));
+
+   strlcpy(strm->game_switcher_content_path, resolved_path,
+         sizeof(strm->game_switcher_content_path));
+
+   /* Resolve core path */
+   streamlined_resolve_content_core(resolved_path,
+         strm->game_switcher_core_path,
+         sizeof(strm->game_switcher_core_path),
+         NULL, 0,
+         g_defaults.content_history);
+
+   /* Build display name */
+   {
+      char m3u_path[PATH_MAX_LENGTH];
+      if (streamlined_find_m3u_for_content(resolved_path,
+            m3u_path, sizeof(m3u_path)))
+      {
+         fill_pathname_parent_dir(parent_dir, m3u_path, sizeof(parent_dir));
+         streamlined_strip_trailing_slash(parent_dir);
+         streamlined_get_display_name(parent_dir,
+               strm->game_switcher_display_name,
+               sizeof(strm->game_switcher_display_name), true);
+      }
+      else if (!string_is_empty(pl_entry->label))
+         strlcpy(strm->game_switcher_display_name, pl_entry->label,
+               sizeof(strm->game_switcher_display_name));
+      else
+         streamlined_get_display_name(resolved_path,
+               strm->game_switcher_display_name,
+               sizeof(strm->game_switcher_display_name), false);
+   }
+
+   /* Check savestate */
+   if (!string_is_empty(strm->game_switcher_core_path))
+      strm->game_switcher_has_savestate = streamlined_check_savestate(
+            resolved_path, strm->game_switcher_core_path);
+
+   /* Load thumbnail */
+   streamlined_load_game_switcher_thumbnail(strm);
+}
+
+/*
+ * Populate the menu list with history entries (for Text view).
+ */
+static void streamlined_populate_game_switcher_menu(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   playlist_t *history;
+   size_t pl_size, j;
+
+   if (!menu_st || !strm)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   history = g_defaults.content_history;
+   if (!history || playlist_size(history) == 0)
+   {
+      menu_entries_append(list,
+            "No recent games", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   pl_size = playlist_size(history);
+   for (j = 0; j < pl_size; j++)
+   {
+      const struct playlist_entry *pl_entry = NULL;
+      char resolved_path[PATH_MAX_LENGTH];
+      char display_name[256];
+
+      playlist_get_index(history, j, &pl_entry);
+      if (!pl_entry || string_is_empty(pl_entry->path))
+         continue;
+
+      strlcpy(resolved_path, pl_entry->path, sizeof(resolved_path));
+      playlist_resolve_path(PLAYLIST_LOAD, false,
+            resolved_path, sizeof(resolved_path));
+
+      {
+         char m3u_path[PATH_MAX_LENGTH];
+         if (streamlined_find_m3u_for_content(resolved_path,
+               m3u_path, sizeof(m3u_path)))
+         {
+            char m3u_parent[PATH_MAX_LENGTH];
+            fill_pathname_parent_dir(m3u_parent, m3u_path, sizeof(m3u_parent));
+            streamlined_strip_trailing_slash(m3u_parent);
+            streamlined_get_display_name(m3u_parent,
+                  display_name, sizeof(display_name), true);
+         }
+         else if (!string_is_empty(pl_entry->label))
+            strlcpy(display_name, pl_entry->label, sizeof(display_name));
+         else
+            streamlined_get_display_name(resolved_path,
+                  display_name, sizeof(display_name), false);
+      }
+
+      menu_entries_append(list,
+            display_name, resolved_path,
+            MSG_UNKNOWN, FILE_TYPE_PLAIN,
+            0, 0, NULL);
+   }
+}
+
+/*
+ * Render the game switcher (Image-centric view).
+ * Full-screen thumbnail with game name in footer. L/R arrows shown.
+ */
+static void streamlined_render_game_switcher(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   settings_t *settings = config_get_ptr();
+   float scale         = strm->scale_factor;
+   float footer_height = 78.0f * scale;
+   int avail_top, avail_bottom;
+
+   streamlined_sync_menu_stack(strm);
+
+   /* Image-centric view only */
+   if (settings && settings->uints.menu_streamlined_game_switcher_view == 1)
+      return;
+
+   /* Check for empty history */
+   {
+      playlist_t *history = g_defaults.content_history;
+      if (!history || playlist_size(history) == 0)
+      {
+         /* "No recent games" centered */
+         const char *msg = "No recent games";
+         int msg_w = streamlined_get_text_width(strm, msg, FONT_NORMAL);
+         int msg_x = ((int)video_width - msg_w) / 2;
+         int msg_y = (int)(video_height / 2) + (int)(strm->font_size * 0.35f);
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               msg_x, msg_y, msg, streamlined_color_text, false);
+         return;
+      }
+   }
+
+   avail_top = strm->margin_y;
+   avail_bottom = (int)(video_height - footer_height);
+
+   /* Draw thumbnail or "No Artwork" */
+   if (strm->game_switcher_has_thumbnail
+         && strm->game_switcher_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+   {
+      float draw_width, draw_height;
+      int max_w = (int)video_width - strm->margin_x * 2;
+      int max_h = avail_bottom - avail_top - strm->margin_y;
+      int draw_x, draw_y;
+
+      gfx_thumbnail_get_draw_dimensions(
+            &strm->game_switcher_thumbnail,
+            max_w, max_h, 1.0f,
+            &draw_width, &draw_height);
+
+      draw_x = ((int)video_width - (int)draw_width) / 2;
+      draw_y = avail_top + (avail_bottom - avail_top - (int)draw_height) / 2;
+
+      gfx_thumbnail_draw(userdata, video_width, video_height,
+            &strm->game_switcher_thumbnail,
+            (float)draw_x, (float)draw_y,
+            (unsigned)draw_width, (unsigned)draw_height,
+            GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
+   }
+   else
+   {
+      /* "No Artwork" centered */
+      const char *no_art = "No Artwork";
+      int text_w = streamlined_get_text_width(strm, no_art, FONT_NORMAL);
+      int text_x = ((int)video_width - text_w) / 2;
+      int center_y = (avail_top + avail_bottom) / 2
+            + (int)(strm->font_size * 0.35f);
+
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            text_x, center_y, no_art, streamlined_color_text_muted, false);
+   }
+
+   /* Footer: ◀ Game Name ▶ */
+   {
+      float footer_center_y = (float)video_height - (footer_height / 2.0f);
+      float text_y = footer_center_y + (strm->font_size * 0.35f);
+      int max_name_w = (int)video_width - strm->margin_x * 4;
+      char truncated[256];
+      int name_w, arrow_w, total_w, start_x;
+      const char *left_arrow = "\xe2\x97\x80";   /* ◀ UTF-8 */
+      const char *right_arrow = "\xe2\x96\xb6";  /* ▶ UTF-8 */
+      int arrow_gap = (int)(12 * scale);
+
+      streamlined_truncate_text(strm, strm->game_switcher_display_name,
+            truncated, sizeof(truncated), max_name_w, FONT_NORMAL);
+
+      name_w = streamlined_get_text_width(strm, truncated, FONT_NORMAL);
+      arrow_w = streamlined_get_text_width(strm, left_arrow, FONT_NORMAL);
+      total_w = arrow_w + arrow_gap + name_w + arrow_gap + arrow_w;
+      start_x = ((int)video_width - total_w) / 2;
+
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            start_x, (int)text_y,
+            left_arrow, streamlined_color_text_muted, false);
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            start_x + arrow_w + arrow_gap, (int)text_y,
+            truncated, streamlined_color_text, false);
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            start_x + arrow_w + arrow_gap + name_w + arrow_gap, (int)text_y,
+            right_arrow, streamlined_color_text_muted, false);
+   }
+}
+
+/*
+ * Enter the game switcher from the main menu.
+ * Saves current selection, sets flags, and branches on gs_view to either
+ * load the image-centric entry or populate the text-view menu list.
+ */
+static void streamlined_enter_game_switcher(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   settings_t *gs_settings    = config_get_ptr();
+   unsigned gs_view = gs_settings
+         ? gs_settings->uints.menu_streamlined_game_switcher_view : 0;
+
+   strm->game_switcher_saved_selection = menu_st->selection_ptr;
+   strm->game_switcher_index = 0;
+   strm->in_game_switcher = true;
+   strm->game_switcher_in_glo = false;
+
+   if (gs_view == 0)
+      streamlined_load_game_switcher_entry(strm);
+   else
+   {
+      streamlined_populate_game_switcher_menu(strm);
+      gfx_thumbnail_reset(&strm->rom_thumbnail);
+      strm->rom_thumbnail_path[0] = '\0';
+      strm->rom_thumbnail_selection = (size_t)-1;
+      menu_st->selection_ptr = 0;
+   }
+}
+
+/*
+ * Refresh the game switcher view after a state change (e.g. returning from
+ * GLO, adding/removing favorites, deleting autosave).
+ * Branches on gs_view to reload the image entry or repopulate the text list.
+ */
+static void streamlined_refresh_game_switcher_view(streamlined_t *strm)
+{
+   settings_t *gs_settings = config_get_ptr();
+   unsigned gs_view = gs_settings
+         ? gs_settings->uints.menu_streamlined_game_switcher_view : 0;
+
+   if (gs_view == 0)
+      streamlined_load_game_switcher_entry(strm);
+   else
+   {
+      streamlined_populate_game_switcher_menu(strm);
+      menu_state_get_ptr()->selection_ptr = strm->game_switcher_index;
+   }
 }
 
 /*
@@ -1508,14 +1928,26 @@ static void streamlined_render_menu(streamlined_t *strm,
          else if (!string_is_empty(entry.label)
                && path_is_valid(entry.label))
          {
-            if (strm->in_favorites)
+            if (strm->in_favorites || strm->in_game_switcher)
             {
                /* Temporarily set current_folder_path for thumbnail lookup */
                char saved_folder[PATH_MAX_LENGTH];
+               char m3u_path[PATH_MAX_LENGTH];
+               char content_folder[PATH_MAX_LENGTH];
+               const char *thumb_content = entry.label;
+
                strlcpy(saved_folder, strm->current_folder_path, sizeof(saved_folder));
-               streamlined_get_favorites_folder_path(entry.label,
-                     strm->current_folder_path, sizeof(strm->current_folder_path));
-               streamlined_load_rom_thumbnail(strm, entry.label);
+
+               if (streamlined_find_m3u_for_content(entry.label,
+                     m3u_path, sizeof(m3u_path)))
+                  thumb_content = m3u_path;
+
+               streamlined_get_content_folder_path(thumb_content,
+                     content_folder, sizeof(content_folder));
+               strlcpy(strm->current_folder_path, content_folder,
+                     sizeof(strm->current_folder_path));
+
+               streamlined_load_rom_thumbnail(strm, thumb_content);
                strlcpy(strm->current_folder_path, saved_folder,
                      sizeof(strm->current_folder_path));
             }
@@ -1539,10 +1971,22 @@ static void streamlined_render_menu(streamlined_t *strm,
             {
                /* Resolve core for favorites entry */
                char fav_core[PATH_MAX_LENGTH];
-               if (streamlined_resolve_favorites_core(entry.label,
-                     fav_core, sizeof(fav_core)))
+               if (streamlined_resolve_content_core(entry.label,
+                     fav_core, sizeof(fav_core),
+                     NULL, 0,
+                     g_defaults.content_favorites))
                   strm->selected_has_savestate = streamlined_check_savestate(
                         entry.label, fav_core);
+            }
+            else if (strm->in_game_switcher)
+            {
+               char gs_core[PATH_MAX_LENGTH];
+               if (streamlined_resolve_content_core(entry.label,
+                     gs_core, sizeof(gs_core),
+                     NULL, 0,
+                     g_defaults.content_history))
+                  strm->selected_has_savestate = streamlined_check_savestate(
+                        entry.label, gs_core);
             }
             else if (!string_is_empty(strm->folder_core_path))
             {
@@ -1627,6 +2071,14 @@ static void streamlined_render_menu(streamlined_t *strm,
    {
       strlcpy(title_buf, "Settings", sizeof(title_buf));
    }
+   else if (strm->in_game_switcher && strm->game_switcher_in_glo)
+   {
+      strlcpy(title_buf, "Game List Options", sizeof(title_buf));
+   }
+   else if (strm->in_game_switcher)
+   {
+      strlcpy(title_buf, "Game Switcher", sizeof(title_buf));
+   }
    else if (strm->is_custom_main_menu && strm->in_favorites)
    {
       strlcpy(title_buf, "Favorites", sizeof(title_buf));
@@ -1662,11 +2114,11 @@ static void streamlined_render_menu(streamlined_t *strm,
          }
 
          if (streamlined_check_m3u_folder(parent_dir, m3u_path, sizeof(m3u_path)))
-            streamlined_get_display_name(parent_dir, true,
-                  title_buf, sizeof(title_buf));
+            streamlined_get_display_name(parent_dir,
+                  title_buf, sizeof(title_buf), true);
          else
-            streamlined_get_display_name(content_path, false,
-                  title_buf, sizeof(title_buf));
+            streamlined_get_display_name(content_path,
+                  title_buf, sizeof(title_buf), false);
       }
       if (title_buf[0] == '\0')
          strlcpy(title_buf, "Quick Menu", sizeof(title_buf));
@@ -2613,7 +3065,7 @@ static void streamlined_delete_autosave_file(
  * Populate the Game List Options menu.
  * Entries are conditional on whether the selected game has a save state.
  */
-static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites)
+static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites, bool in_game_switcher)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
@@ -2641,8 +3093,8 @@ static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favor
             MENU_SETTING_ACTION, 0, 0, NULL);
    }
 
-   /* Set Folder Core (not available for favorites) */
-   if (!in_favorites)
+   /* Set Folder Core (not available for favorites or game switcher) */
+   if (!in_favorites && !in_game_switcher)
    {
       display_name = streamlined_get_core_display_name(strm->options_core_path);
       snprintf(label, sizeof(label), "Set Folder Core: %s", display_name);
@@ -2661,13 +3113,17 @@ static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favor
          label, "", STREAMLINED_OPTIONS_SET_GAME_CORE,
          MENU_SETTING_ACTION, 0, 0, NULL);
 
-   menu_entries_append(list,
-         "Search", "", STREAMLINED_OPTIONS_SEARCH,
-         MENU_SETTING_ACTION, 0, 0, NULL);
+   /* Search and Random Game (not available in game switcher) */
+   if (!in_game_switcher)
+   {
+      menu_entries_append(list,
+            "Search", "", STREAMLINED_OPTIONS_SEARCH,
+            MENU_SETTING_ACTION, 0, 0, NULL);
 
-   menu_entries_append(list,
-         "Random Game", "", STREAMLINED_OPTIONS_RANDOM_GAME,
-         MENU_SETTING_ACTION, 0, 0, NULL);
+      menu_entries_append(list,
+            "Random Game", "", STREAMLINED_OPTIONS_RANDOM_GAME,
+            MENU_SETTING_ACTION, 0, 0, NULL);
+   }
 
    if (strm->options_game_has_savestate)
    {
@@ -2695,6 +3151,14 @@ static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favor
          menu_entries_append(list,
                "Add to Favorites", "", STREAMLINED_OPTIONS_ADD_FAVORITE,
                MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+
+   /* Remove from Game Switcher (only in game switcher context) */
+   if (in_game_switcher)
+   {
+      menu_entries_append(list,
+            "Remove from Game Switcher", "", STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER,
+            MENU_SETTING_ACTION, 0, 0, NULL);
    }
 }
 
@@ -2771,8 +3235,8 @@ static void streamlined_populate_search_results(streamlined_t *strm)
          if (!streamlined_check_m3u_folder(path, m3u_path, sizeof(m3u_path)))
             continue;
 
-         streamlined_get_display_name(path, true,
-               display_name, sizeof(display_name));
+         streamlined_get_display_name(path,
+               display_name, sizeof(display_name), true);
          if (!streamlined_fuzzy_match(strm->search_query, display_name))
             continue;
 
@@ -2783,8 +3247,8 @@ static void streamlined_populate_search_results(streamlined_t *strm)
       }
       else
       {
-         streamlined_get_display_name(path, false,
-               display_name, sizeof(display_name));
+         streamlined_get_display_name(path,
+               display_name, sizeof(display_name), false);
 
          if (!streamlined_fuzzy_match(strm->search_query, display_name))
             continue;
@@ -2846,29 +3310,8 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
       /* Cancelled — return to options menu */
       strm->in_options_menu = true;
       strm->cancel_ignore_frames = 3;
-      streamlined_populate_options_menu(strm, strm->in_favorites);
-      {
-         struct menu_state *menu_st = menu_state_get_ptr();
-         file_list_t *slist = menu_st ? MENU_LIST_GET_SELECTION(menu_st->entries.list, 0) : NULL;
-         size_t idx = 0;
-         if (slist)
-         {
-            size_t j;
-            for (j = 0; j < slist->size; j++)
-            {
-               menu_entry_t e;
-               MENU_ENTRY_INITIALIZE(e);
-               menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-               if (e.enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
-               {
-                  idx = j;
-                  break;
-               }
-            }
-         }
-         if (menu_st)
-            menu_st->selection_ptr = idx;
-      }
+      streamlined_populate_options_menu(strm, strm->in_favorites, false);
+      streamlined_select_options_entry(STREAMLINED_OPTIONS_DELETE_SAVE);
    }
 }
 #endif
@@ -3293,7 +3736,7 @@ static void streamlined_strip_trailing_slash(char *path)
  * Normal ROM: parent directory.
  * M3U file: grandparent directory (M3U lives inside game subfolder).
  */
-static void streamlined_get_favorites_folder_path(const char *game_path,
+static void streamlined_get_content_folder_path(const char *game_path,
       char *folder_out, size_t folder_size)
 {
    char parent_dir[PATH_MAX_LENGTH];
@@ -3316,15 +3759,17 @@ static void streamlined_get_favorites_folder_path(const char *game_path,
 }
 
 /*
- * Resolve core for a favorites entry. Priority:
- * 1. Per-game override (.core.$GAME.txt in original folder)
- * 2. Folder core (.core.txt in original folder)
- * 3. For M3U: parent dir's .core.txt
+ * Resolve core for a content entry (favorites or history). Priority:
+ * 1. Per-game override (.core.$GAME.txt in content folder)
+ * 2. Folder core (.core.txt in content folder)
+ * 3. For M3U: parent dir's .core.txt (harmless no-op for non-M3U)
  * 4. Core stored in playlist entry
  * Returns false if no core found.
  */
-static bool streamlined_resolve_favorites_core(const char *game_path,
-      char *core_out, size_t core_size)
+static bool streamlined_resolve_content_core(const char *game_path,
+      char *core_out, size_t core_size,
+      char *game_core_out, size_t game_core_size,
+      playlist_t *playlist)
 {
    char folder_path[PATH_MAX_LENGTH];
    char game_name[PATH_MAX_LENGTH];
@@ -3333,14 +3778,20 @@ static bool streamlined_resolve_favorites_core(const char *game_path,
    if (string_is_empty(game_path))
       return false;
 
-   streamlined_get_favorites_folder_path(game_path, folder_path, sizeof(folder_path));
+   streamlined_get_content_folder_path(game_path, folder_path, sizeof(folder_path));
 
    /* 1. Per-game core override */
    streamlined_get_game_core_name(game_path, folder_path,
          game_name, sizeof(game_name));
    if (streamlined_read_game_core(folder_path, game_name,
          core_out, core_size))
+   {
+      if (game_core_out)
+         strlcpy(game_core_out, core_out, game_core_size);
       return true;
+   }
+   if (game_core_out)
+      game_core_out[0] = '\0';
 
    /* 2. Folder core */
    if (streamlined_read_folder_core(folder_path, core_out, core_size))
@@ -3357,24 +3808,21 @@ static bool streamlined_resolve_favorites_core(const char *game_path,
    }
 
    /* 4. Core stored in playlist entry */
+   if (playlist)
    {
-      playlist_t *favorites = g_defaults.content_favorites;
-      if (favorites)
+      const struct playlist_entry *pl_entry = NULL;
+      playlist_get_index_by_path(playlist, game_path, &pl_entry);
+      if (pl_entry && !string_is_empty(pl_entry->core_path)
+            && !string_is_equal(pl_entry->core_path, "DETECT"))
       {
-         const struct playlist_entry *pl_entry = NULL;
-         playlist_get_index_by_path(favorites, game_path, &pl_entry);
-         if (pl_entry && !string_is_empty(pl_entry->core_path)
-               && !string_is_equal(pl_entry->core_path, "DETECT"))
+         char resolved_core[PATH_MAX_LENGTH];
+         strlcpy(resolved_core, pl_entry->core_path, sizeof(resolved_core));
+         playlist_resolve_path(PLAYLIST_LOAD, true,
+               resolved_core, sizeof(resolved_core));
+         if (path_is_valid(resolved_core))
          {
-            char resolved_core[PATH_MAX_LENGTH];
-            strlcpy(resolved_core, pl_entry->core_path, sizeof(resolved_core));
-            playlist_resolve_path(PLAYLIST_LOAD, true,
-                  resolved_core, sizeof(resolved_core));
-            if (path_is_valid(resolved_core))
-            {
-               strlcpy(core_out, resolved_core, core_size);
-               return true;
-            }
+            strlcpy(core_out, resolved_core, core_size);
+            return true;
          }
       }
    }
@@ -3414,12 +3862,12 @@ static void streamlined_add_to_favorites(const char *game_path,
          char parent_dir[PATH_MAX_LENGTH];
          fill_pathname_parent_dir(parent_dir, game_path, sizeof(parent_dir));
          streamlined_strip_trailing_slash(parent_dir);
-         streamlined_get_display_name(parent_dir, true,
-               display_name, sizeof(display_name));
+         streamlined_get_display_name(parent_dir,
+               display_name, sizeof(display_name), true);
       }
       else
-         streamlined_get_display_name(game_path, false,
-               display_name, sizeof(display_name));
+         streamlined_get_display_name(game_path,
+               display_name, sizeof(display_name), false);
    }
 
    /* Resolve core name */
@@ -3509,7 +3957,6 @@ static void streamlined_populate_favorites_menu(streamlined_t *strm)
    for (j = 0; j < pl_size; j++)
    {
       const struct playlist_entry *pl_entry = NULL;
-      const char *display_name;
       char resolved_path[PATH_MAX_LENGTH];
 
       playlist_get_index(favorites, j, &pl_entry);
@@ -3521,24 +3968,39 @@ static void streamlined_populate_favorites_menu(streamlined_t *strm)
       playlist_resolve_path(PLAYLIST_LOAD, false,
             resolved_path, sizeof(resolved_path));
 
-      display_name = pl_entry->label;
-      if (string_is_empty(display_name))
       {
-         /* Fallback: derive from path */
-         char name_buf[256];
-         streamlined_get_display_name(resolved_path, false,
-               name_buf, sizeof(name_buf));
-         menu_entries_append(list,
-               name_buf, resolved_path,
-               MSG_UNKNOWN, FILE_TYPE_PLAIN,
-               0, 0, NULL);
-      }
-      else
-      {
-         menu_entries_append(list,
-               display_name, resolved_path,
-               MSG_UNKNOWN, FILE_TYPE_PLAIN,
-               0, 0, NULL);
+         char m3u_path[PATH_MAX_LENGTH];
+         if (streamlined_find_m3u_for_content(resolved_path,
+               m3u_path, sizeof(m3u_path)))
+         {
+            char name_buf[256];
+            char m3u_parent[PATH_MAX_LENGTH];
+            fill_pathname_parent_dir(m3u_parent, m3u_path, sizeof(m3u_parent));
+            streamlined_strip_trailing_slash(m3u_parent);
+            streamlined_get_display_name(m3u_parent,
+                  name_buf, sizeof(name_buf), true);
+            menu_entries_append(list,
+                  name_buf, resolved_path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
+         else if (!string_is_empty(pl_entry->label))
+         {
+            menu_entries_append(list,
+                  pl_entry->label, resolved_path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
+         else
+         {
+            char name_buf[256];
+            streamlined_get_display_name(resolved_path,
+                  name_buf, sizeof(name_buf), false);
+            menu_entries_append(list,
+                  name_buf, resolved_path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
       }
    }
 }
@@ -3674,8 +4136,8 @@ static void streamlined_normalize_rom_name(char *name, size_t name_size)
  * or sort prefix (for M3U folders), then optionally normalize.
  */
 static void streamlined_get_display_name(
-      const char *path, bool is_m3u_folder,
-      char *out, size_t out_size)
+      const char *path, char *out, size_t out_size,
+      bool is_m3u_folder)
 {
    settings_t *settings = config_get_ptr();
    const char *name = path_basename(path);
@@ -3754,6 +4216,27 @@ static bool streamlined_check_m3u_folder(const char *dir_path,
       return true;
    }
    return false;
+}
+
+/*
+ * Given any content path, find the M3U file if it belongs to an M3U game.
+ * Handles both: content IS an M3U file, or content is a disc file inside
+ * an M3U folder (e.g., PSX/Game/disc1.bin -> finds PSX/Game/Game.m3u).
+ */
+static bool streamlined_find_m3u_for_content(const char *content_path,
+      char *m3u_out, size_t m3u_size)
+{
+   char parent_dir[PATH_MAX_LENGTH];
+   if (string_is_empty(content_path))
+      return false;
+   if (m3u_file_is_m3u(content_path))
+   {
+      strlcpy(m3u_out, content_path, m3u_size);
+      return true;
+   }
+   fill_pathname_parent_dir(parent_dir, content_path, sizeof(parent_dir));
+   streamlined_strip_trailing_slash(parent_dir);
+   return streamlined_check_m3u_folder(parent_dir, m3u_out, m3u_size);
 }
 
 /* Check if a core supports M3U files natively */
@@ -3921,8 +4404,8 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
             {
                /* M3U game folder — show as launchable game */
                char display_name[256];
-               streamlined_get_display_name(path, true,
-                     display_name, sizeof(display_name));
+               streamlined_get_display_name(path,
+                     display_name, sizeof(display_name), true);
 
                menu_entries_append(list,
                      display_name,     /* folder name = game title */
@@ -3955,8 +4438,8 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
          {
             /* Show files (ROMs) - strip extension for cleaner display */
             char display_name[256];
-            streamlined_get_display_name(path, false,
-                  display_name, sizeof(display_name));
+            streamlined_get_display_name(path,
+                  display_name, sizeof(display_name), false);
 
             menu_entries_append(list,
                   display_name,     /* Display name (entry->path for rendering) */
@@ -3986,6 +4469,21 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
             MSG_UNKNOWN,
             FILE_TYPE_NONE,
             0, 0, NULL);
+   }
+
+   /* Add Game Switcher entry at top level when history non-empty and enabled */
+   if (!show_folder_slash)
+   {
+      settings_t *hist_settings = config_get_ptr();
+      playlist_t *history = g_defaults.content_history;
+      if (hist_settings && hist_settings->bools.menu_content_show_history
+            && history && playlist_size(history) > 0)
+      {
+         menu_entries_prepend(list,
+               "Game Switcher", "streamlined_game_switcher",
+               STREAMLINED_GAME_SWITCHER_ENTRY,
+               MENU_SETTING_ACTION, 0, 0);
+      }
    }
 
    /* Add Favorites entry at top level when non-empty and enabled */
@@ -4063,7 +4561,8 @@ static bool streamlined_get_system_font_path(char *buf, size_t buf_size)
  */
 static font_data_t *streamlined_try_load_font(gfx_display_t *p_disp,
       const char *assets_dir, const char *font_subpath,
-      float font_size, bool is_threaded, char *fontpath_out, size_t fontpath_size)
+      float font_size, char *fontpath_out, size_t fontpath_size,
+      bool is_threaded)
 {
    font_data_t *font = NULL;
 
@@ -4211,17 +4710,17 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    if (!strm->font.font)
       strm->font.font = streamlined_try_load_font(p_disp,
             settings->paths.directory_assets, "streamlined/font.ttf",
-            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
+            strm->font_size, fontpath, sizeof(fontpath), is_threaded);
 
    if (!strm->font.font)
       strm->font.font = streamlined_try_load_font(p_disp,
             settings->paths.directory_assets, "xmb/monochrome/font.ttf",
-            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
+            strm->font_size, fontpath, sizeof(fontpath), is_threaded);
 
    if (!strm->font.font)
       strm->font.font = streamlined_try_load_font(p_disp,
             settings->paths.directory_assets, "ozone/regular.ttf",
-            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
+            strm->font_size, fontpath, sizeof(fontpath), is_threaded);
 
    /* Load additional font sizes using the same font file that worked */
    if (strm->font.font && fontpath[0] != '\0')
@@ -4294,6 +4793,9 @@ static void streamlined_context_destroy(void *data)
 
       /* Clean up random game preview thumbnail */
       gfx_thumbnail_reset(&strm->random_thumbnail);
+
+      /* Clean up game switcher thumbnail */
+      gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
 
    }
 
@@ -4442,7 +4944,12 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       if (strm->ticker_idx - strm->delete_done_start > 180)
       {
          strm->delete_done = false;
-         if (strm->in_favorites)
+         if (strm->in_game_switcher)
+         {
+            strm->game_switcher_has_savestate = false;
+            streamlined_refresh_game_switcher_view(strm);
+         }
+         else if (strm->in_favorites)
             streamlined_populate_favorites_menu(strm);
          else if (strm->options_was_in_folder)
             streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
@@ -4451,7 +4958,8 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
             settings_t *settings = config_get_ptr();
             streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
          }
-         menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
+         if (!strm->in_game_switcher)
+            menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
       }
       return;
    }
@@ -4500,8 +5008,8 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
          char truncated[256];
          char display_name[256];
 
-         streamlined_get_display_name(strm->options_game_path, false,
-               display_name, sizeof(display_name));
+         streamlined_get_display_name(strm->options_game_path,
+               display_name, sizeof(display_name), false);
 
          streamlined_truncate_text(strm, display_name,
                truncated, sizeof(truncated), max_w, FONT_NORMAL);
@@ -4575,6 +5083,9 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       }
 #endif
    }
+   else if (strm->in_game_switcher && !strm->game_switcher_in_glo)
+      streamlined_render_game_switcher(strm, p_disp, userdata,
+            video_width, video_height);
    else if (strm->in_random_preview)
       streamlined_render_random_preview(strm, p_disp, userdata,
             video_width, video_height);
@@ -4763,6 +5274,37 @@ static int streamlined_environ(enum menu_environ_cb type, void *data, void *user
 }
 
 /*
+ * Find a menu entry by enum_idx and set the selection pointer to it.
+ */
+static void streamlined_select_options_entry(unsigned target_enum)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   file_list_t *slist;
+   size_t idx = 0;
+
+   if (!menu_st)
+      return;
+
+   slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+   if (slist)
+   {
+      size_t j;
+      for (j = 0; j < slist->size; j++)
+      {
+         menu_entry_t e;
+         MENU_ENTRY_INITIALIZE(e);
+         menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+         if (e.enum_idx == target_enum)
+         {
+            idx = j;
+            break;
+         }
+      }
+   }
+   menu_st->selection_ptr = idx;
+}
+
+/*
  * Custom input handler for Cannoli menu navigation.
  *
  * Navigation state machine:
@@ -4804,6 +5346,364 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    /* Block all input while loading/exiting screen is showing */
    if (strm && (strm->loading_pending || strm->exiting_pending))
       return 0;
+
+   /* ================================================================
+    * GAME SWITCHER INPUT HANDLING
+    * ================================================================ */
+
+   /* Game Switcher GLO menu */
+   if (strm && strm->in_game_switcher && strm->game_switcher_in_glo)
+   {
+      settings_t *gs_settings = config_get_ptr();
+      unsigned gs_view = gs_settings ? gs_settings->uints.menu_streamlined_game_switcher_view : 0;
+
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->game_switcher_in_glo = false;
+         strm->in_options_menu = false;
+         streamlined_refresh_game_switcher_view(strm);
+         strm->cancel_ignore_frames = 3;
+         return 0;
+      }
+
+      if (action == MENU_ACTION_OK && entry)
+      {
+         if (entry->enum_idx == STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER)
+         {
+            playlist_t *history = g_defaults.content_history;
+            if (history)
+            {
+               playlist_delete_index(history, strm->game_switcher_index);
+               playlist_write_file(history);
+            }
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+
+            /* Check if history is now empty */
+            if (!history || playlist_size(history) == 0)
+            {
+               strm->in_game_switcher = false;
+               {
+                  settings_t *settings = config_get_ptr();
+                  streamlined_populate_folder_menu(strm,
+                        settings->paths.directory_menu_content, false);
+               }
+               if (strm->in_folder)
+                  menu_st->selection_ptr = strm->main_menu_selection;
+               else if (strm->in_favorites)
+                  menu_st->selection_ptr = strm->favorites_saved_selection;
+               else
+                  menu_st->selection_ptr = strm->game_switcher_saved_selection;
+               strm->in_folder = false;
+               strm->in_favorites = false;
+               strm->selected_has_savestate = false;
+               strm->selected_is_file = false;
+               gfx_thumbnail_reset(&strm->rom_thumbnail);
+               strm->rom_thumbnail_path[0] = '\0';
+               strm->rom_thumbnail_selection = (size_t)-1;
+               return 0;
+            }
+
+            /* Adjust index if past end */
+            if (strm->game_switcher_index >= playlist_size(history))
+               strm->game_switcher_index = playlist_size(history) - 1;
+
+            if (gs_view == 0)
+               streamlined_load_game_switcher_entry(strm);
+            else
+            {
+               streamlined_populate_game_switcher_menu(strm);
+               if (strm->game_switcher_index < playlist_size(history))
+                  menu_st->selection_ptr = strm->game_switcher_index;
+               else
+                  menu_st->selection_ptr = 0;
+            }
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_RESET_GAME)
+         {
+            const char *eff_core = streamlined_effective_core(strm);
+            streamlined_delete_autosave_file(
+                  strm->options_game_path, eff_core);
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+            strm->in_game_switcher = false;
+
+            strm->return_to_top_level = true;
+            strm->top_level_selection = strm->game_switcher_saved_selection;
+
+            streamlined_request_loading(strm,
+                  eff_core, strm->options_game_path, false);
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
+         {
+            strm->in_delete_confirm = true;
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+#if TARGET_OS_TV
+            {
+               char display_name[256];
+               streamlined_get_display_name(strm->options_game_path,
+                     display_name, sizeof(display_name), false);
+               ios_show_confirm_dialog(
+                     "Delete Autosave", display_name, "Delete",
+                     streamlined_delete_confirm_cb, strm);
+            }
+#endif
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
+         {
+            strm->selecting_core_for_game = true;
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+            streamlined_populate_core_selection(strm, strm->options_game_path);
+
+            if (!string_is_empty(strm->options_game_core_path))
+            {
+               file_list_t *clist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+               if (clist)
+                  menu_entries_prepend(clist,
+                        "Use Folder Default", "",
+                        STREAMLINED_OPTIONS_CLEAR_GAME_CORE,
+                        MENU_SETTING_ACTION, 0, 0);
+            }
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_ADD_FAVORITE)
+         {
+            const char *eff_core = streamlined_effective_core(strm);
+            streamlined_add_to_favorites(strm->options_game_path, eff_core);
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+            streamlined_refresh_game_switcher_view(strm);
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_REMOVE_FAVORITE)
+         {
+            streamlined_remove_from_favorites(strm->options_game_path);
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+            streamlined_refresh_game_switcher_view(strm);
+            return 0;
+         }
+      }
+
+      /* Allow navigation in GLO */
+      if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+            || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+         return generic_menu_entry_action(userdata, entry, i, action);
+
+      return 0;
+   }
+
+   /* Image-centric Game Switcher */
+   if (strm && strm->in_game_switcher && !strm->game_switcher_in_glo)
+   {
+      settings_t *gs_settings = config_get_ptr();
+      unsigned gs_view = gs_settings ? gs_settings->uints.menu_streamlined_game_switcher_view : 0;
+
+      if (gs_view == 0)
+      {
+         /* Image-centric view input */
+         playlist_t *history = g_defaults.content_history;
+         size_t hist_size = history ? playlist_size(history) : 0;
+
+         if (action == MENU_ACTION_CANCEL || action == MENU_ACTION_INFO)
+         {
+            gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+            strm->in_game_switcher = false;
+            {
+               settings_t *settings = config_get_ptr();
+               streamlined_populate_folder_menu(strm,
+                     settings->paths.directory_menu_content, false);
+            }
+            if (strm->in_folder)
+               menu_st->selection_ptr = strm->main_menu_selection;
+            else if (strm->in_favorites)
+               menu_st->selection_ptr = strm->favorites_saved_selection;
+            else
+               menu_st->selection_ptr = strm->game_switcher_saved_selection;
+            strm->in_folder = false;
+            strm->in_favorites = false;
+            strm->selected_has_savestate = false;
+            strm->selected_is_file = false;
+            gfx_thumbnail_reset(&strm->rom_thumbnail);
+            strm->rom_thumbnail_path[0] = '\0';
+            strm->rom_thumbnail_selection = (size_t)-1;
+            return 0;
+         }
+
+         if (action == MENU_ACTION_LEFT && hist_size > 0)
+         {
+            if (strm->game_switcher_index == 0)
+               strm->game_switcher_index = hist_size - 1;
+            else
+               strm->game_switcher_index--;
+            streamlined_load_game_switcher_entry(strm);
+            return 0;
+         }
+
+         if (action == MENU_ACTION_RIGHT && hist_size > 0)
+         {
+            strm->game_switcher_index++;
+            if (strm->game_switcher_index >= hist_size)
+               strm->game_switcher_index = 0;
+            streamlined_load_game_switcher_entry(strm);
+            return 0;
+         }
+
+         if (action == MENU_ACTION_OK && hist_size > 0)
+         {
+            if (!string_is_empty(strm->game_switcher_core_path)
+                  && !string_is_empty(strm->game_switcher_content_path))
+            {
+               gfx_thumbnail_reset(&strm->game_switcher_thumbnail);
+               strm->in_game_switcher = false;
+               strm->return_to_top_level = true;
+               strm->top_level_selection = strm->game_switcher_saved_selection;
+
+               streamlined_request_loading(strm,
+                     strm->game_switcher_core_path,
+                     strm->game_switcher_content_path,
+                     strm->game_switcher_has_savestate);
+            }
+            return 0;
+         }
+
+         /* Y = Open GLO */
+         if (action == MENU_ACTION_SEARCH && hist_size > 0)
+         {
+            char folder_path[PATH_MAX_LENGTH];
+
+            /* Set up options fields from game switcher state */
+            strlcpy(strm->options_game_path, strm->game_switcher_content_path,
+                  sizeof(strm->options_game_path));
+            strm->options_game_has_savestate = strm->game_switcher_has_savestate;
+            strm->options_was_in_folder = false;
+
+            /* Resolve core and per-game core override */
+            streamlined_resolve_content_core(strm->game_switcher_content_path,
+                  strm->options_core_path, sizeof(strm->options_core_path),
+                  strm->options_game_core_path, sizeof(strm->options_game_core_path),
+                  g_defaults.content_history);
+
+            streamlined_get_content_folder_path(strm->game_switcher_content_path,
+                  folder_path, sizeof(folder_path));
+            strlcpy(strm->options_folder_path, folder_path,
+                  sizeof(strm->options_folder_path));
+
+            strm->game_switcher_in_glo = true;
+            strm->in_options_menu = true;
+            streamlined_populate_options_menu(strm, false, true);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         return 0;
+      }
+      else
+      {
+         /* Text view input */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            strm->in_game_switcher = false;
+            {
+               settings_t *settings = config_get_ptr();
+               streamlined_populate_folder_menu(strm,
+                     settings->paths.directory_menu_content, false);
+            }
+            if (strm->in_folder)
+               menu_st->selection_ptr = strm->main_menu_selection;
+            else if (strm->in_favorites)
+               menu_st->selection_ptr = strm->favorites_saved_selection;
+            else
+               menu_st->selection_ptr = strm->game_switcher_saved_selection;
+            strm->in_folder = false;
+            strm->in_favorites = false;
+            strm->selected_has_savestate = false;
+            strm->selected_is_file = false;
+            gfx_thumbnail_reset(&strm->rom_thumbnail);
+            strm->rom_thumbnail_path[0] = '\0';
+            strm->rom_thumbnail_selection = (size_t)-1;
+            return 0;
+         }
+
+         if (action == MENU_ACTION_OK && entry)
+         {
+            const char *item_path = entry->label;
+            if (!string_is_empty(item_path) && path_is_valid(item_path))
+            {
+               char gs_core[PATH_MAX_LENGTH];
+               bool has_core = streamlined_resolve_content_core(
+                     item_path,
+                     gs_core, sizeof(gs_core),
+                     NULL, 0,
+                     g_defaults.content_history);
+
+               if (has_core)
+               {
+                  bool has_save = streamlined_check_savestate(item_path, gs_core);
+                  strm->in_game_switcher = false;
+                  strm->return_to_top_level = true;
+                  strm->top_level_selection = strm->game_switcher_saved_selection;
+                  streamlined_request_loading(strm,
+                        gs_core, item_path, has_save);
+               }
+            }
+            return 0;
+         }
+
+         /* Y = Open GLO with current entry's data */
+         if (action == MENU_ACTION_SEARCH && entry)
+         {
+            const char *item_path = entry->label;
+            if (!string_is_empty(item_path) && path_is_valid(item_path))
+            {
+               char folder_path[PATH_MAX_LENGTH];
+
+               strlcpy(strm->options_game_path, item_path,
+                     sizeof(strm->options_game_path));
+               strm->options_was_in_folder = false;
+
+               /* Resolve core and per-game core override */
+               streamlined_resolve_content_core(item_path,
+                     strm->options_core_path, sizeof(strm->options_core_path),
+                     strm->options_game_core_path, sizeof(strm->options_game_core_path),
+                     g_defaults.content_history);
+
+               streamlined_get_content_folder_path(item_path,
+                     folder_path, sizeof(folder_path));
+               strlcpy(strm->options_folder_path, folder_path,
+                     sizeof(strm->options_folder_path));
+
+               strm->options_game_has_savestate = !string_is_empty(strm->options_core_path)
+                     && streamlined_check_savestate(item_path, strm->options_core_path);
+
+               strm->game_switcher_index = menu_st->selection_ptr;
+               strm->game_switcher_in_glo = true;
+               strm->in_options_menu = true;
+               streamlined_populate_options_menu(strm, false, true);
+               menu_st->selection_ptr = 0;
+            }
+            return 0;
+         }
+
+         /* Allow normal list navigation */
+         if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+               || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+            return generic_menu_entry_action(userdata, entry, i, action);
+
+         return 0;
+      }
+   }
 
    if (strm && strm->is_quick_menu)
    {
@@ -4989,28 +5889,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->selecting_core_for_folder = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = 3;
-         streamlined_populate_options_menu(strm, strm->in_favorites);
-         /* Restore selection to Set Folder Core entry */
-         {
-            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-            size_t idx = 0;
-            if (slist)
-            {
-               size_t j;
-               for (j = 0; j < slist->size; j++)
-               {
-                  menu_entry_t e;
-                  MENU_ENTRY_INITIALIZE(e);
-                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                  if (e.enum_idx == STREAMLINED_OPTIONS_SET_FOLDER_CORE)
-                  {
-                     idx = j;
-                     break;
-                  }
-               }
-            }
-            menu_st->selection_ptr = idx;
-         }
+         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_FOLDER_CORE);
          return 0;
       }
 
@@ -5035,27 +5915,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->selecting_core_for_folder = false;
             strm->in_options_menu = true;
             strm->cancel_ignore_frames = 3;
-            streamlined_populate_options_menu(strm, strm->in_favorites);
-            {
-               file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-               size_t idx = 0;
-               if (slist)
-               {
-                  size_t j;
-                  for (j = 0; j < slist->size; j++)
-                  {
-                     menu_entry_t e;
-                     MENU_ENTRY_INITIALIZE(e);
-                     menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                     if (e.enum_idx == STREAMLINED_OPTIONS_SET_FOLDER_CORE)
-                     {
-                        idx = j;
-                        break;
-                     }
-                  }
-               }
-               menu_st->selection_ptr = idx;
-            }
+            streamlined_populate_options_menu(strm, strm->in_favorites, false);
+            streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_FOLDER_CORE);
             return 0;
          }
       }
@@ -5075,28 +5936,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->selecting_core_for_game = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = 3;
-         streamlined_populate_options_menu(strm, strm->in_favorites);
-         /* Restore selection to Set Game Core entry */
-         {
-            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-            size_t idx = 0;
-            if (slist)
-            {
-               size_t j;
-               for (j = 0; j < slist->size; j++)
-               {
-                  menu_entry_t e;
-                  MENU_ENTRY_INITIALIZE(e);
-                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                  if (e.enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
-                  {
-                     idx = j;
-                     break;
-                  }
-               }
-            }
-            menu_st->selection_ptr = idx;
-         }
+         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
          return 0;
       }
 
@@ -5121,27 +5962,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->selecting_core_for_game = false;
             strm->in_options_menu = true;
             strm->cancel_ignore_frames = 3;
-            streamlined_populate_options_menu(strm, strm->in_favorites);
-            {
-               file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-               size_t idx = 0;
-               if (slist)
-               {
-                  size_t j;
-                  for (j = 0; j < slist->size; j++)
-                  {
-                     menu_entry_t e;
-                     MENU_ENTRY_INITIALIZE(e);
-                     menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                     if (e.enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
-                     {
-                        idx = j;
-                        break;
-                     }
-                  }
-               }
-               menu_st->selection_ptr = idx;
-            }
+            streamlined_populate_options_menu(strm, strm->in_favorites, false);
+            streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
             return 0;
          }
 
@@ -5167,27 +5989,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                strm->selecting_core_for_game = false;
                strm->in_options_menu = true;
                strm->cancel_ignore_frames = 3;
-               streamlined_populate_options_menu(strm, strm->in_favorites);
-               {
-                  file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-                  size_t idx = 0;
-                  if (slist)
-                  {
-                     size_t j;
-                     for (j = 0; j < slist->size; j++)
-                     {
-                        menu_entry_t e;
-                        MENU_ENTRY_INITIALIZE(e);
-                        menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                        if (e.enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
-                        {
-                           idx = j;
-                           break;
-                        }
-                     }
-                  }
-                  menu_st->selection_ptr = idx;
-               }
+               streamlined_populate_options_menu(strm, strm->in_favorites, false);
+               streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
                return 0;
             }
          }
@@ -5212,28 +6015,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_delete_confirm = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = 3;
-         streamlined_populate_options_menu(strm, strm->in_favorites);
-         /* Find the Delete Autosave entry index */
-         {
-            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-            size_t idx = 0;
-            if (slist)
-            {
-               size_t j;
-               for (j = 0; j < slist->size; j++)
-               {
-                  menu_entry_t e;
-                  MENU_ENTRY_INITIALIZE(e);
-                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                  if (e.enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
-                  {
-                     idx = j;
-                     break;
-                  }
-               }
-            }
-            menu_st->selection_ptr = idx;
-         }
+         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_select_options_entry(STREAMLINED_OPTIONS_DELETE_SAVE);
          return 0;
       }
 
@@ -5262,28 +6045,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_random_preview = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = 3;
-         streamlined_populate_options_menu(strm, strm->in_favorites);
-         /* Find the Random Game entry index */
-         {
-            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-            size_t idx = 0;
-            if (slist)
-            {
-               size_t j;
-               for (j = 0; j < slist->size; j++)
-               {
-                  menu_entry_t e;
-                  MENU_ENTRY_INITIALIZE(e);
-                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-                  if (e.enum_idx == STREAMLINED_OPTIONS_RANDOM_GAME)
-                  {
-                     idx = j;
-                     break;
-                  }
-               }
-            }
-            menu_st->selection_ptr = idx;
-         }
+         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_select_options_entry(STREAMLINED_OPTIONS_RANDOM_GAME);
          return 0;
       }
 
@@ -5294,8 +6057,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          char fav_core[PATH_MAX_LENGTH];
 
          if (strm->in_favorites
-               && streamlined_resolve_favorites_core(strm->random_game_path,
-                     fav_core, sizeof(fav_core)))
+               && streamlined_resolve_content_core(strm->random_game_path,
+                     fav_core, sizeof(fav_core),
+                     NULL, 0,
+                     g_defaults.content_favorites))
             launch_core = fav_core;
 
          strm->folder_selection = strm->options_saved_selection;
@@ -5330,8 +6095,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          char fav_core[PATH_MAX_LENGTH];
 
          if (strm->in_favorites
-               && streamlined_resolve_favorites_core(strm->random_game_path,
-                     fav_core, sizeof(fav_core)))
+               && streamlined_resolve_content_core(strm->random_game_path,
+                     fav_core, sizeof(fav_core),
+                     NULL, 0,
+                     g_defaults.content_favorites))
             launch_core = fav_core;
 
          strm->folder_selection = strm->options_saved_selection;
@@ -5578,8 +6345,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
                   if (strm->in_favorites)
                   {
-                     if (!streamlined_resolve_favorites_core(item_path,
-                           fav_core, sizeof(fav_core)))
+                     if (!streamlined_resolve_content_core(item_path,
+                           fav_core, sizeof(fav_core),
+                           NULL, 0,
+                           g_defaults.content_favorites))
                      {
                         /* No core found — show core selection */
                         strlcpy(strm->pending_content_path, item_path,
@@ -5631,8 +6400,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   char fav_core[PATH_MAX_LENGTH];
 
                   if (strm->in_favorites
-                        && streamlined_resolve_favorites_core(item_path,
-                              fav_core, sizeof(fav_core)))
+                        && streamlined_resolve_content_core(item_path,
+                              fav_core, sizeof(fav_core),
+                              NULL, 0,
+                              g_defaults.content_favorites))
                      launch_core = fav_core;
 
                   if (!string_is_empty(launch_core))
@@ -5685,27 +6456,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       strm->return_to_options = false;
       strm->in_options_menu = true;
       strm->cancel_ignore_frames = 3;
-      streamlined_populate_options_menu(strm, strm->in_favorites);
-      {
-         file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
-         size_t search_idx = 0;
-         if (slist)
-         {
-            size_t j;
-            for (j = 0; j < slist->size; j++)
-            {
-               menu_entry_t e;
-               MENU_ENTRY_INITIALIZE(e);
-               menu_entry_get(&e, 0, (unsigned)j, NULL, true);
-               if (e.enum_idx == STREAMLINED_OPTIONS_SEARCH)
-               {
-                  search_idx = j;
-                  break;
-               }
-            }
-         }
-         menu_st->selection_ptr = search_idx;
-      }
+      streamlined_populate_options_menu(strm, strm->in_favorites, false);
+      streamlined_select_options_entry(STREAMLINED_OPTIONS_SEARCH);
       return 0;
    }
 
@@ -5716,6 +6468,15 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       {
          strm->in_options_menu = false;
          strm->rom_thumbnail_selection = (size_t)-1;
+
+         /* Return to game switcher if we came from there */
+         if (strm->in_game_switcher)
+         {
+            strm->game_switcher_in_glo = false;
+            streamlined_refresh_game_switcher_view(strm);
+            return 0;
+         }
+
          if (strm->in_favorites)
             streamlined_populate_favorites_menu(strm);
          else if (strm->options_was_in_folder)
@@ -5840,8 +6601,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 #if TARGET_OS_TV
             {
                char display_name[256];
-               streamlined_get_display_name(strm->options_game_path, false,
-                     display_name, sizeof(display_name));
+               streamlined_get_display_name(strm->options_game_path,
+                     display_name, sizeof(display_name), false);
                ios_show_confirm_dialog(
                      "Delete Autosave", display_name, "Delete",
                      streamlined_delete_confirm_cb, strm);
@@ -5908,15 +6669,17 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      strlcpy(strm->random_display_name, pl_entry->label,
                            sizeof(strm->random_display_name));
                   else
-                     streamlined_get_display_name(resolved_path, false,
+                     streamlined_get_display_name(resolved_path,
                            strm->random_display_name,
-                           sizeof(strm->random_display_name));
+                           sizeof(strm->random_display_name), false);
 
                   /* Resolve core for savestate check */
                   {
                      char fav_core[PATH_MAX_LENGTH];
-                     if (streamlined_resolve_favorites_core(resolved_path,
-                           fav_core, sizeof(fav_core)))
+                     if (streamlined_resolve_content_core(resolved_path,
+                           fav_core, sizeof(fav_core),
+                           NULL, 0,
+                           g_defaults.content_favorites))
                         strm->random_has_savestate = streamlined_check_savestate(
                               resolved_path, fav_core);
                      else
@@ -5924,7 +6687,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   }
 
                   /* Set folder path for thumbnail loading */
-                  streamlined_get_favorites_folder_path(resolved_path,
+                  streamlined_get_content_folder_path(resolved_path,
                         fav_folder, sizeof(fav_folder));
                   strlcpy(strm->options_folder_path, fav_folder,
                         sizeof(strm->options_folder_path));
@@ -5990,9 +6753,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
                      /* Build display name */
                      streamlined_get_display_name(picked_path,
-                           picked_attr == RARCH_DIRECTORY,
                            strm->random_display_name,
-                           sizeof(strm->random_display_name));
+                           sizeof(strm->random_display_name),
+                           picked_attr == RARCH_DIRECTORY);
 
                      /* Check savestate */
                      strm->random_has_savestate = streamlined_check_savestate(
@@ -6037,6 +6800,20 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    /* Handle custom main menu (launcher mode) navigation */
    if (strm && strm->is_custom_main_menu)
    {
+      /* Select button — open Game Switcher */
+      if (action == MENU_ACTION_INFO
+            && !strm->in_main_settings_submenu
+            && !strm->in_options_menu
+            && !strm->in_search_mode)
+      {
+         playlist_t *history = g_defaults.content_history;
+         if (history && playlist_size(history) > 0)
+         {
+            streamlined_enter_game_switcher(strm);
+            return 0;
+         }
+      }
+
       /* Back from favorites — return to top level */
       if (action == MENU_ACTION_CANCEL && strm->in_favorites)
       {
@@ -6145,6 +6922,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             return 0;
          }
 
+         /* Game Switcher entry — enter configured view */
+         if (entry->enum_idx == STREAMLINED_GAME_SWITCHER_ENTRY)
+         {
+            streamlined_enter_game_switcher(strm);
+            return 0;
+         }
+
          /* For custom main menu entries, the full path is in entry->label
           * (entry->path contains the display name without path/extension) */
          const char *item_path = entry->label;
@@ -6179,8 +6963,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             {
                /* Launch from favorites */
                char fav_core[PATH_MAX_LENGTH];
-               if (streamlined_resolve_favorites_core(item_path,
-                     fav_core, sizeof(fav_core)))
+               if (streamlined_resolve_content_core(item_path,
+                     fav_core, sizeof(fav_core),
+                     NULL, 0,
+                     g_defaults.content_favorites))
                {
                   streamlined_exit_favorites(strm);
                   streamlined_request_loading(strm, fav_core, item_path, false);
@@ -6198,47 +6984,23 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             {
                /* Launch the selected file (ROM) */
                const char *core_path = NULL;
-               char game_core[PATH_MAX_LENGTH];
-               char game_name_buf[PATH_MAX_LENGTH];
-               char launch_folder[PATH_MAX_LENGTH];
+               char resolved_core[PATH_MAX_LENGTH];
 
-               /* Determine the folder for core lookup */
-               if (strm->in_folder)
-                  strlcpy(launch_folder, strm->current_folder_path, sizeof(launch_folder));
-               else
-                  fill_pathname_parent_dir(launch_folder, item_path, sizeof(launch_folder));
-
-               /* Check for per-game core override first */
-               streamlined_get_game_core_name(item_path, launch_folder,
-                     game_name_buf, sizeof(game_name_buf));
-               if (streamlined_read_game_core(launch_folder, game_name_buf,
-                     game_core, sizeof(game_core)))
+               if (streamlined_resolve_content_core(item_path,
+                     resolved_core, sizeof(resolved_core),
+                     NULL, 0, NULL))
                {
-                  core_path = game_core;
-               }
-               /* Check if folder has a specific core assigned via .core.txt */
-               else if (!string_is_empty(strm->folder_core_path))
-               {
-                  core_path = strm->folder_core_path;
+                  core_path = resolved_core;
                }
                else
                {
-                  /* Top-level M3U: try .core.txt from the M3U's parent folder */
-                  char m3u_parent[PATH_MAX_LENGTH];
-                  fill_pathname_parent_dir(m3u_parent, item_path, sizeof(m3u_parent));
-                  if (streamlined_read_folder_core(m3u_parent,
-                        strm->folder_core_path, sizeof(strm->folder_core_path)))
-                     core_path = strm->folder_core_path;
-                  else
-                  {
-                     /* No .core.txt - show core selection screen */
-                     strlcpy(strm->pending_content_path, item_path,
-                           sizeof(strm->pending_content_path));
-                     strm->selecting_core = true;
-                     streamlined_populate_core_selection(strm, item_path);
-                     menu_st->selection_ptr = 0;
-                     return 0;
-                  }
+                  /* No core found — show core selection screen */
+                  strlcpy(strm->pending_content_path, item_path,
+                        sizeof(strm->pending_content_path));
+                  strm->selecting_core = true;
+                  streamlined_populate_core_selection(strm, item_path);
+                  menu_st->selection_ptr = 0;
+                  return 0;
                }
 
                if (core_path && path_is_valid(core_path))
@@ -6278,8 +7040,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          const char *item_path = entry->label;
          char fav_core[PATH_MAX_LENGTH];
          if (!string_is_empty(item_path) && path_is_valid(item_path)
-               && streamlined_resolve_favorites_core(item_path,
-                     fav_core, sizeof(fav_core)))
+               && streamlined_resolve_content_core(item_path,
+                     fav_core, sizeof(fav_core),
+                     NULL, 0,
+                     g_defaults.content_favorites))
          {
             streamlined_exit_favorites(strm);
             streamlined_request_loading(strm, fav_core, item_path, true);
@@ -6295,28 +7059,11 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          const char *item_path = entry->label;
          const char *core_path = strm->folder_core_path;
          char resolved_core[PATH_MAX_LENGTH];
-         char resume_folder[PATH_MAX_LENGTH];
-         char resume_game_name[PATH_MAX_LENGTH];
 
-         /* Check for per-game core override first */
-         if (strm->in_folder)
-            strlcpy(resume_folder, strm->current_folder_path, sizeof(resume_folder));
-         else
-            fill_pathname_parent_dir(resume_folder, item_path, sizeof(resume_folder));
-
-         streamlined_get_game_core_name(item_path, resume_folder,
-               resume_game_name, sizeof(resume_game_name));
-         if (streamlined_read_game_core(resume_folder, resume_game_name,
-               resolved_core, sizeof(resolved_core)))
+         if (streamlined_resolve_content_core(item_path,
+               resolved_core, sizeof(resolved_core),
+               NULL, 0, NULL))
             core_path = resolved_core;
-         /* Resolve core for top-level M3U entries */
-         else if (string_is_empty(core_path))
-         {
-            char parent_dir[PATH_MAX_LENGTH];
-            fill_pathname_parent_dir(parent_dir, item_path, sizeof(parent_dir));
-            if (streamlined_read_folder_core(parent_dir, resolved_core, sizeof(resolved_core)))
-               core_path = resolved_core;
-         }
 
          if (!string_is_empty(item_path) && path_is_valid(item_path)
                && !string_is_empty(core_path) && path_is_valid(core_path))
@@ -6348,7 +7095,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             && strm->selected_is_file && entry)
       {
          char fav_folder[PATH_MAX_LENGTH];
-         char game_name[PATH_MAX_LENGTH];
 
          strm->options_saved_selection = menu_st->selection_ptr;
          strlcpy(strm->options_game_path, entry->label,
@@ -6357,27 +7103,21 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->options_was_in_folder = false;
 
          /* Set folder path from game's original location */
-         streamlined_get_favorites_folder_path(entry->label,
+         streamlined_get_content_folder_path(entry->label,
                fav_folder, sizeof(fav_folder));
          strlcpy(strm->options_folder_path, fav_folder,
                sizeof(strm->options_folder_path));
 
-         /* Resolve folder core */
-         if (!streamlined_read_folder_core(fav_folder, strm->options_core_path,
-               sizeof(strm->options_core_path)))
-            strm->options_core_path[0] = '\0';
-
-         /* Resolve per-game core override */
-         streamlined_get_game_core_name(entry->label, fav_folder,
-               game_name, sizeof(game_name));
-         if (!streamlined_read_game_core(fav_folder, game_name,
-               strm->options_game_core_path, sizeof(strm->options_game_core_path)))
-            strm->options_game_core_path[0] = '\0';
+         /* Resolve core and per-game core override */
+         streamlined_resolve_content_core(entry->label,
+               strm->options_core_path, sizeof(strm->options_core_path),
+               strm->options_game_core_path, sizeof(strm->options_game_core_path),
+               g_defaults.content_favorites);
 
          strm->in_options_menu = true;
          gfx_thumbnail_reset(&strm->rom_thumbnail);
          strm->rom_thumbnail_path[0] = '\0';
-         streamlined_populate_options_menu(strm, strm->in_favorites);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false);
          menu_st->selection_ptr = 0;
          return 0;
       }
@@ -6385,45 +7125,24 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       /* Y button = Open Game List Options menu */
       if (action == MENU_ACTION_SEARCH && strm->selected_is_file && entry)
       {
-         char game_name[PATH_MAX_LENGTH];
-         char core_folder[PATH_MAX_LENGTH];
-
          strm->options_saved_selection = menu_st->selection_ptr;
          strlcpy(strm->options_game_path, entry->label,
                sizeof(strm->options_game_path));
          strlcpy(strm->options_folder_path, strm->current_folder_path,
                sizeof(strm->options_folder_path));
-         strlcpy(strm->options_core_path, strm->folder_core_path,
-               sizeof(strm->options_core_path));
          strm->options_game_has_savestate = strm->selected_has_savestate;
          strm->options_was_in_folder = strm->in_folder;
 
-         /* Resolve core for top-level M3U entries */
-         if (string_is_empty(strm->options_core_path))
-         {
-            char parent_dir[PATH_MAX_LENGTH];
-            fill_pathname_parent_dir(parent_dir, entry->label, sizeof(parent_dir));
-            streamlined_read_folder_core(parent_dir, strm->options_core_path,
-                  sizeof(strm->options_core_path));
-         }
-
-         /* Resolve per-game core override */
-         if (strm->options_was_in_folder)
-            strlcpy(core_folder, strm->options_folder_path, sizeof(core_folder));
-         else
-         {
-            fill_pathname_parent_dir(core_folder, entry->label, sizeof(core_folder));
-         }
-         streamlined_get_game_core_name(entry->label, core_folder,
-               game_name, sizeof(game_name));
-         if (!streamlined_read_game_core(core_folder, game_name,
-               strm->options_game_core_path, sizeof(strm->options_game_core_path)))
-            strm->options_game_core_path[0] = '\0';
+         /* Resolve core and per-game core override */
+         streamlined_resolve_content_core(entry->label,
+               strm->options_core_path, sizeof(strm->options_core_path),
+               strm->options_game_core_path, sizeof(strm->options_game_core_path),
+               NULL);
 
          strm->in_options_menu = true;
          gfx_thumbnail_reset(&strm->rom_thumbnail);
          strm->rom_thumbnail_path[0] = '\0';
-         streamlined_populate_options_menu(strm, strm->in_favorites);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false);
          menu_st->selection_ptr = 0;
          return 0;
       }

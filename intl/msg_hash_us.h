@@ -12567,6 +12567,14 @@ MSG_HASH(
    "Remove No-Intro/GoodTools tags and fix article placement in game names."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_GAME_SWITCHER_VIEW,
+   "Game Switcher View"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_GAME_SWITCHER_VIEW,
+   "Choose between image-centric and text list views for the Game Switcher."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "Thumbnail Scale Factor"
    )

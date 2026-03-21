@@ -4018,6 +4018,10 @@ MSG_HASH(
    "streamlined_normalize_rom_names"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_GAME_SWITCHER_VIEW,
+   "streamlined_game_switcher_view"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "menu_xmb_thumbnail_scale_factor"
    )

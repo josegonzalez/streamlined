@@ -301,6 +301,7 @@ typedef struct settings
       unsigned menu_timedate_style;
       unsigned menu_timedate_date_separator;
       unsigned gfx_thumbnails;
+      unsigned menu_streamlined_game_switcher_view;
       unsigned menu_left_thumbnails;
       unsigned menu_icon_thumbnails;
       unsigned gfx_thumbnail_upscale_threshold;

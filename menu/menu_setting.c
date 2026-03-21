@@ -3499,6 +3499,19 @@ static size_t setting_get_string_representation_uint_menu_thumbnails(
    }
 }
 
+static size_t setting_get_string_representation_uint_streamlined_game_switcher_view(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (!setting)
+      return 0;
+   switch (*setting->value.target.unsigned_integer)
+   {
+      default:
+      case 0:  return strlcpy(s, "Image-centric", len);
+      case 1:  return strlcpy(s, "Text", len);
+   }
+}
+
 static void setting_set_string_representation_timedate_date_separator(char *s)
 {
    settings_t *settings                  = config_get_ptr();
@@ -20827,6 +20840,23 @@ static bool setting_append_list(
                   general_write_handler,
                   general_read_handler,
                   SD_FLAG_NONE);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.menu_streamlined_game_switcher_view,
+                  MENU_ENUM_LABEL_STREAMLINED_GAME_SWITCHER_VIEW,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_GAME_SWITCHER_VIEW,
+                  DEFAULT_MENU_STREAMLINED_GAME_SWITCHER_VIEW,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            (*list)[list_info->index - 1].get_string_representation =
+                  &setting_get_string_representation_uint_streamlined_game_switcher_view;
+            menu_settings_list_current_add_range(list, list_info, 0, 1, 1, true, true);
+            (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_RADIO_BUTTONS;
          }
 
          if (   string_is_equal(settings->arrays.menu_driver, "xmb")
