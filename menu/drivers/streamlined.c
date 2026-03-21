@@ -150,6 +150,9 @@ typedef struct
 #define STREAMLINED_OPTIONS_SEARCH         0xCB01
 #define STREAMLINED_OPTIONS_RANDOM_GAME    0xCB02
 #define STREAMLINED_OPTIONS_DELETE_SAVE    0xCB03
+#define STREAMLINED_OPTIONS_SET_FOLDER_CORE 0xCB04
+#define STREAMLINED_OPTIONS_SET_GAME_CORE   0xCB05
+#define STREAMLINED_OPTIONS_CLEAR_GAME_CORE 0xCB06
 
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
@@ -306,6 +309,9 @@ typedef struct
    bool options_game_has_savestate;
    size_t options_saved_selection;
    bool options_was_in_folder;
+   bool selecting_core_for_folder;
+   bool selecting_core_for_game;
+   char options_game_core_path[PATH_MAX_LENGTH];
    bool return_to_options;         /* Deferred transition from search back to options */
    bool enter_search_deferred;    /* Deferred transition from options into search */
    unsigned cancel_ignore_frames; /* Block cancel for N frames after state transition */
@@ -392,6 +398,14 @@ static bool streamlined_check_m3u_folder(const char *dir_path,
       char *m3u_path_out, size_t m3u_path_size);
 static void streamlined_populate_search_results(streamlined_t *strm);
 static void streamlined_populate_options_menu(streamlined_t *strm);
+static void streamlined_populate_core_selection(streamlined_t *strm, const char *content_path);
+static const char *streamlined_get_core_display_name(const char *core_path);
+static const char *streamlined_effective_core(streamlined_t *strm);
+static void streamlined_get_game_core_name(
+      const char *game_path, const char *folder_path,
+      char *out, size_t out_size);
+static bool streamlined_read_game_core(const char *folder_path,
+      const char *game_name, char *core_path_out, size_t size);
 
 enum streamlined_font_type { FONT_NORMAL, FONT_SMALL, FONT_TINY };
 
@@ -989,6 +1003,8 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
    in_submenu = strm->in_folder
       || strm->in_main_settings_submenu
       || strm->selecting_core
+      || strm->selecting_core_for_folder
+      || strm->selecting_core_for_game
       || strm->in_options_menu
       || strm->in_search_mode
       || strm->in_random_preview
@@ -1554,6 +1570,14 @@ static void streamlined_render_menu(streamlined_t *strm,
    {
       strlcpy(title_buf, "Game List Options", sizeof(title_buf));
    }
+   else if (strm->selecting_core_for_folder)
+   {
+      strlcpy(title_buf, "Set Folder Core", sizeof(title_buf));
+   }
+   else if (strm->selecting_core_for_game)
+   {
+      strlcpy(title_buf, "Set Game Core", sizeof(title_buf));
+   }
    else if (strm->selecting_core)
    {
       strlcpy(title_buf, "Select Core", sizeof(title_buf));
@@ -1747,6 +1771,7 @@ static void streamlined_render_menu(streamlined_t *strm,
        * For core selection, use path (display name) since label contains core path
        * For main settings submenu, use path (our custom label) */
       if (strm->is_quick_menu || strm->in_settings_submenu || strm->selecting_core
+            || strm->selecting_core_for_folder || strm->selecting_core_for_game
             || strm->in_main_settings_submenu)
       {
          entry_label = entry.path;
@@ -2552,6 +2577,8 @@ static void streamlined_populate_options_menu(streamlined_t *strm)
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
    file_list_t *list;
+   char label[256];
+   const char *display_name;
 
    if (!menu_st || !strm)
       return;
@@ -2572,6 +2599,23 @@ static void streamlined_populate_options_menu(streamlined_t *strm)
             "Reset Game", "", STREAMLINED_OPTIONS_RESET_GAME,
             MENU_SETTING_ACTION, 0, 0, NULL);
    }
+
+   /* Set Folder Core */
+   display_name = streamlined_get_core_display_name(strm->options_core_path);
+   snprintf(label, sizeof(label), "Set Folder Core: %s", display_name);
+   menu_entries_append(list,
+         label, "", STREAMLINED_OPTIONS_SET_FOLDER_CORE,
+         MENU_SETTING_ACTION, 0, 0, NULL);
+
+   /* Set Game Core */
+   if (!string_is_empty(strm->options_game_core_path))
+      display_name = streamlined_get_core_display_name(strm->options_game_core_path);
+   else
+      display_name = streamlined_get_core_display_name(strm->options_core_path);
+   snprintf(label, sizeof(label), "Set Game Core: %s", display_name);
+   menu_entries_append(list,
+         label, "", STREAMLINED_OPTIONS_SET_GAME_CORE,
+         MENU_SETTING_ACTION, 0, 0, NULL);
 
    menu_entries_append(list,
          "Search", "", STREAMLINED_OPTIONS_SEARCH,
@@ -2727,7 +2771,7 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
    if (confirmed)
    {
       streamlined_delete_autosave_file(
-            strm->options_game_path, strm->options_core_path);
+            strm->options_game_path, streamlined_effective_core(strm));
       strm->in_options_menu = false;
       strm->delete_done = true;
       strm->delete_done_start = strm->ticker_idx;
@@ -2968,6 +3012,207 @@ static bool streamlined_save_folder_core(const char *folder_path, const char *co
    filestream_close(file);
 
    return true;
+}
+
+/*
+ * Derive the game identifier used for per-game core override files.
+ * If the game's parent directory differs from folder_path (M3U subfolder case),
+ * use the subfolder name. Otherwise use the game's basename with extension removed.
+ */
+static void streamlined_get_game_core_name(
+      const char *game_path, const char *folder_path,
+      char *out, size_t out_size)
+{
+   char parent_dir[PATH_MAX_LENGTH];
+   char folder_clean[PATH_MAX_LENGTH];
+   const char *base;
+
+   out[0] = '\0';
+   if (string_is_empty(game_path))
+      return;
+
+   fill_pathname_parent_dir(parent_dir, game_path, sizeof(parent_dir));
+   /* Remove trailing slash for comparison */
+   {
+      size_t len = strlen(parent_dir);
+      if (len > 0 && parent_dir[len - 1] == '/')
+         parent_dir[len - 1] = '\0';
+   }
+
+   strlcpy(folder_clean, folder_path, sizeof(folder_clean));
+   {
+      size_t len = strlen(folder_clean);
+      if (len > 0 && folder_clean[len - 1] == '/')
+         folder_clean[len - 1] = '\0';
+   }
+
+   /* M3U subfolder: game lives in a subdirectory of the folder */
+   if (!string_is_empty(folder_path)
+         && strcmp(parent_dir, folder_clean) != 0)
+   {
+      base = path_basename(parent_dir);
+      if (!string_is_empty(base))
+      {
+         strlcpy(out, base, out_size);
+         return;
+      }
+   }
+
+   /* Normal case: use game filename without extension */
+   base = path_basename(game_path);
+   if (!string_is_empty(base))
+   {
+      char *ext;
+      strlcpy(out, base, out_size);
+      ext = strrchr(out, '.');
+      if (ext)
+         *ext = '\0';
+   }
+}
+
+/*
+ * Read core path from a per-file core override file (.core.$GAME.txt).
+ * Uses the same multi-line format and lookup logic as streamlined_read_folder_core.
+ */
+static bool streamlined_read_core_file(const char *core_file_path,
+      char *core_path_out, size_t size)
+{
+   RFILE *file;
+   char line[PATH_MAX_LENGTH];
+
+   if (string_is_empty(core_file_path) || !path_is_valid(core_file_path))
+      return false;
+
+   file = filestream_open(core_file_path,
+         RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return false;
+
+   while (filestream_gets(file, line, sizeof(line)))
+   {
+      string_trim_whitespace(line);
+      if (string_is_empty(line) || line[0] == '#')
+         continue;
+      if (streamlined_find_core_by_name(line, core_path_out, size))
+      {
+         filestream_close(file);
+         return true;
+      }
+   }
+
+   filestream_close(file);
+   return false;
+}
+
+/*
+ * Read per-game core override from .core.$GAME.txt in the given folder.
+ */
+static bool streamlined_read_game_core(const char *folder_path,
+      const char *game_name, char *core_path_out, size_t size)
+{
+   char core_file_path[PATH_MAX_LENGTH];
+   char filename[PATH_MAX_LENGTH];
+
+   if (string_is_empty(folder_path) || string_is_empty(game_name))
+      return false;
+
+   snprintf(filename, sizeof(filename), ".core.%s.txt", game_name);
+   fill_pathname_join_special(core_file_path, folder_path, filename,
+         sizeof(core_file_path));
+
+   return streamlined_read_core_file(core_file_path, core_path_out, size);
+}
+
+/*
+ * Save per-game core override to .core.$GAME.txt.
+ */
+static bool streamlined_save_game_core(const char *folder_path,
+      const char *game_name, const char *core_path)
+{
+   char core_file_path[PATH_MAX_LENGTH];
+   char filename[PATH_MAX_LENGTH];
+   char core_name[256];
+   RFILE *file;
+   const char *basename;
+   char *suffix;
+
+   if (string_is_empty(folder_path) || string_is_empty(game_name)
+         || string_is_empty(core_path))
+      return false;
+
+   basename = path_basename(core_path);
+   if (!basename)
+      return false;
+
+   strlcpy(core_name, basename, sizeof(core_name));
+   path_remove_extension(core_name);
+   suffix = strstr(core_name, "_libretro");
+   if (suffix)
+      *suffix = '\0';
+
+   snprintf(filename, sizeof(filename), ".core.%s.txt", game_name);
+   fill_pathname_join_special(core_file_path, folder_path, filename,
+         sizeof(core_file_path));
+
+   file = filestream_open(core_file_path,
+         RETRO_VFS_FILE_ACCESS_WRITE, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return false;
+
+   filestream_printf(file, "%s\n", core_name);
+   filestream_close(file);
+   return true;
+}
+
+/*
+ * Delete per-game core override file .core.$GAME.txt.
+ */
+static void streamlined_delete_game_core(const char *folder_path,
+      const char *game_name)
+{
+   char core_file_path[PATH_MAX_LENGTH];
+   char filename[PATH_MAX_LENGTH];
+
+   if (string_is_empty(folder_path) || string_is_empty(game_name))
+      return;
+
+   snprintf(filename, sizeof(filename), ".core.%s.txt", game_name);
+   fill_pathname_join_special(core_file_path, folder_path, filename,
+         sizeof(core_file_path));
+
+   filestream_delete(core_file_path);
+}
+
+/*
+ * Return a display name for a core given its path.
+ * Uses core_info to find a friendly name, or returns "Not Set" if empty.
+ */
+static const char *streamlined_get_core_display_name(const char *core_path)
+{
+   core_info_t *info = NULL;
+
+   if (string_is_empty(core_path))
+      return "Not Set";
+
+   if (core_info_find(core_path, &info) && info)
+   {
+      if (!string_is_empty(info->display_name))
+         return info->display_name;
+      if (!string_is_empty(info->core_name))
+         return info->core_name;
+   }
+
+   return "Not Set";
+}
+
+/*
+ * Return the effective core path: per-game override if set, else folder core.
+ */
+static const char *streamlined_effective_core(streamlined_t *strm)
+{
+   if (!string_is_empty(strm->options_game_core_path))
+      return strm->options_game_core_path;
+   return strm->options_core_path;
 }
 
 /*
@@ -4376,6 +4621,225 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       return 0;  /* Block other actions during core selection */
    }
 
+   /* Handle "Set Folder Core" selection */
+   if (strm && strm->selecting_core_for_folder)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->selecting_core_for_folder = false;
+         strm->in_options_menu = true;
+         strm->cancel_ignore_frames = 3;
+         streamlined_populate_options_menu(strm);
+         /* Restore selection to Set Folder Core entry */
+         {
+            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+            size_t idx = 0;
+            if (slist)
+            {
+               size_t j;
+               for (j = 0; j < slist->size; j++)
+               {
+                  menu_entry_t e;
+                  MENU_ENTRY_INITIALIZE(e);
+                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                  if (e.enum_idx == STREAMLINED_OPTIONS_SET_FOLDER_CORE)
+                  {
+                     idx = j;
+                     break;
+                  }
+               }
+            }
+            menu_st->selection_ptr = idx;
+         }
+         return 0;
+      }
+
+      if (action == MENU_ACTION_OK && entry)
+      {
+         const char *selected_core = entry->label;
+         if (!string_is_empty(selected_core) && path_is_valid(selected_core))
+         {
+            char core_folder[PATH_MAX_LENGTH];
+
+            if (strm->options_was_in_folder)
+               strlcpy(core_folder, strm->options_folder_path, sizeof(core_folder));
+            else
+               fill_pathname_parent_dir(core_folder, strm->options_game_path, sizeof(core_folder));
+
+            streamlined_save_folder_core(core_folder, selected_core);
+            strlcpy(strm->options_core_path, selected_core,
+                  sizeof(strm->options_core_path));
+            strlcpy(strm->folder_core_path, selected_core,
+                  sizeof(strm->folder_core_path));
+
+            strm->selecting_core_for_folder = false;
+            strm->in_options_menu = true;
+            strm->cancel_ignore_frames = 3;
+            streamlined_populate_options_menu(strm);
+            {
+               file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+               size_t idx = 0;
+               if (slist)
+               {
+                  size_t j;
+                  for (j = 0; j < slist->size; j++)
+                  {
+                     menu_entry_t e;
+                     MENU_ENTRY_INITIALIZE(e);
+                     menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                     if (e.enum_idx == STREAMLINED_OPTIONS_SET_FOLDER_CORE)
+                     {
+                        idx = j;
+                        break;
+                     }
+                  }
+               }
+               menu_st->selection_ptr = idx;
+            }
+            return 0;
+         }
+      }
+
+      if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+            || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+         return generic_menu_entry_action(userdata, entry, i, action);
+
+      return 0;
+   }
+
+   /* Handle "Set Game Core" selection */
+   if (strm && strm->selecting_core_for_game)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->selecting_core_for_game = false;
+         strm->in_options_menu = true;
+         strm->cancel_ignore_frames = 3;
+         streamlined_populate_options_menu(strm);
+         /* Restore selection to Set Game Core entry */
+         {
+            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+            size_t idx = 0;
+            if (slist)
+            {
+               size_t j;
+               for (j = 0; j < slist->size; j++)
+               {
+                  menu_entry_t e;
+                  MENU_ENTRY_INITIALIZE(e);
+                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                  if (e.enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
+                  {
+                     idx = j;
+                     break;
+                  }
+               }
+            }
+            menu_st->selection_ptr = idx;
+         }
+         return 0;
+      }
+
+      if (action == MENU_ACTION_OK && entry)
+      {
+         /* "Use Folder Default" clears the per-game override */
+         if (entry->enum_idx == STREAMLINED_OPTIONS_CLEAR_GAME_CORE)
+         {
+            char core_folder[PATH_MAX_LENGTH];
+            char game_name[PATH_MAX_LENGTH];
+
+            if (strm->options_was_in_folder)
+               strlcpy(core_folder, strm->options_folder_path, sizeof(core_folder));
+            else
+               fill_pathname_parent_dir(core_folder, strm->options_game_path, sizeof(core_folder));
+
+            streamlined_get_game_core_name(strm->options_game_path, core_folder,
+                  game_name, sizeof(game_name));
+            streamlined_delete_game_core(core_folder, game_name);
+            strm->options_game_core_path[0] = '\0';
+
+            strm->selecting_core_for_game = false;
+            strm->in_options_menu = true;
+            strm->cancel_ignore_frames = 3;
+            streamlined_populate_options_menu(strm);
+            {
+               file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+               size_t idx = 0;
+               if (slist)
+               {
+                  size_t j;
+                  for (j = 0; j < slist->size; j++)
+                  {
+                     menu_entry_t e;
+                     MENU_ENTRY_INITIALIZE(e);
+                     menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                     if (e.enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
+                     {
+                        idx = j;
+                        break;
+                     }
+                  }
+               }
+               menu_st->selection_ptr = idx;
+            }
+            return 0;
+         }
+
+         /* Normal core selected */
+         {
+            const char *selected_core = entry->label;
+            if (!string_is_empty(selected_core) && path_is_valid(selected_core))
+            {
+               char core_folder[PATH_MAX_LENGTH];
+               char game_name[PATH_MAX_LENGTH];
+
+               if (strm->options_was_in_folder)
+                  strlcpy(core_folder, strm->options_folder_path, sizeof(core_folder));
+               else
+                  fill_pathname_parent_dir(core_folder, strm->options_game_path, sizeof(core_folder));
+
+               streamlined_get_game_core_name(strm->options_game_path, core_folder,
+                     game_name, sizeof(game_name));
+               streamlined_save_game_core(core_folder, game_name, selected_core);
+               strlcpy(strm->options_game_core_path, selected_core,
+                     sizeof(strm->options_game_core_path));
+
+               strm->selecting_core_for_game = false;
+               strm->in_options_menu = true;
+               strm->cancel_ignore_frames = 3;
+               streamlined_populate_options_menu(strm);
+               {
+                  file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+                  size_t idx = 0;
+                  if (slist)
+                  {
+                     size_t j;
+                     for (j = 0; j < slist->size; j++)
+                     {
+                        menu_entry_t e;
+                        MENU_ENTRY_INITIALIZE(e);
+                        menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                        if (e.enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
+                        {
+                           idx = j;
+                           break;
+                        }
+                     }
+                  }
+                  menu_st->selection_ptr = idx;
+               }
+               return 0;
+            }
+         }
+      }
+
+      if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+            || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+         return generic_menu_entry_action(userdata, entry, i, action);
+
+      return 0;
+   }
+
    /* Block input during delete result screen */
    if (strm && strm->delete_done)
       return 0;
@@ -4416,7 +4880,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       if (action == MENU_ACTION_OK)
       {
          streamlined_delete_autosave_file(
-               strm->options_game_path, strm->options_core_path);
+               strm->options_game_path, streamlined_effective_core(strm));
          strm->in_delete_confirm = false;
          strm->in_options_menu = false;
          strm->delete_done = true;
@@ -4829,8 +5293,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (entry->enum_idx == STREAMLINED_OPTIONS_RESET_GAME)
          {
             /* Delete autosave and launch fresh */
+            const char *eff_core = streamlined_effective_core(strm);
             streamlined_delete_autosave_file(
-                  strm->options_game_path, strm->options_core_path);
+                  strm->options_game_path, eff_core);
 
             /* Save return-to-folder state */
             strm->folder_selection = strm->options_saved_selection;
@@ -4850,7 +5315,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
             strm->in_options_menu = false;
             streamlined_request_loading(strm,
-                  strm->options_core_path, strm->options_game_path, false);
+                  eff_core, strm->options_game_path, false);
             return 0;
          }
 
@@ -4868,6 +5333,38 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      streamlined_delete_confirm_cb, strm);
             }
 #endif
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_SET_FOLDER_CORE)
+         {
+            strm->selecting_core_for_folder = true;
+            strm->in_options_menu = false;
+            streamlined_populate_core_selection(strm, strm->options_game_path);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_SET_GAME_CORE)
+         {
+            strm->selecting_core_for_game = true;
+            strm->in_options_menu = false;
+            streamlined_populate_core_selection(strm, strm->options_game_path);
+
+            /* If game already has a per-game override, prepend "Use Folder Default" */
+            if (!string_is_empty(strm->options_game_core_path))
+            {
+               file_list_t *clist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+               if (clist)
+               {
+                  /* Insert at position 0 */
+                  menu_entries_prepend(clist,
+                        "Use Folder Default", "",
+                        STREAMLINED_OPTIONS_CLEAR_GAME_CORE,
+                        MENU_SETTING_ACTION, 0, 0);
+               }
+            }
+            menu_st->selection_ptr = 0;
             return 0;
          }
 
@@ -5079,9 +5576,26 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             {
                /* Launch the selected file (ROM) */
                const char *core_path = NULL;
+               char game_core[PATH_MAX_LENGTH];
+               char game_name_buf[PATH_MAX_LENGTH];
+               char launch_folder[PATH_MAX_LENGTH];
 
+               /* Determine the folder for core lookup */
+               if (strm->in_folder)
+                  strlcpy(launch_folder, strm->current_folder_path, sizeof(launch_folder));
+               else
+                  fill_pathname_parent_dir(launch_folder, item_path, sizeof(launch_folder));
+
+               /* Check for per-game core override first */
+               streamlined_get_game_core_name(item_path, launch_folder,
+                     game_name_buf, sizeof(game_name_buf));
+               if (streamlined_read_game_core(launch_folder, game_name_buf,
+                     game_core, sizeof(game_core)))
+               {
+                  core_path = game_core;
+               }
                /* Check if folder has a specific core assigned via .core.txt */
-               if (!string_is_empty(strm->folder_core_path))
+               else if (!string_is_empty(strm->folder_core_path))
                {
                   core_path = strm->folder_core_path;
                }
@@ -5141,9 +5655,22 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          const char *item_path = entry->label;
          const char *core_path = strm->folder_core_path;
          char resolved_core[PATH_MAX_LENGTH];
+         char resume_folder[PATH_MAX_LENGTH];
+         char resume_game_name[PATH_MAX_LENGTH];
 
+         /* Check for per-game core override first */
+         if (strm->in_folder)
+            strlcpy(resume_folder, strm->current_folder_path, sizeof(resume_folder));
+         else
+            fill_pathname_parent_dir(resume_folder, item_path, sizeof(resume_folder));
+
+         streamlined_get_game_core_name(item_path, resume_folder,
+               resume_game_name, sizeof(resume_game_name));
+         if (streamlined_read_game_core(resume_folder, resume_game_name,
+               resolved_core, sizeof(resolved_core)))
+            core_path = resolved_core;
          /* Resolve core for top-level M3U entries */
-         if (string_is_empty(core_path))
+         else if (string_is_empty(core_path))
          {
             char parent_dir[PATH_MAX_LENGTH];
             fill_pathname_parent_dir(parent_dir, item_path, sizeof(parent_dir));
@@ -5179,6 +5706,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       /* Y button = Open Game List Options menu */
       if (action == MENU_ACTION_SEARCH && strm->selected_is_file && entry)
       {
+         char game_name[PATH_MAX_LENGTH];
+         char core_folder[PATH_MAX_LENGTH];
+
          strm->options_saved_selection = menu_st->selection_ptr;
          strlcpy(strm->options_game_path, entry->label,
                sizeof(strm->options_game_path));
@@ -5197,6 +5727,19 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             streamlined_read_folder_core(parent_dir, strm->options_core_path,
                   sizeof(strm->options_core_path));
          }
+
+         /* Resolve per-game core override */
+         if (strm->options_was_in_folder)
+            strlcpy(core_folder, strm->options_folder_path, sizeof(core_folder));
+         else
+         {
+            fill_pathname_parent_dir(core_folder, entry->label, sizeof(core_folder));
+         }
+         streamlined_get_game_core_name(entry->label, core_folder,
+               game_name, sizeof(game_name));
+         if (!streamlined_read_game_core(core_folder, game_name,
+               strm->options_game_core_path, sizeof(strm->options_game_core_path)))
+            strm->options_game_core_path[0] = '\0';
 
          strm->in_options_menu = true;
          streamlined_populate_options_menu(strm);
