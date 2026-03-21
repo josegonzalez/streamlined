@@ -80,6 +80,7 @@
 
 #if TARGET_OS_TV
 #include <CoreText/CoreText.h>
+#include "../../ui/drivers/cocoa/apple_platform.h"
 #endif
 
 /* ======================================================================
@@ -296,6 +297,27 @@ typedef struct
    bool options_game_has_savestate;
    size_t options_saved_selection;
    bool options_was_in_folder;
+   bool return_to_options;         /* Deferred transition from search back to options */
+   bool enter_search_deferred;    /* Deferred transition from options into search */
+   unsigned cancel_ignore_frames; /* Block cancel for N frames after state transition */
+
+   /* Search mode state */
+   bool in_search_mode;
+   char search_query[256];
+   size_t search_query_len;
+   bool search_keyboard_done;
+#if TARGET_OS_TV
+   char *search_kb_buffer_ptr;
+   size_t search_kb_buffer_size;
+   size_t search_kb_buffer_offset;
+#else
+   int search_kb_row;
+   int search_kb_col;
+   bool search_focus_list;
+#endif
+   size_t search_list_selection;
+   struct string_list *search_all_entries;
+   char search_prev_query[256];
 
    /* Loading screen state */
    bool loading_pending;          /* Waiting for loading screen to render */
@@ -315,6 +337,20 @@ typedef struct
 #define STREAMLINED_NUM_SLOTS 9
 #define STREAMLINED_AUTO_SLOT_INDEX 0  /* First dot is the auto slot (state_slot -1) */
 
+/* QWERTY keyboard layout for search (non-tvOS platforms) */
+#if !TARGET_OS_TV
+static const char *streamlined_kb_rows[] = {
+   "1234567890",
+   "QWERTYUIOP",
+   "ASDFGHJKL",
+   "ZXCVBNM\x08",    /* \x08 = backspace */
+   " "
+};
+static const int streamlined_kb_row_lens[] = { 10, 10, 9, 8, 1 };
+static const float streamlined_kb_row_offsets[] = { 0.0f, 0.0f, 0.5f, 1.0f, 0.0f };
+#define STREAMLINED_KB_NUM_ROWS 5
+#endif
+
 /* ======================================================================
  * DRAWING FUNCTIONS
  * ====================================================================== */
@@ -330,6 +366,8 @@ static bool streamlined_read_folder_core(
       const char *folder_path, char *core_path_out, size_t core_path_size);
 static bool streamlined_check_m3u_folder(const char *dir_path,
       char *m3u_path_out, size_t m3u_path_size);
+static void streamlined_populate_search_results(streamlined_t *strm);
+static void streamlined_populate_options_menu(streamlined_t *strm);
 
 enum streamlined_font_type { FONT_NORMAL, FONT_SMALL, FONT_TINY };
 
@@ -927,7 +965,8 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
    in_submenu = strm->in_folder
       || strm->in_main_settings_submenu
       || strm->selecting_core
-      || strm->in_options_menu;
+      || strm->in_options_menu
+      || strm->in_search_mode;
 
    if (in_submenu && menu_stack->size == 1)
    {
@@ -941,6 +980,120 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       file_list_pop(menu_stack, NULL);
    }
 }
+
+/* ======================================================================
+ * SEARCH KEYBOARD RENDERING (non-tvOS)
+ * ====================================================================== */
+
+#if !TARGET_OS_TV
+/*
+ * Render the search bar and QWERTY keyboard for search mode.
+ * Returns the total height consumed so menu items can be offset.
+ */
+static int streamlined_render_search_keyboard(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   int row, col;
+   int key_w = (int)(strm->font_size * 1.8f);
+   int key_h = (int)(strm->font_size * 1.5f);
+   int key_gap = (int)(4 * strm->scale_factor);
+   int kb_start_y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+   int search_bar_h = (int)(strm->font_size * 1.8f);
+   int search_bar_y = kb_start_y;
+   int kb_y = search_bar_y + search_bar_h + key_gap * 2;
+   int max_row_width = 10 * key_w + 9 * key_gap;
+   int kb_start_x = (video_width - max_row_width) / 2;
+
+   /* Draw search bar */
+   {
+      char search_display[260];
+      int bar_width = max_row_width;
+      int bar_x = kb_start_x;
+      int text_y = search_bar_y + search_bar_h / 2 + (int)(strm->font_size * 0.30f);
+
+      streamlined_draw_rounded_pill(strm, p_disp, userdata,
+            bar_x, search_bar_y, bar_width, search_bar_h,
+            video_width, video_height, streamlined_color_selection);
+
+      if (strm->search_query[0] != '\0')
+         snprintf(search_display, sizeof(search_display), "%s|", strm->search_query);
+      else
+         strlcpy(search_display, "|", sizeof(search_display));
+
+      streamlined_draw_text(strm, p_disp, video_width, video_height,
+            bar_x + strm->pill_padding, text_y,
+            search_display, streamlined_color_text_dark, false);
+   }
+
+   /* Draw keyboard rows */
+   for (row = 0; row < STREAMLINED_KB_NUM_ROWS; row++)
+   {
+      int row_len = streamlined_kb_row_lens[row];
+      float offset = streamlined_kb_row_offsets[row];
+      int row_y = kb_y + row * (key_h + key_gap);
+
+      if (row == STREAMLINED_KB_NUM_ROWS - 1)
+      {
+         /* Space bar - wide centered key */
+         int space_w = key_w * 5 + key_gap * 4;
+         int space_x = kb_start_x + (max_row_width - space_w) / 2;
+         bool is_selected = !strm->search_focus_list
+               && strm->search_kb_row == row && strm->search_kb_col == 0;
+         float *bg_color = is_selected ? streamlined_color_selection : streamlined_color_bg;
+         uint32_t text_color = is_selected
+               ? streamlined_color_text_dark : streamlined_color_text;
+         int text_y = row_y + key_h / 2 + (int)(strm->font_size * 0.30f);
+         const char *space_label = "SPACE";
+         int label_w = streamlined_get_text_width(strm, space_label, FONT_NORMAL);
+
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               space_x, row_y, space_w, key_h,
+               video_width, video_height, bg_color);
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               space_x + (space_w - label_w) / 2, text_y,
+               space_label, text_color, false);
+      }
+      else
+      {
+         int row_x = kb_start_x + (int)(offset * (float)(key_w + key_gap));
+         for (col = 0; col < row_len; col++)
+         {
+            char ch = streamlined_kb_rows[row][col];
+            bool is_selected = !strm->search_focus_list
+                  && strm->search_kb_row == row && strm->search_kb_col == col;
+            float *bg_color = is_selected
+                  ? streamlined_color_selection : streamlined_color_bg;
+            uint32_t text_color = is_selected
+                  ? streamlined_color_text_dark : streamlined_color_text;
+            int key_x = row_x + col * (key_w + key_gap);
+            int text_y = row_y + key_h / 2 + (int)(strm->font_size * 0.30f);
+            char key_str[4];
+            int char_w;
+
+            if (ch == '\x08')
+               strlcpy(key_str, "\xe2\x8c\xab", sizeof(key_str)); /* ⌫ UTF-8 */
+            else
+            {
+               key_str[0] = ch;
+               key_str[1] = '\0';
+            }
+
+            streamlined_draw_rounded_pill(strm, p_disp, userdata,
+                  key_x, row_y, key_w, key_h,
+                  video_width, video_height, bg_color);
+            char_w = streamlined_get_text_width(strm, key_str, FONT_NORMAL);
+            streamlined_draw_text(strm, p_disp, video_width, video_height,
+                  key_x + (key_w - char_w) / 2, text_y,
+                  key_str, text_color, false);
+         }
+      }
+   }
+
+   return search_bar_h + key_gap * 2
+         + STREAMLINED_KB_NUM_ROWS * (key_h + key_gap);
+}
+#endif
 
 /* ======================================================================
  * MENU RENDERING
@@ -1063,6 +1216,11 @@ static void streamlined_render_menu(streamlined_t *strm,
                strm->selected_has_savestate = streamlined_check_savestate(
                      entry.label, strm->folder_core_path);
             }
+            else if (strm->in_search_mode && !string_is_empty(strm->options_core_path))
+            {
+               strm->selected_has_savestate = streamlined_check_savestate(
+                     entry.label, strm->options_core_path);
+            }
             else
             {
                char temp_core[PATH_MAX_LENGTH];
@@ -1082,14 +1240,32 @@ static void streamlined_render_menu(streamlined_t *strm,
    {
       int title_area = strm->margin_y + (int)(strm->font_size_title * 1.4f);
       int bottom_area = (int)(78.0f * strm->scale_factor);
-      max_visible = (video_height - title_area - bottom_area) / item_height;
+      int search_kb_area = 0;
+#if !TARGET_OS_TV
+      if (strm->in_search_mode)
+      {
+         int _key_h = (int)(strm->font_size * 1.5f);
+         int _key_gap = (int)(4 * strm->scale_factor);
+         int _bar_h = (int)(strm->font_size * 1.8f);
+         search_kb_area = _bar_h + _key_gap * 2
+               + STREAMLINED_KB_NUM_ROWS * (_key_h + _key_gap);
+      }
+#endif
+      max_visible = (video_height - title_area - bottom_area - search_kb_area) / item_height;
    }
    if (max_visible == 0)
       max_visible = 1;
 
    /* Get title - show game name for quick menu, "Settings" for submenu */
    title_buf[0] = '\0';
-   if (strm->in_options_menu)
+   if (strm->in_search_mode)
+   {
+      const char *folder_name = path_basename(strm->options_folder_path);
+      const char *clean_name = folder_name
+            ? streamlined_strip_sort_prefix(folder_name) : "All";
+      snprintf(title_buf, sizeof(title_buf), "Search: %s", clean_name);
+   }
+   else if (strm->in_options_menu)
    {
       strlcpy(title_buf, "Game List Options", sizeof(title_buf));
    }
@@ -1216,6 +1392,26 @@ static void streamlined_render_menu(streamlined_t *strm,
             title_ticker, streamlined_color_text);
    }
 
+   /* Search mode: poll keyboard buffer and re-filter on query change */
+   if (strm->in_search_mode)
+   {
+#if TARGET_OS_TV
+      if (!strm->search_keyboard_done && strm->search_kb_buffer_ptr)
+         strlcpy(strm->search_query, strm->search_kb_buffer_ptr,
+               sizeof(strm->search_query));
+#endif
+      if (!string_is_equal(strm->search_query, strm->search_prev_query))
+      {
+         strlcpy(strm->search_prev_query, strm->search_query,
+               sizeof(strm->search_prev_query));
+         streamlined_populate_search_results(strm);
+         menu_st->selection_ptr = 0;
+         selection = 0;
+         list = MENU_LIST_GET_SELECTION(menu_list, 0);
+         list_size = list ? list->size : 0;
+      }
+   }
+
    /* Calculate scroll */
    if (selection >= max_visible)
       start_idx = selection - max_visible + 1;
@@ -1224,6 +1420,13 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    /* Draw menu entries */
    y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+
+#if !TARGET_OS_TV
+   /* Draw search keyboard and offset menu items below it */
+   if (strm->in_search_mode)
+      y += streamlined_render_search_keyboard(strm, p_disp, userdata,
+            video_width, video_height);
+#endif
 
    /* Reserve space on the right for thumbnail when one is visible */
    {
@@ -2115,6 +2318,155 @@ static void streamlined_populate_options_menu(streamlined_t *strm)
 }
 
 /*
+ * Fuzzy string match: normalize both strings (lowercase, alphanumeric only)
+ * and check if the normalized query is a substring of the normalized name.
+ * Example: "super mario" -> "supermario" matches "Super Mario Bros. 3" -> "supermariobros3"
+ */
+static bool streamlined_fuzzy_match(const char *query, const char *name)
+{
+   char q_norm[256], n_norm[256];
+   size_t qi = 0, ni = 0, i;
+
+   if (string_is_empty(query))
+      return true;
+   if (string_is_empty(name))
+      return false;
+
+   for (i = 0; query[i] && qi < sizeof(q_norm) - 1; i++)
+   {
+      if (isalnum((unsigned char)query[i]))
+         q_norm[qi++] = tolower((unsigned char)query[i]);
+   }
+   q_norm[qi] = '\0';
+
+   for (i = 0; name[i] && ni < sizeof(n_norm) - 1; i++)
+   {
+      if (isalnum((unsigned char)name[i]))
+         n_norm[ni++] = tolower((unsigned char)name[i]);
+   }
+   n_norm[ni] = '\0';
+
+   return strstr(n_norm, q_norm) != NULL;
+}
+
+/*
+ * Populate the menu list with search results filtered by the current query.
+ * Iterates the full directory listing (search_all_entries) and adds
+ * matching entries to the menu list.
+ */
+static void streamlined_populate_search_results(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   unsigned i;
+
+   if (!menu_st || !strm || !strm->search_all_entries)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   for (i = 0; i < strm->search_all_entries->size; i++)
+   {
+      const char *path = strm->search_all_entries->elems[i].data;
+      unsigned attr = strm->search_all_entries->elems[i].attr.i;
+      const char *name = path_basename(path);
+      char display_name[256];
+
+      if (!name || name[0] == '.')
+         continue;
+
+      if (attr == RARCH_DIRECTORY)
+      {
+         char m3u_path[PATH_MAX_LENGTH];
+         const char *clean_name;
+         if (!streamlined_check_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+            continue;
+
+         clean_name = streamlined_strip_sort_prefix(name);
+         strlcpy(display_name, clean_name, sizeof(display_name));
+         if (!streamlined_fuzzy_match(strm->search_query, display_name))
+            continue;
+
+         menu_entries_append(list,
+               display_name, m3u_path,
+               MSG_UNKNOWN, FILE_TYPE_PLAIN,
+               0, 0, NULL);
+      }
+      else
+      {
+         strlcpy(display_name, name, sizeof(display_name));
+         path_remove_extension(display_name);
+
+         if (!streamlined_fuzzy_match(strm->search_query, display_name))
+            continue;
+
+         menu_entries_append(list,
+               display_name, path,
+               MSG_UNKNOWN, FILE_TYPE_PLAIN,
+               0, 0, NULL);
+      }
+   }
+
+   if (list->size == 0 && !string_is_empty(strm->search_query))
+   {
+      menu_entries_append(list,
+            "No results", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+   }
+}
+
+#if TARGET_OS_TV
+static void streamlined_search_keyboard_cb(void *userdata, const char *line)
+{
+   streamlined_t *strm = (streamlined_t *)userdata;
+   if (!strm)
+      return;
+   if (line)
+      strlcpy(strm->search_query, line, sizeof(strm->search_query));
+   strm->search_keyboard_done = true;
+}
+#endif
+
+/*
+ * Clean up search mode state. If clear_query is false, the search query
+ * persists so re-entering search remembers what was previously typed.
+ */
+static void streamlined_cleanup_search(streamlined_t *strm, bool clear_query)
+{
+   if (!strm)
+      return;
+   if (strm->search_all_entries)
+   {
+      string_list_free(strm->search_all_entries);
+      strm->search_all_entries = NULL;
+   }
+#if TARGET_OS_TV
+   if (strm->search_kb_buffer_ptr)
+   {
+      free(strm->search_kb_buffer_ptr);
+      strm->search_kb_buffer_ptr = NULL;
+   }
+#endif
+   if (clear_query)
+   {
+      strm->search_query[0] = '\0';
+      strm->search_query_len = 0;
+   }
+   strm->search_prev_query[0] = '\0';
+   strm->in_search_mode = false;
+}
+
+/*
  * Try to find a core by name from the core info list.
  * Matches against core_name, display_name, or filename (without _libretro suffix).
  * Returns true if found and writes path to core_path_out.
@@ -2721,6 +3073,18 @@ static void streamlined_free(void *data)
       strm->font.font = NULL;
       strm->font_small.font = NULL;
       strm->font_title.font = NULL;
+      if (strm->search_all_entries)
+      {
+         string_list_free(strm->search_all_entries);
+         strm->search_all_entries = NULL;
+      }
+#if TARGET_OS_TV
+      if (strm->search_kb_buffer_ptr)
+      {
+         free(strm->search_kb_buffer_ptr);
+         strm->search_kb_buffer_ptr = NULL;
+      }
+#endif
    }
 }
 
@@ -2943,6 +3307,19 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
 
    if (video_width == 0 || video_height == 0)
       return;
+
+#if TARGET_OS_TV
+   /* Fade to black during deferred search/keyboard transitions (tvOS only) */
+   if (strm->enter_search_deferred || strm->return_to_options)
+   {
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+      return;
+   }
+#endif
 
    /* Loading screen: full black background + centered "Loading..." */
    if (strm->loading_pending)
@@ -3233,6 +3610,14 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    if (menu_st)
       strm = (streamlined_t*)menu_st->userdata;
 
+   /* Absorb lingering cancel events after state transitions */
+   if (strm && strm->cancel_ignore_frames > 0)
+   {
+      strm->cancel_ignore_frames--;
+      if (action == MENU_ACTION_CANCEL)
+         return 0;
+   }
+
    /* Block all input while loading/exiting screen is showing */
    if (strm && (strm->loading_pending || strm->exiting_pending))
       return 0;
@@ -3398,6 +3783,280 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       return 0;  /* Block other actions during core selection */
    }
 
+   /* Deferred transition: options -> search (absorbs lingering OK press) */
+   if (strm && strm->enter_search_deferred)
+   {
+      settings_t *settings = config_get_ptr();
+      strm->enter_search_deferred = false;
+      strm->in_search_mode = true;
+      strm->search_query_len = strlen(strm->search_query);
+      strm->search_prev_query[0] = '\0';
+      strm->search_keyboard_done = false;
+      strm->search_list_selection = 0;
+
+      strm->search_all_entries = dir_list_new(
+            strm->options_folder_path, NULL, true,
+            settings->bools.show_hidden_files, true, false);
+      if (strm->search_all_entries)
+         dir_list_sort(strm->search_all_entries, true);
+
+      streamlined_populate_search_results(strm);
+      menu_st->selection_ptr = 0;
+
+#if TARGET_OS_TV
+      if (strm->search_query[0] != '\0')
+         strm->search_kb_buffer_ptr = strdup(strm->search_query);
+      else
+         strm->search_kb_buffer_ptr = NULL;
+      strm->search_kb_buffer_size = strm->search_query_len;
+      strm->search_kb_buffer_offset = strm->search_query_len;
+      {
+         char *prev_buf = strm->search_kb_buffer_ptr;
+         ios_keyboard_start(
+               &strm->search_kb_buffer_ptr,
+               &strm->search_kb_buffer_size,
+               &strm->search_kb_buffer_offset,
+               "Search",
+               streamlined_search_keyboard_cb,
+               strm);
+         free(prev_buf);
+      }
+#else
+      strm->search_kb_row = 0;
+      strm->search_kb_col = 0;
+      strm->search_focus_list = false;
+#endif
+      return 0;
+   }
+
+   /* Handle search mode input */
+   if (strm && strm->in_search_mode)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+#if TARGET_OS_TV
+         if (ios_keyboard_active())
+         {
+            /* Keyboard active — dismiss and exit search */
+            ios_keyboard_end();
+            /* Fall through to exit search below */
+         }
+         else if (strm->search_keyboard_done)
+         {
+            /* Browsing results — re-open keyboard */
+            char *prev_buf = strm->search_query[0]
+                  ? strdup(strm->search_query) : NULL;
+            strm->search_kb_buffer_ptr = prev_buf;
+            strm->search_kb_buffer_size = strm->search_query_len;
+            strm->search_kb_buffer_offset = strm->search_query_len;
+            strm->search_keyboard_done = false;
+            {
+               char *old = strm->search_kb_buffer_ptr;
+               ios_keyboard_start(
+                     &strm->search_kb_buffer_ptr,
+                     &strm->search_kb_buffer_size,
+                     &strm->search_kb_buffer_offset,
+                     "Search",
+                     streamlined_search_keyboard_cb,
+                     strm);
+               free(old);
+            }
+            return 0;
+         }
+#else
+         if (strm->search_focus_list)
+         {
+            /* Browsing results — return focus to keyboard */
+            strm->search_focus_list = false;
+            return 0;
+         }
+#endif
+         /* Defer transition to options menu (next frame) to absorb lingering cancel */
+         streamlined_cleanup_search(strm, false);
+         strm->return_to_options = true;
+         return 0;
+      }
+
+#if TARGET_OS_TV
+      if (strm->search_keyboard_done)
+      {
+#endif
+         /* Handle game list navigation (tvOS: after keyboard done, non-tvOS: when list focused) */
+#if !TARGET_OS_TV
+         if (!strm->search_focus_list)
+         {
+            /* Keyboard grid navigation */
+            if (action == MENU_ACTION_UP)
+            {
+               strm->search_kb_row--;
+               if (strm->search_kb_row < 0)
+                  strm->search_kb_row = STREAMLINED_KB_NUM_ROWS - 1;
+               if (strm->search_kb_col >= streamlined_kb_row_lens[strm->search_kb_row])
+                  strm->search_kb_col = streamlined_kb_row_lens[strm->search_kb_row] - 1;
+               return 0;
+            }
+            if (action == MENU_ACTION_DOWN)
+            {
+               strm->search_kb_row++;
+               if (strm->search_kb_row >= STREAMLINED_KB_NUM_ROWS)
+               {
+                  strm->search_focus_list = true;
+                  strm->search_kb_row = STREAMLINED_KB_NUM_ROWS - 1;
+                  menu_st->selection_ptr = 0;
+                  return 0;
+               }
+               if (strm->search_kb_col >= streamlined_kb_row_lens[strm->search_kb_row])
+                  strm->search_kb_col = streamlined_kb_row_lens[strm->search_kb_row] - 1;
+               return 0;
+            }
+            if (action == MENU_ACTION_LEFT)
+            {
+               strm->search_kb_col--;
+               if (strm->search_kb_col < 0)
+                  strm->search_kb_col = streamlined_kb_row_lens[strm->search_kb_row] - 1;
+               return 0;
+            }
+            if (action == MENU_ACTION_RIGHT)
+            {
+               strm->search_kb_col++;
+               if (strm->search_kb_col >= streamlined_kb_row_lens[strm->search_kb_row])
+                  strm->search_kb_col = 0;
+               return 0;
+            }
+            if (action == MENU_ACTION_OK)
+            {
+               char ch = streamlined_kb_rows[strm->search_kb_row][strm->search_kb_col];
+               if (ch == '\x08')
+               {
+                  if (strm->search_query_len > 0)
+                  {
+                     strm->search_query_len--;
+                     strm->search_query[strm->search_query_len] = '\0';
+                  }
+               }
+               else if (strm->search_query_len < sizeof(strm->search_query) - 1)
+               {
+                  strm->search_query[strm->search_query_len++] = ch;
+                  strm->search_query[strm->search_query_len] = '\0';
+               }
+               return 0;
+            }
+            return 0;
+         }
+         else
+         {
+            /* Game list has focus */
+            if (action == MENU_ACTION_UP && menu_st->selection_ptr == 0)
+            {
+               strm->search_focus_list = false;
+               return 0;
+            }
+#endif
+            if (action == MENU_ACTION_OK && entry)
+            {
+               const char *item_path = entry->label;
+               if (!string_is_empty(item_path) && path_is_valid(item_path)
+                     && !string_is_empty(strm->options_core_path))
+               {
+                  strm->folder_selection = strm->options_saved_selection;
+                  if (strm->options_was_in_folder)
+                  {
+                     strlcpy(strm->last_launched_folder, strm->options_folder_path,
+                           sizeof(strm->last_launched_folder));
+                     strlcpy(strm->last_folder_core_path, strm->options_core_path,
+                           sizeof(strm->last_folder_core_path));
+                     strm->return_to_folder = true;
+                  }
+                  else
+                  {
+                     strm->return_to_top_level = true;
+                     strm->top_level_selection = strm->options_saved_selection;
+                  }
+
+                  strm->in_options_menu = false;
+                  streamlined_cleanup_search(strm, true);
+                  streamlined_request_loading(strm,
+                        strm->options_core_path, item_path, false);
+                  return 0;
+               }
+            }
+
+            /* X button = resume with save state */
+            if (action == MENU_ACTION_SCAN && entry)
+            {
+               const char *item_path = entry->label;
+               if (!string_is_empty(item_path) && path_is_valid(item_path)
+                     && !string_is_empty(strm->options_core_path))
+               {
+                  strm->folder_selection = strm->options_saved_selection;
+                  if (strm->options_was_in_folder)
+                  {
+                     strlcpy(strm->last_launched_folder, strm->options_folder_path,
+                           sizeof(strm->last_launched_folder));
+                     strlcpy(strm->last_folder_core_path, strm->options_core_path,
+                           sizeof(strm->last_folder_core_path));
+                     strm->return_to_folder = true;
+                  }
+                  else
+                  {
+                     strm->return_to_top_level = true;
+                     strm->top_level_selection = strm->options_saved_selection;
+                  }
+
+                  strm->in_options_menu = false;
+                  streamlined_cleanup_search(strm, true);
+                  streamlined_request_loading(strm,
+                        strm->options_core_path, item_path, true);
+                  return 0;
+               }
+            }
+
+            /* Let generic handler do up/down navigation in the list */
+            if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+                || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+               return generic_menu_entry_action(userdata, entry, i, action);
+
+#if !TARGET_OS_TV
+            return 0;
+         }  /* end search_focus_list else */
+#endif
+
+#if TARGET_OS_TV
+      }  /* end search_keyboard_done */
+#endif
+      return 0;
+   }
+
+   /* Deferred transition: search -> options (absorbs lingering cancel) */
+   if (strm && strm->return_to_options)
+   {
+      strm->return_to_options = false;
+      strm->in_options_menu = true;
+      strm->cancel_ignore_frames = 3;
+      streamlined_populate_options_menu(strm);
+      {
+         file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+         size_t search_idx = 0;
+         if (slist)
+         {
+            size_t j;
+            for (j = 0; j < slist->size; j++)
+            {
+               menu_entry_t e;
+               MENU_ENTRY_INITIALIZE(e);
+               menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+               if (e.enum_idx == STREAMLINED_OPTIONS_SEARCH)
+               {
+                  search_idx = j;
+                  break;
+               }
+            }
+         }
+         menu_st->selection_ptr = search_idx;
+      }
+      return 0;
+   }
+
    /* Handle Game List Options menu */
    if (strm && strm->in_options_menu)
    {
@@ -3418,6 +4077,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
       if (action == MENU_ACTION_OK && entry)
       {
+         if (entry->enum_idx == STREAMLINED_OPTIONS_SEARCH)
+         {
+            strm->enter_search_deferred = true;
+            strm->in_options_menu = false;
+            return 0;
+         }
+
          if (entry->enum_idx == STREAMLINED_OPTIONS_RESET_GAME)
          {
             /* Delete autosave and launch fresh */
