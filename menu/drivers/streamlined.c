@@ -289,6 +289,11 @@ typedef struct
    char loading_core_path[PATH_MAX_LENGTH];
    char loading_content_path[PATH_MAX_LENGTH];
 
+   /* Exiting screen state */
+   bool exiting_pending;          /* Waiting for exiting screen to render */
+   bool exiting_triggered;        /* Exiting screen rendered, ready to execute quit */
+   bool exiting_is_cli;           /* True = quit app (CLI), false = return to main menu */
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -1759,7 +1764,10 @@ static void streamlined_populate_quick_menu(void)
       /* Handle dynamic Quit entry - quits if CLI, exits to menu if not */
       if (item->action == STREAMLINED_EXIT_MARKER)
       {
-         label = "Quit";
+         settings_t *settings = config_get_ptr();
+         bool auto_save = settings && settings->bools.savestate_auto_save;
+
+         label = auto_save ? "Save and Quit" : "Quit";
          action = from_cli ? MENU_ENUM_LABEL_QUIT_RETROARCH : MENU_ENUM_LABEL_CLOSE_CONTENT;
          action_label = msg_hash_to_str(action);
       }
@@ -2390,6 +2398,26 @@ static void streamlined_execute_deferred_load(streamlined_t *strm)
    strm->pending_content_path[0] = '\0';
 }
 
+static void streamlined_execute_deferred_exit(streamlined_t *strm)
+{
+   strm->exiting_pending   = false;
+   strm->exiting_triggered = false;
+
+   if (strm->exiting_is_cli)
+   {
+      command_event(CMD_EVENT_QUIT, NULL);
+   }
+   else
+   {
+      strm->is_quick_menu = false;
+      strm->in_settings_submenu = false;
+      strm->return_to_settings_submenu = false;
+
+      command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+      menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
+   }
+}
+
 /* Populate custom main menu with folders and files from the specified directory
  * show_folder_slash: if true, prefix folder names with "/" */
 static void streamlined_populate_folder_menu(streamlined_t *strm, const char *directory, bool show_folder_slash)
@@ -2796,6 +2824,12 @@ static void streamlined_render(void *data, unsigned width, unsigned height, bool
       return;
    }
 
+   if (strm->exiting_triggered)
+   {
+      streamlined_execute_deferred_exit(strm);
+      return;
+   }
+
    if (strm->width != width || strm->height != height)
    {
       strm->width = width;
@@ -2845,6 +2879,35 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       }
 
       strm->loading_triggered = true;
+      return;
+   }
+
+   /* Exiting screen: full black background + centered "Exiting..." */
+   if (strm->exiting_pending)
+   {
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      if (strm->font.font)
+      {
+         settings_t *settings = config_get_ptr();
+         bool auto_save       = settings && settings->bools.savestate_auto_save;
+
+         font_bind(&strm->font);
+         gfx_display_draw_text(strm->font.font,
+               auto_save ? "Saving and Exiting..." : "Exiting...",
+               (int)(video_width / 2),
+               (int)(video_height / 2 + strm->font_size * 0.35f),
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+         font_flush(video_width, video_height, &strm->font);
+      }
+
+      strm->exiting_triggered = true;
       return;
    }
 
@@ -3082,8 +3145,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    if (menu_st)
       strm = (streamlined_t*)menu_st->userdata;
 
-   /* Block all input while loading screen is showing */
-   if (strm && strm->loading_pending)
+   /* Block all input while loading/exiting screen is showing */
+   if (strm && (strm->loading_pending || strm->exiting_pending))
       return 0;
 
    if (strm && strm->is_quick_menu)
@@ -3170,22 +3233,14 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             return 0;
          }
 
-         /* Handle "Quit" - if not CLI, close content and go to main menu */
-         if (entry_label && string_is_equal(entry_label, "Quit"))
+         /* Handle Quit / Save and Quit - show exiting screen, then quit or return to main menu */
+         if (entry->enum_idx == MENU_ENUM_LABEL_QUIT_RETROARCH
+               || entry->enum_idx == MENU_ENUM_LABEL_CLOSE_CONTENT)
          {
-            if (!streamlined_is_launched_from_cli())
-            {
-               /* Reset strm state */
-               strm->is_quick_menu = false;
-               strm->in_settings_submenu = false;
-               strm->return_to_settings_submenu = false;
-
-               /* Unload core and flush to main menu */
-               command_event(CMD_EVENT_UNLOAD_CORE, NULL);
-               menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
-               return 0;
-            }
-            /* If CLI, let the default handler quit RetroArch */
+            strm->exiting_is_cli = streamlined_is_launched_from_cli();
+            strm->exiting_pending = true;
+            strm->exiting_triggered = false;
+            return 0;
          }
       }
 
