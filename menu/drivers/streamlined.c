@@ -282,6 +282,13 @@ typedef struct
    bool selected_is_file;         /* True when selection is a ROM (not folder) */
    bool selected_has_savestate;   /* True when selected ROM has a save state */
 
+   /* Loading screen state */
+   bool loading_pending;          /* Waiting for loading screen to render */
+   bool loading_triggered;        /* Loading screen rendered, ready to execute load */
+   bool loading_is_resume;        /* Y-button resume: load auto-save state after launch */
+   char loading_core_path[PATH_MAX_LENGTH];
+   char loading_content_path[PATH_MAX_LENGTH];
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -2317,6 +2324,72 @@ static bool streamlined_resolve_m3u_content(const char *m3u_path,
    return true;
 }
 
+static void streamlined_request_loading(
+      streamlined_t *strm,
+      const char *core_path, const char *content_path,
+      bool is_resume)
+{
+   char resolved[PATH_MAX_LENGTH];
+   const char *final_content = content_path;
+
+   if (m3u_file_is_m3u(content_path)
+         && !streamlined_core_supports_m3u(core_path))
+   {
+      if (streamlined_resolve_m3u_content(content_path,
+            resolved, sizeof(resolved)))
+         final_content = resolved;
+   }
+
+   strlcpy(strm->loading_core_path, core_path, sizeof(strm->loading_core_path));
+   strlcpy(strm->loading_content_path, final_content, sizeof(strm->loading_content_path));
+   strm->loading_is_resume  = is_resume;
+   strm->loading_pending    = true;
+   strm->loading_triggered  = false;
+}
+
+static void streamlined_execute_deferred_load(streamlined_t *strm)
+{
+   content_ctx_info_t content_info;
+   content_info.argc        = 0;
+   content_info.argv        = NULL;
+   content_info.args        = NULL;
+   content_info.environ_get = NULL;
+
+   strm->is_custom_main_menu = false;
+   strm->in_folder           = false;
+   strm->selecting_core      = false;
+   runloop_state_get_ptr()->entry_state_slot = -1;
+
+   command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+
+   task_push_load_content_with_new_core_from_menu(
+         strm->loading_core_path,
+         strm->loading_content_path,
+         &content_info,
+         CORE_TYPE_PLAIN, NULL, NULL);
+
+   if (strm->loading_is_resume)
+   {
+      settings_t *settings       = config_get_ptr();
+      runloop_state_t *runloop_st = runloop_state_get_ptr();
+      if (!settings->bools.savestate_auto_load)
+      {
+         char auto_path[PATH_MAX_LENGTH];
+         size_t _len = strlcpy(auto_path, runloop_st->name.savestate,
+               sizeof(auto_path));
+         strlcpy(auto_path + _len, ".auto", sizeof(auto_path) - _len);
+         if (path_is_valid(auto_path))
+            content_load_state(auto_path, false, true);
+      }
+   }
+
+   strm->loading_pending         = false;
+   strm->loading_triggered       = false;
+   strm->loading_core_path[0]    = '\0';
+   strm->loading_content_path[0] = '\0';
+   strm->pending_content_path[0] = '\0';
+}
+
 /* Populate custom main menu with folders and files from the specified directory
  * show_folder_slash: if true, prefix folder names with "/" */
 static void streamlined_populate_folder_menu(streamlined_t *strm, const char *directory, bool show_folder_slash)
@@ -2717,6 +2790,12 @@ static void streamlined_render(void *data, unsigned width, unsigned height, bool
    if (!strm)
       return;
 
+   if (strm->loading_triggered)
+   {
+      streamlined_execute_deferred_load(strm);
+      return;
+   }
+
    if (strm->width != width || strm->height != height)
    {
       strm->width = width;
@@ -2742,6 +2821,32 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
 
    if (video_width == 0 || video_height == 0)
       return;
+
+   /* Loading screen: full black background + centered "Loading..." */
+   if (strm->loading_pending)
+   {
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      if (strm->font.font)
+      {
+         font_bind(&strm->font);
+         gfx_display_draw_text(strm->font.font,
+               "Loading...",
+               (int)(video_width / 2),
+               (int)(video_height / 2 + strm->font_size * 0.35f),
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+         font_flush(video_width, video_height, &strm->font);
+      }
+
+      strm->loading_triggered = true;
+      return;
+   }
 
    if (!strm->font.font)
       return;
@@ -2977,6 +3082,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    if (menu_st)
       strm = (streamlined_t*)menu_st->userdata;
 
+   /* Block all input while loading screen is showing */
+   if (strm && strm->loading_pending)
+      return 0;
+
    if (strm && strm->is_quick_menu)
    {
       /* Handle input for save slot selection when on Save/Load entry */
@@ -3110,19 +3219,12 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
          if (!string_is_empty(selected_core) && path_is_valid(selected_core))
          {
-            content_ctx_info_t content_info;
-
             /* Save the selected core to .core.txt for this folder */
             streamlined_save_folder_core(strm->current_folder_path, selected_core);
 
             /* Update the folder's core path */
             strlcpy(strm->folder_core_path, selected_core,
                   sizeof(strm->folder_core_path));
-
-            content_info.argc        = 0;
-            content_info.argv        = NULL;
-            content_info.args        = NULL;
-            content_info.environ_get = NULL;
 
             /* Save folder state so we can return after quitting */
             strm->folder_selection = menu_st->selection_ptr;
@@ -3132,20 +3234,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   sizeof(strm->last_folder_core_path));
             strm->return_to_folder = true;
 
-            strm->selecting_core = false;
-            strm->is_custom_main_menu = false;
-            strm->in_folder = false;
+            streamlined_request_loading(strm,
+                  selected_core, strm->pending_content_path, false);
 
-            /* Close menu before loading content */
-            command_event(CMD_EVENT_MENU_TOGGLE, NULL);
-
-            task_push_load_content_with_new_core_from_menu(
-                  selected_core,
-                  strm->pending_content_path,
-                  &content_info,
-                  CORE_TYPE_PLAIN, NULL, NULL);
-
-            strm->pending_content_path[0] = '\0';
             return 0;
          }
       }
@@ -3285,7 +3376,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             {
                /* Launch the selected file (ROM) */
                const char *core_path = NULL;
-               content_ctx_info_t content_info;
 
                /* Check if folder has a specific core assigned via .core.txt */
                if (!string_is_empty(strm->folder_core_path))
@@ -3314,11 +3404,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
                if (core_path && path_is_valid(core_path))
                {
-                  content_info.argc        = 0;
-                  content_info.argv        = NULL;
-                  content_info.args        = NULL;
-                  content_info.environ_get = NULL;
-
                   /* Save state so we can return after quitting */
                   strm->folder_selection = menu_st->selection_ptr;
                   if (strm->in_folder)
@@ -3335,33 +3420,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      strm->top_level_selection = menu_st->selection_ptr;
                   }
 
-                  /* Ensure clean launch — no entry state loading */
-                  runloop_state_get_ptr()->entry_state_slot = -1;
-
-                  strm->is_custom_main_menu = false;
-                  strm->in_folder = false;
-
-                  /* Close menu before loading content */
-                  command_event(CMD_EVENT_MENU_TOGGLE, NULL);
-
-                  /* Resolve M3U if core doesn't support it natively */
-                  {
-                     const char *content_to_load = item_path;
-                     char resolved_content[PATH_MAX_LENGTH];
-                     if (m3u_file_is_m3u(item_path)
-                           && !streamlined_core_supports_m3u(core_path))
-                     {
-                        if (streamlined_resolve_m3u_content(item_path,
-                              resolved_content, sizeof(resolved_content)))
-                           content_to_load = resolved_content;
-                     }
-
-                     task_push_load_content_with_new_core_from_menu(
-                           core_path,           /* Core to use */
-                           content_to_load,     /* Content path */
-                           &content_info,
-                           CORE_TYPE_PLAIN, NULL, NULL);
-                  }
+                  streamlined_request_loading(strm, core_path, item_path, false);
 
                   return 0;
                }
@@ -3392,13 +3451,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (!string_is_empty(item_path) && path_is_valid(item_path)
                && !string_is_empty(core_path) && path_is_valid(core_path))
          {
-            content_ctx_info_t content_info;
-
-            content_info.argc        = 0;
-            content_info.argv        = NULL;
-            content_info.args        = NULL;
-            content_info.environ_get = NULL;
-
             /* Save state for return */
             strm->folder_selection = menu_st->selection_ptr;
             if (strm->in_folder)
@@ -3415,45 +3467,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                strm->top_level_selection = menu_st->selection_ptr;
             }
 
-            strm->is_custom_main_menu = false;
-            strm->in_folder = false;
-
-            command_event(CMD_EVENT_MENU_TOGGLE, NULL);
-
-            /* Resolve M3U if core doesn't support it natively */
-            {
-               const char *content_to_load = item_path;
-               char resolved_m3u[PATH_MAX_LENGTH];
-               if (m3u_file_is_m3u(item_path)
-                     && !streamlined_core_supports_m3u(core_path))
-               {
-                  if (streamlined_resolve_m3u_content(item_path,
-                        resolved_m3u, sizeof(resolved_m3u)))
-                     content_to_load = resolved_m3u;
-               }
-
-               task_push_load_content_with_new_core_from_menu(
-                     core_path, content_to_load, &content_info,
-                     CORE_TYPE_PLAIN, NULL, NULL);
-            }
-
-            /* Load auto-save state now that core is initialized.
-             * Skip if the user already has savestate_auto_load enabled
-             * (the built-in mechanism would have loaded it during init). */
-            {
-               settings_t *settings       = config_get_ptr();
-               runloop_state_t *runloop_st = runloop_state_get_ptr();
-               if (!settings->bools.savestate_auto_load)
-               {
-                  char auto_path[PATH_MAX_LENGTH];
-                  size_t _len = strlcpy(auto_path, runloop_st->name.savestate,
-                        sizeof(auto_path));
-                  strlcpy(auto_path + _len, ".auto", sizeof(auto_path) - _len);
-
-                  if (path_is_valid(auto_path))
-                     content_load_state(auto_path, false, true);
-               }
-            }
+            streamlined_request_loading(strm, core_path, item_path, true);
 
             return 0;
          }
