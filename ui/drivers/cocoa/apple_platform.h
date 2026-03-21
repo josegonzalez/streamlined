@@ -23,6 +23,12 @@ extern bool ios_keyboard_start(char **buffer_ptr, size_t *size_ptr, size_t *ptr_
                                 input_keyboard_line_complete_t callback, void *userdata);
 extern bool ios_keyboard_active(void);
 extern void ios_keyboard_end(void);
+
+/* Native confirmation dialog support */
+typedef void (*ios_confirm_callback_t)(void *userdata, bool confirmed);
+extern void ios_show_confirm_dialog(const char *title, const char *message,
+                                     const char *confirm_label,
+                                     ios_confirm_callback_t callback, void *userdata);
 #endif
 
 #if TARGET_OS_OSX

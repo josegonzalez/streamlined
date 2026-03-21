@@ -330,6 +330,11 @@ typedef struct
    gfx_thumbnail_t random_thumbnail;
    char random_thumbnail_path[PATH_MAX_LENGTH];
 
+   /* Delete autosave confirmation/result state */
+   bool in_delete_confirm;
+   bool delete_done;
+   uint64_t delete_done_start;     /* ticker_idx when deletion completed */
+
    /* Loading screen state */
    bool loading_pending;          /* Waiting for loading screen to render */
    bool loading_triggered;        /* Loading screen rendered, ready to execute load */
@@ -978,7 +983,9 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       || strm->selecting_core
       || strm->in_options_menu
       || strm->in_search_mode
-      || strm->in_random_preview;
+      || strm->in_random_preview
+      || strm->in_delete_confirm
+      || strm->delete_done;
 
    if (in_submenu && menu_stack->size == 1)
    {
@@ -2705,6 +2712,53 @@ static void streamlined_search_keyboard_cb(void *userdata, const char *line)
       strlcpy(strm->search_query, line, sizeof(strm->search_query));
    strm->search_keyboard_done = true;
 }
+
+static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
+{
+   streamlined_t *strm = (streamlined_t *)userdata;
+   if (!strm)
+      return;
+
+   strm->in_delete_confirm = false;
+
+   if (confirmed)
+   {
+      streamlined_delete_autosave_file(
+            strm->options_game_path, strm->options_core_path);
+      strm->in_options_menu = false;
+      strm->delete_done = true;
+      strm->delete_done_start = strm->ticker_idx;
+   }
+   else
+   {
+      /* Cancelled — return to options menu */
+      strm->in_options_menu = true;
+      strm->cancel_ignore_frames = 3;
+      streamlined_populate_options_menu(strm);
+      {
+         struct menu_state *menu_st = menu_state_get_ptr();
+         file_list_t *slist = menu_st ? MENU_LIST_GET_SELECTION(menu_st->entries.list, 0) : NULL;
+         size_t idx = 0;
+         if (slist)
+         {
+            size_t j;
+            for (j = 0; j < slist->size; j++)
+            {
+               menu_entry_t e;
+               MENU_ENTRY_INITIALIZE(e);
+               menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+               if (e.enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
+               {
+                  idx = j;
+                  break;
+               }
+            }
+         }
+         if (menu_st)
+            menu_st->selection_ptr = idx;
+      }
+   }
+}
 #endif
 
 /*
@@ -3651,6 +3705,47 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       return;
    }
 
+   /* "Deleted Autosave" result screen — shown for ~3 seconds */
+   if (strm->delete_done)
+   {
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      if (strm->font.font)
+      {
+         font_bind(&strm->font);
+         gfx_display_draw_text(strm->font.font,
+               "Deleted Autosave",
+               (int)(video_width / 2),
+               (int)(video_height / 2 + strm->font_size * 0.35f),
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+         font_flush(video_width, video_height, &strm->font);
+      }
+
+      /* Advance ticker (normally done in render_menu which is skipped here) */
+      strm->ticker_idx++;
+
+      /* After ~3 seconds (180 frames at 60fps), return to game list */
+      if (strm->ticker_idx - strm->delete_done_start > 180)
+      {
+         strm->delete_done = false;
+         if (strm->options_was_in_folder)
+            streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+         else
+         {
+            settings_t *settings = config_get_ptr();
+            streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+         }
+         menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
+      }
+      return;
+   }
+
    if (!strm->font.font)
       return;
 
@@ -3672,7 +3767,106 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
 
    streamlined_draw_bg(strm, p_disp, userdata, video_width, video_height);
 
-   if (strm->in_random_preview)
+   if (strm->in_delete_confirm)
+   {
+#if !TARGET_OS_TV
+      /* Confirmation view: centered text + footer with Back/Delete */
+      const char *header = "Delete Autosave";
+      int header_w = streamlined_get_title_width(strm, header);
+      int header_x = ((int)video_width - header_w) / 2;
+      int header_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
+
+      streamlined_draw_title(strm, p_disp, video_width, video_height,
+            header_x, header_y, header, streamlined_color_text);
+
+      /* Game name centered */
+      {
+         float footer_height = 78.0f * strm->scale_factor;
+         int avail_top = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+         int avail_bottom = (int)(video_height - footer_height);
+         int center_y = (avail_top + avail_bottom) / 2
+               + (int)(strm->font_size * 0.35f);
+         int max_w = (int)video_width - strm->margin_x * 2;
+         char truncated[256];
+         char display_name[256];
+
+         strlcpy(display_name, path_basename(strm->options_game_path),
+               sizeof(display_name));
+         path_remove_extension(display_name);
+
+         streamlined_truncate_text(strm, display_name,
+               truncated, sizeof(truncated), max_w, FONT_NORMAL);
+
+         {
+            int name_w = streamlined_get_text_width(strm, truncated, FONT_NORMAL);
+            int name_x = ((int)video_width - name_w) / 2;
+            streamlined_draw_text(strm, p_disp, video_width, video_height,
+                  name_x, center_y, truncated, streamlined_color_text, false);
+         }
+      }
+
+      /* Footer: [B] Back ... [A] Delete */
+      {
+         float scale = strm->scale_factor;
+         float footer_height = 78.0f * scale;
+         float footer_margin = 40.0f * scale;
+         float pill_h = strm->font_size_small + 8.0f * scale;
+         float pill_pad = 10.0f * scale;
+         float pill_text_gap = 8.0f * scale;
+         float footer_center_y = (float)video_height - (footer_height / 2.0f);
+         float pill_y = footer_center_y - (pill_h / 2.0f);
+         float text_y = footer_center_y + (strm->font_size_small * 0.35f);
+
+         const char *back_key = "B";
+         const char *ok_key = "A";
+         const char *back_str = msg_hash_to_str(
+               MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
+         const char *ok_str = "Delete";
+
+         int back_key_w = font_driver_get_message_width(
+               strm->font_small.font, back_key, strlen(back_key), 1.0f);
+         int ok_key_w = font_driver_get_message_width(
+               strm->font_small.font, ok_key, strlen(ok_key), 1.0f);
+         int back_pill_w = back_key_w + (int)(pill_pad * 2.0f);
+         int ok_pill_w = ok_key_w + (int)(pill_pad * 2.0f);
+         int ok_label_w = font_driver_get_message_width(
+               strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
+         float right_x = (float)video_width - footer_margin;
+         float ok_pill_x = right_x - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
+
+         /* Left: [B] Back */
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               (int)footer_margin, (int)pill_y, back_pill_w, (int)pill_h,
+               video_width, video_height, streamlined_color_selection);
+         gfx_display_draw_text(strm->font_small.font,
+               back_key, (int)(footer_margin + pill_pad), (int)text_y,
+               video_width, video_height, streamlined_color_text_dark,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         gfx_display_draw_text(strm->font_small.font,
+               back_str,
+               (int)(footer_margin + (float)back_pill_w + pill_text_gap),
+               (int)text_y,
+               video_width, video_height, streamlined_color_text,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+         /* Right: [A] Delete */
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
+               video_width, video_height, streamlined_color_selection);
+         gfx_display_draw_text(strm->font_small.font,
+               ok_key, (int)(ok_pill_x + pill_pad), (int)text_y,
+               video_width, video_height, streamlined_color_text_dark,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         gfx_display_draw_text(strm->font_small.font,
+               ok_str,
+               (int)(ok_pill_x + (float)ok_pill_w + pill_text_gap),
+               (int)text_y,
+               video_width, video_height, streamlined_color_text,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      }
+#endif
+   }
+   else if (strm->in_random_preview)
       streamlined_render_random_preview(strm, p_disp, userdata,
             video_width, video_height);
    else
@@ -4061,6 +4255,57 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       }
 
       return 0;  /* Block other actions during core selection */
+   }
+
+   /* Block input during delete result screen */
+   if (strm && strm->delete_done)
+      return 0;
+
+   /* Handle delete autosave confirmation input */
+   if (strm && strm->in_delete_confirm)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->in_delete_confirm = false;
+         strm->in_options_menu = true;
+         strm->cancel_ignore_frames = 3;
+         streamlined_populate_options_menu(strm);
+         /* Find the Delete Autosave entry index */
+         {
+            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+            size_t idx = 0;
+            if (slist)
+            {
+               size_t j;
+               for (j = 0; j < slist->size; j++)
+               {
+                  menu_entry_t e;
+                  MENU_ENTRY_INITIALIZE(e);
+                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                  if (e.enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
+                  {
+                     idx = j;
+                     break;
+                  }
+               }
+            }
+            menu_st->selection_ptr = idx;
+         }
+         return 0;
+      }
+
+      if (action == MENU_ACTION_OK)
+      {
+         streamlined_delete_autosave_file(
+               strm->options_game_path, strm->options_core_path);
+         strm->in_delete_confirm = false;
+         strm->in_options_menu = false;
+         strm->delete_done = true;
+         strm->delete_done_start = strm->ticker_idx;
+         return 0;
+      }
+
+      return 0;  /* Block all other actions */
    }
 
    /* Handle random game preview input */
@@ -4487,6 +4732,24 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_options_menu = false;
             streamlined_request_loading(strm,
                   strm->options_core_path, strm->options_game_path, false);
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
+         {
+            strm->in_delete_confirm = true;
+            strm->in_options_menu = false;
+#if TARGET_OS_TV
+            {
+               char display_name[256];
+               strlcpy(display_name, path_basename(strm->options_game_path),
+                     sizeof(display_name));
+               path_remove_extension(display_name);
+               ios_show_confirm_dialog(
+                     "Delete Autosave", display_name, "Delete",
+                     streamlined_delete_confirm_cb, strm);
+            }
+#endif
             return 0;
          }
 

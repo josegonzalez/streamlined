@@ -1401,6 +1401,52 @@ void ios_keyboard_end(void)
    }
 }
 
+/* Native confirmation dialog using UIAlertController */
+void ios_show_confirm_dialog(const char *title, const char *message,
+                              const char *confirm_label,
+                              ios_confirm_callback_t callback, void *userdata)
+{
+   RetroArch_iOS *app = [RetroArch_iOS get];
+   if (!app)
+   {
+      if (callback)
+         callback(userdata, false);
+      return;
+   }
+
+   NSString *nsTitle   = title ? [NSString stringWithUTF8String:title] : @"";
+   NSString *nsMessage = message ? [NSString stringWithUTF8String:message] : @"";
+   NSString *nsConfirm = confirm_label ? [NSString stringWithUTF8String:confirm_label] : @"OK";
+
+   UIAlertController *alert = [UIAlertController
+         alertControllerWithTitle:nsTitle
+         message:nsMessage
+         preferredStyle:UIAlertControllerStyleAlert];
+
+   [alert addAction:[UIAlertAction
+         actionWithTitle:@"Cancel"
+         style:UIAlertActionStyleCancel
+         handler:^(UIAlertAction *action) {
+            if (callback)
+               callback(userdata, false);
+         }]];
+
+   [alert addAction:[UIAlertAction
+         actionWithTitle:nsConfirm
+         style:UIAlertActionStyleDestructive
+         handler:^(UIAlertAction *action) {
+            if (callback)
+               callback(userdata, true);
+         }]];
+
+   dispatch_async(dispatch_get_main_queue(), ^{
+      UIViewController *vc = app.window.rootViewController;
+      while (vc.presentedViewController)
+         vc = vc.presentedViewController;
+      [vc presentViewController:alert animated:YES completion:nil];
+   });
+}
+
 int main(int argc, char *argv[])
 {
 #if TARGET_OS_IOS
