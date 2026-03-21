@@ -96,6 +96,14 @@ enum cloud_sync_mode_type
    CLOUD_SYNC_MODE_LAST
 };
 
+enum cloud_sync_roms_mode_type
+{
+   CLOUD_SYNC_ROMS_MODE_AUTOMATIC = 0,
+   CLOUD_SYNC_ROMS_MODE_MANUAL,
+   CLOUD_SYNC_ROMS_MODE_ON_STARTUP,
+   CLOUD_SYNC_ROMS_MODE_LAST
+};
+
 enum settings_glob_flags
 {
    SETTINGS_FLG_MODIFIED              = (1 << 0),
@@ -246,6 +254,7 @@ typedef struct settings
       unsigned network_remote_base_port;
       unsigned keymapper_port;
       unsigned cloud_sync_sync_mode;
+      unsigned cloud_sync_roms_sync_mode;
       unsigned video_window_opacity;
       unsigned crt_switch_resolution;
       unsigned crt_switch_resolution_super;
@@ -1032,6 +1041,7 @@ typedef struct settings
       bool cloud_sync_sync_configs;
       bool cloud_sync_sync_thumbs;
       bool cloud_sync_sync_system;
+      bool cloud_sync_sync_roms;
 
       /* Misc. */
       bool discord_enable;

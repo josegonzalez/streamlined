@@ -277,6 +277,9 @@ void task_push_cloud_sync_update_driver(void);
 void task_push_cloud_sync(void);
 void task_push_cloud_sync_resolve_keep_local(void);
 void task_push_cloud_sync_resolve_keep_server(void);
+void task_push_cloud_sync_roms(void);
+void task_push_cloud_sync_roms_resolve_keep_local(void);
+void task_push_cloud_sync_roms_resolve_keep_server(void);
 
 RETRO_END_DECLS
 

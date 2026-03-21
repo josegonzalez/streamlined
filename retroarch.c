@@ -3750,6 +3750,9 @@ bool command_event(enum event_command cmd, void *data)
             /* Sync on core unload if in automatic mode */
             if (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC)
                task_push_cloud_sync();
+            if (settings->bools.cloud_sync_sync_roms
+                  && settings->uints.cloud_sync_roms_sync_mode == CLOUD_SYNC_ROMS_MODE_AUTOMATIC)
+               task_push_cloud_sync_roms();
 #endif
          }
 
@@ -4690,6 +4693,15 @@ bool command_event(enum event_command cmd, void *data)
          break;
       case CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_SERVER:
          task_push_cloud_sync_resolve_keep_server();
+         break;
+      case CMD_EVENT_CLOUD_SYNC_ROMS:
+         task_push_cloud_sync_roms();
+         break;
+      case CMD_EVENT_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL:
+         task_push_cloud_sync_roms_resolve_keep_local();
+         break;
+      case CMD_EVENT_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER:
+         task_push_cloud_sync_roms_resolve_keep_server();
          break;
 #endif
       case CMD_EVENT_MENU_RESET_TO_DEFAULT_CONFIG:
@@ -6143,6 +6155,10 @@ int rarch_main(int argc, char *argv[], void *data)
 #ifdef HAVE_CLOUDSYNC
    if (settings->uints.cloud_sync_sync_mode == CLOUD_SYNC_MODE_AUTOMATIC)
       task_push_cloud_sync();
+   if (settings->bools.cloud_sync_sync_roms
+         && (settings->uints.cloud_sync_roms_sync_mode == CLOUD_SYNC_ROMS_MODE_AUTOMATIC
+             || settings->uints.cloud_sync_roms_sync_mode == CLOUD_SYNC_ROMS_MODE_ON_STARTUP))
+      task_push_cloud_sync_roms();
 #endif
 #if !defined(HAVE_MAIN) || defined(HAVE_QT)
    for (;;)

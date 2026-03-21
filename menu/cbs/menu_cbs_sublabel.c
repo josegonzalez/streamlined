@@ -268,6 +268,10 @@ DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_saves,         MENU_
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_configs,       MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_CONFIGS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_thumbs,        MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_THUMBS)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_system,        MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_SYSTEM)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_sync_roms,          MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_ROMS)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_roms_sync_mode,     MENU_ENUM_SUBLABEL_CLOUD_SYNC_ROMS_SYNC_MODE)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_roms_resolve_keep_local,  MENU_ENUM_SUBLABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL)
+DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_roms_resolve_keep_server, MENU_ENUM_SUBLABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_driver,             MENU_ENUM_SUBLABEL_CLOUD_SYNC_DRIVER)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_url,                MENU_ENUM_SUBLABEL_CLOUD_SYNC_URL)
 DEFAULT_SUBLABEL_MACRO(action_bind_sublabel_cloud_sync_username,           MENU_ENUM_SUBLABEL_CLOUD_SYNC_USERNAME)
@@ -5330,6 +5334,18 @@ int menu_cbs_init_bind_sublabel(menu_file_list_cbs_t *cbs,
             break;
          case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_SYSTEM:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_sync_system);
+            break;
+         case MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_ROMS:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_sync_roms);
+            break;
+         case MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_SYNC_MODE:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_roms_sync_mode);
+            break;
+         case MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_roms_resolve_keep_local);
+            break;
+         case MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER:
+            BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_roms_resolve_keep_server);
             break;
          case MENU_ENUM_LABEL_CLOUD_SYNC_DRIVER:
             BIND_ACTION_SUBLABEL(cbs, action_bind_sublabel_cloud_sync_driver);

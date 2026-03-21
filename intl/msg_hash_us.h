@@ -240,6 +240,26 @@ MSG_HASH(
    "Manually trigger cloud synchronization."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_NOW,
+   "Sync Roms Now"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL,
+   "Resolve Roms Conflicts: Keep Local"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL,
+   "Resolve all ROM conflicts by uploading local files to the server."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER,
+   "Resolve Roms Conflicts: Keep Server"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER,
+   "Resolve all ROM conflicts by downloading server files, replacing local copies."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
    "Resolve Conflicts: Keep Local"
    )
@@ -1377,6 +1397,34 @@ MSG_HASH(
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_SYSTEM,
    "When enabled, system files will be synced to cloud. This can significantly increase the time it takes to sync; use with caution."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_ROMS,
+   "Sync: Roms"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_SYNC_ROMS,
+   "When enabled, ROMs will be synced to cloud."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE,
+   "Roms Sync Mode"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_CLOUD_SYNC_ROMS_SYNC_MODE,
+   "Select when ROMs should be synced."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE_AUTOMATIC,
+   "Automatic"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE_MANUAL,
+   "Manual"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE_ON_STARTUP,
+   "On Startup"
    )
 MSG_HASH(
    MENU_ENUM_SUBLABEL_CLOUD_SYNC_DESTRUCTIVE,
