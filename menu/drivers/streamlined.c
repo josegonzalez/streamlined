@@ -44,6 +44,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <time.h>
 
 #include <string/stdstring.h>
 #include <lists/file_list.h>
@@ -318,6 +319,16 @@ typedef struct
    size_t search_list_selection;
    struct string_list *search_all_entries;
    char search_prev_query[256];
+
+   /* Random game preview state */
+   bool in_random_preview;
+   char random_game_path[PATH_MAX_LENGTH];
+   char random_display_name[256];
+   bool random_has_savestate;
+   bool random_has_thumbnail;
+   bool random_show_text;          /* false = thumbnail view, true = text view */
+   gfx_thumbnail_t random_thumbnail;
+   char random_thumbnail_path[PATH_MAX_LENGTH];
 
    /* Loading screen state */
    bool loading_pending;          /* Waiting for loading screen to render */
@@ -966,7 +977,8 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       || strm->in_main_settings_submenu
       || strm->selecting_core
       || strm->in_options_menu
-      || strm->in_search_mode;
+      || strm->in_search_mode
+      || strm->in_random_preview;
 
    if (in_submenu && menu_stack->size == 1)
    {
@@ -978,6 +990,264 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
    {
       /* Pop marker — back at top level */
       file_list_pop(menu_stack, NULL);
+   }
+}
+
+/* ======================================================================
+ * RANDOM GAME PREVIEW RENDERING
+ * ====================================================================== */
+
+/*
+ * Load the thumbnail for a random game preview.
+ * Uses the same .media folder structure as the game list browser.
+ */
+static void streamlined_load_random_thumbnail(streamlined_t *strm)
+{
+   char thumb_path[PATH_MAX_LENGTH];
+   char name_buf[PATH_MAX_LENGTH];
+   const char *type_folder;
+   const char *base_name;
+   char *ext;
+   settings_t *settings = config_get_ptr();
+
+   strm->random_has_thumbnail = false;
+
+   if (string_is_empty(strm->random_game_path))
+      return;
+
+   if (settings->uints.gfx_thumbnails == 0)
+      return;
+
+   switch (settings->uints.gfx_thumbnails)
+   {
+      case 1:  type_folder = "Screenshot"; break;
+      case 2:  type_folder = "Title";      break;
+      case 3:  type_folder = "Boxart";     break;
+      default: return;
+   }
+
+   base_name = path_basename(strm->random_game_path);
+   if (string_is_empty(base_name))
+      return;
+
+   strlcpy(name_buf, base_name, sizeof(name_buf));
+   ext = strrchr(name_buf, '.');
+   if (ext)
+      *ext = '\0';
+
+   fill_pathname_join_special(thumb_path, strm->options_folder_path,
+         ".media", sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         type_folder, sizeof(thumb_path));
+   fill_pathname_join(thumb_path, thumb_path,
+         name_buf, sizeof(thumb_path));
+   strlcat(thumb_path, ".png", sizeof(thumb_path));
+
+   if (!path_is_valid(thumb_path))
+   {
+      strm->random_has_thumbnail = false;
+      strm->random_show_text = true;
+      return;
+   }
+
+   strlcpy(strm->random_thumbnail_path, thumb_path,
+         sizeof(strm->random_thumbnail_path));
+   gfx_thumbnail_reset(&strm->random_thumbnail);
+   gfx_thumbnail_request_file(thumb_path, &strm->random_thumbnail,
+         settings->uints.gfx_thumbnail_upscale_threshold);
+   strm->random_has_thumbnail = true;
+}
+
+/*
+ * Render the random game preview screen.
+ * Thumbnail View: centered thumbnail with game-browsing hint bar.
+ * Text View: centered "Random Game" header + display name + hint bar.
+ * Footer pills drawn after content (same order as streamlined_render_menu).
+ */
+static void streamlined_render_random_preview(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   float scale            = strm->scale_factor;
+   float footer_height    = 78.0f * scale;
+   float footer_margin    = 40.0f * scale;
+   float pill_h           = strm->font_size_small + 8.0f * scale;
+   float pill_pad         = 10.0f * scale;
+   float pill_text_gap    = 8.0f * scale;
+   float btn_spacing      = 20.0f * scale;
+   float footer_center_y  = (float)video_height - (footer_height / 2.0f);
+   float pill_y           = footer_center_y - (pill_h / 2.0f);
+   float text_y           = footer_center_y + (strm->font_size_small * 0.35f);
+
+   /* Draw content first */
+   if (strm->random_show_text || !strm->random_has_thumbnail)
+   {
+      /* Text View: header + centered game name */
+      const char *header = "Random Game";
+      int header_w = streamlined_get_title_width(strm, header);
+      int header_x = ((int)video_width - header_w) / 2;
+      int header_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
+
+      streamlined_draw_title(strm, p_disp, video_width, video_height,
+            header_x, header_y, header, streamlined_color_text);
+
+      {
+         int avail_top = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+         int avail_bottom = (int)(video_height - footer_height);
+         int center_y = (avail_top + avail_bottom) / 2
+               + (int)(strm->font_size * 0.35f);
+         int max_w = (int)video_width - strm->margin_x * 2;
+         char truncated[256];
+
+         streamlined_truncate_text(strm, strm->random_display_name,
+               truncated, sizeof(truncated), max_w, FONT_NORMAL);
+
+         {
+            int name_w = streamlined_get_text_width(strm, truncated, FONT_NORMAL);
+            int name_x = ((int)video_width - name_w) / 2;
+
+            streamlined_draw_text(strm, p_disp, video_width, video_height,
+                  name_x, center_y, truncated, streamlined_color_text, false);
+         }
+      }
+   }
+   else
+   {
+      /* Thumbnail View: centered thumbnail */
+      if (strm->random_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
+      {
+         float draw_width, draw_height;
+         int avail_top = strm->margin_y;
+         int avail_bottom = (int)(video_height - footer_height);
+         int max_w = (int)video_width - strm->margin_x * 2;
+         int max_h = avail_bottom - avail_top - strm->margin_y;
+         int draw_x, draw_y;
+
+         gfx_thumbnail_get_draw_dimensions(
+               &strm->random_thumbnail,
+               max_w, max_h, 1.0f,
+               &draw_width, &draw_height);
+
+         draw_x = ((int)video_width - (int)draw_width) / 2;
+         draw_y = avail_top + (avail_bottom - avail_top - (int)draw_height) / 2;
+
+         gfx_thumbnail_draw(userdata, video_width, video_height,
+               &strm->random_thumbnail,
+               (float)draw_x, (float)draw_y,
+               (unsigned)draw_width, (unsigned)draw_height,
+               GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
+      }
+      else
+      {
+         int center_y = (int)(video_height - footer_height) / 2
+               + (int)(strm->font_size * 0.35f);
+         int name_w = streamlined_get_text_width(strm,
+               strm->random_display_name, FONT_NORMAL);
+         int name_x = ((int)video_width - name_w) / 2;
+
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               name_x, center_y,
+               strm->random_display_name, streamlined_color_text, false);
+      }
+   }
+
+   /* Footer: pills + text */
+   {
+      const char *back_key   = "B";
+      const char *ok_key     = "A";
+      const char *back_str   = msg_hash_to_str(
+            MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
+      const char *ok_str     = "Play";
+
+      int back_key_w  = font_driver_get_message_width(
+            strm->font_small.font, back_key, strlen(back_key), 1.0f);
+      int ok_key_w    = font_driver_get_message_width(
+            strm->font_small.font, ok_key, strlen(ok_key), 1.0f);
+      int back_pill_w = back_key_w + (int)(pill_pad * 2.0f);
+      int ok_pill_w   = ok_key_w + (int)(pill_pad * 2.0f);
+      int ok_label_w  = font_driver_get_message_width(
+            strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
+      float right_x   = (float)video_width - footer_margin;
+      float ok_pill_x  = right_x - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
+
+      /* Flush stale GPU pipeline state after thumbnail/content drawing */
+      gfx_display_draw_text(strm->font_small.font,
+            back_key,
+            (int)(footer_margin + pill_pad),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text_dark,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+      /* Left: [B] Back */
+      streamlined_draw_rounded_pill(strm, p_disp, userdata,
+            (int)footer_margin, (int)pill_y, back_pill_w, (int)pill_h,
+            video_width, video_height, streamlined_color_selection);
+      gfx_display_draw_text(strm->font_small.font,
+            back_key,
+            (int)(footer_margin + pill_pad),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text_dark,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      gfx_display_draw_text(strm->font_small.font,
+            back_str,
+            (int)(footer_margin + (float)back_pill_w + pill_text_gap),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+      /* Right: [A] Play */
+      streamlined_draw_rounded_pill(strm, p_disp, userdata,
+            (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
+            video_width, video_height, streamlined_color_selection);
+      gfx_display_draw_text(strm->font_small.font,
+            ok_key,
+            (int)(ok_pill_x + pill_pad),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text_dark,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      gfx_display_draw_text(strm->font_small.font,
+            ok_str,
+            (int)(ok_pill_x + (float)ok_pill_w + pill_text_gap),
+            (int)text_y,
+            video_width, video_height,
+            streamlined_color_text,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+      /* [X] Resume — only if savestate exists */
+      if (strm->random_has_savestate)
+      {
+         const char *resume_key = "X";
+         const char *resume_str = "Resume";
+         int resume_key_w   = font_driver_get_message_width(
+               strm->font_small.font, resume_key, strlen(resume_key), 1.0f);
+         int resume_pill_w  = resume_key_w + (int)(pill_pad * 2.0f);
+         int resume_label_w = font_driver_get_message_width(
+               strm->font_small.font, resume_str, strlen(resume_str), 1.0f);
+         float resume_pill_x = ok_pill_x - btn_spacing
+               - (float)resume_label_w - pill_text_gap - (float)resume_pill_w;
+
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               (int)resume_pill_x, (int)pill_y, resume_pill_w, (int)pill_h,
+               video_width, video_height, streamlined_color_selection);
+         gfx_display_draw_text(strm->font_small.font,
+               resume_key,
+               (int)(resume_pill_x + pill_pad),
+               (int)text_y,
+               video_width, video_height,
+               streamlined_color_text_dark,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         gfx_display_draw_text(strm->font_small.font,
+               resume_str,
+               (int)(resume_pill_x + (float)resume_pill_w + pill_text_gap),
+               (int)text_y,
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      }
    }
 }
 
@@ -3059,6 +3329,8 @@ static void *streamlined_init(void **userdata, bool video_is_threaded)
 
    *userdata = strm;
 
+   srand((unsigned)time(NULL));
+
    p_disp->framebuf_width = 0;
    p_disp->framebuf_height = 0;
 
@@ -3258,6 +3530,9 @@ static void streamlined_context_destroy(void *data)
       /* Clean up ROM/directory thumbnail */
       gfx_thumbnail_reset(&strm->rom_thumbnail);
 
+      /* Clean up random game preview thumbnail */
+      gfx_thumbnail_reset(&strm->random_thumbnail);
+
    }
 
    gfx_display_deinit_white_texture();
@@ -3396,7 +3671,12 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       font_bind(&strm->font_tiny);
 
    streamlined_draw_bg(strm, p_disp, userdata, video_width, video_height);
-   streamlined_render_menu(strm, p_disp, userdata, video_width, video_height);
+
+   if (strm->in_random_preview)
+      streamlined_render_random_preview(strm, p_disp, userdata,
+            video_width, video_height);
+   else
+      streamlined_render_menu(strm, p_disp, userdata, video_width, video_height);
 
    if (strm->font.font)
       font_flush(video_width, video_height, &strm->font);
@@ -3783,6 +4063,104 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       return 0;  /* Block other actions during core selection */
    }
 
+   /* Handle random game preview input */
+   if (strm && strm->in_random_preview)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         /* Return to options menu with Random Game selected */
+         gfx_thumbnail_reset(&strm->random_thumbnail);
+         strm->random_thumbnail_path[0] = '\0';
+         strm->in_random_preview = false;
+         strm->in_options_menu = true;
+         strm->cancel_ignore_frames = 3;
+         streamlined_populate_options_menu(strm);
+         /* Find the Random Game entry index */
+         {
+            file_list_t *slist = MENU_LIST_GET_SELECTION(menu_st->entries.list, 0);
+            size_t idx = 0;
+            if (slist)
+            {
+               size_t j;
+               for (j = 0; j < slist->size; j++)
+               {
+                  menu_entry_t e;
+                  MENU_ENTRY_INITIALIZE(e);
+                  menu_entry_get(&e, 0, (unsigned)j, NULL, true);
+                  if (e.enum_idx == STREAMLINED_OPTIONS_RANDOM_GAME)
+                  {
+                     idx = j;
+                     break;
+                  }
+               }
+            }
+            menu_st->selection_ptr = idx;
+         }
+         return 0;
+      }
+
+      /* A = Play (start fresh) */
+      if (action == MENU_ACTION_OK)
+      {
+         strm->folder_selection = strm->options_saved_selection;
+         if (strm->options_was_in_folder)
+         {
+            strlcpy(strm->last_launched_folder, strm->options_folder_path,
+                  sizeof(strm->last_launched_folder));
+            strlcpy(strm->last_folder_core_path, strm->options_core_path,
+                  sizeof(strm->last_folder_core_path));
+            strm->return_to_folder = true;
+         }
+         else
+         {
+            strm->return_to_top_level = true;
+            strm->top_level_selection = strm->options_saved_selection;
+         }
+
+         gfx_thumbnail_reset(&strm->random_thumbnail);
+         strm->in_random_preview = false;
+         strm->in_options_menu = false;
+         streamlined_request_loading(strm,
+               strm->options_core_path, strm->random_game_path, false);
+         return 0;
+      }
+
+      /* X = Resume (load autosave) */
+      if (action == MENU_ACTION_SCAN && strm->random_has_savestate)
+      {
+         strm->folder_selection = strm->options_saved_selection;
+         if (strm->options_was_in_folder)
+         {
+            strlcpy(strm->last_launched_folder, strm->options_folder_path,
+                  sizeof(strm->last_launched_folder));
+            strlcpy(strm->last_folder_core_path, strm->options_core_path,
+                  sizeof(strm->last_folder_core_path));
+            strm->return_to_folder = true;
+         }
+         else
+         {
+            strm->return_to_top_level = true;
+            strm->top_level_selection = strm->options_saved_selection;
+         }
+
+         gfx_thumbnail_reset(&strm->random_thumbnail);
+         strm->in_random_preview = false;
+         strm->in_options_menu = false;
+         streamlined_request_loading(strm,
+               strm->options_core_path, strm->random_game_path, true);
+         return 0;
+      }
+
+      /* Y = Toggle thumbnail/text view (only if thumbnail exists) */
+      if (action == MENU_ACTION_SEARCH && strm->random_has_thumbnail)
+      {
+         strm->random_show_text = !strm->random_show_text;
+         return 0;
+      }
+
+      return 0;  /* Block all other actions */
+   }
+
    /* Deferred transition: options -> search (absorbs lingering OK press) */
    if (strm && strm->enter_search_deferred)
    {
@@ -4109,6 +4487,85 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_options_menu = false;
             streamlined_request_loading(strm,
                   strm->options_core_path, strm->options_game_path, false);
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_RANDOM_GAME)
+         {
+            settings_t *settings = config_get_ptr();
+            struct string_list *file_list = dir_list_new(
+                  strm->options_folder_path, NULL, true,
+                  settings->bools.show_hidden_files, true, false);
+            if (file_list && file_list->size > 0)
+            {
+               size_t j, file_count = 0;
+               size_t *file_indices = (size_t*)calloc(file_list->size, sizeof(size_t));
+               if (file_indices)
+               {
+                  for (j = 0; j < file_list->size; j++)
+                  {
+                     const char *path = file_list->elems[j].data;
+                     unsigned attr = file_list->elems[j].attr.i;
+                     const char *name = path_basename(path);
+                     if (!name || name[0] == '.')
+                        continue;
+                     if (attr == RARCH_DIRECTORY)
+                     {
+                        char m3u_path[PATH_MAX_LENGTH];
+                        if (streamlined_check_m3u_folder(path, m3u_path, sizeof(m3u_path)))
+                           file_indices[file_count++] = j;
+                     }
+                     else
+                        file_indices[file_count++] = j;
+                  }
+
+                  if (file_count > 0)
+                  {
+                     size_t pick = (size_t)(rand() % file_count);
+                     size_t idx = file_indices[pick];
+                     const char *picked_path = file_list->elems[idx].data;
+                     unsigned picked_attr = file_list->elems[idx].attr.i;
+                     const char *display_name;
+
+                     /* Resolve launch path for M3U game folders */
+                     if (picked_attr == RARCH_DIRECTORY)
+                     {
+                        char m3u_path[PATH_MAX_LENGTH];
+                        streamlined_check_m3u_folder(picked_path, m3u_path, sizeof(m3u_path));
+                        strlcpy(strm->random_game_path, m3u_path,
+                              sizeof(strm->random_game_path));
+                        display_name = streamlined_strip_sort_prefix(
+                              path_basename(picked_path));
+                     }
+                     else
+                     {
+                        strlcpy(strm->random_game_path, picked_path,
+                              sizeof(strm->random_game_path));
+                        display_name = path_basename(picked_path);
+                     }
+
+                     /* Build display name (strip extension) */
+                     strlcpy(strm->random_display_name, display_name,
+                           sizeof(strm->random_display_name));
+                     if (picked_attr != RARCH_DIRECTORY)
+                        path_remove_extension(strm->random_display_name);
+
+                     /* Check savestate */
+                     strm->random_has_savestate = streamlined_check_savestate(
+                           strm->random_game_path, strm->options_core_path);
+
+                     /* Load thumbnail and determine initial view */
+                     strm->random_show_text = false;
+                     streamlined_load_random_thumbnail(strm);
+
+                     strm->in_random_preview = true;
+                     strm->in_options_menu = false;
+                  }
+                  free(file_indices);
+               }
+            }
+            if (file_list)
+               string_list_free(file_list);
             return 0;
          }
       }
