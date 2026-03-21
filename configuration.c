@@ -2123,6 +2123,7 @@ static struct config_bool_setting *populate_settings_bool(
    SETTING_BOOL("menu_xmb_show_title_header",    &settings->bools.menu_xmb_show_title_header, true, DEFAULT_XMB_SHOW_TITLE_HEADER, false);
 #endif
    SETTING_BOOL("menu_streamlined_show_folder_thumbnails", &settings->bools.menu_streamlined_show_folder_thumbnails, true, DEFAULT_MENU_STREAMLINED_SHOW_FOLDER_THUMBNAILS, false);
+   SETTING_BOOL("menu_streamlined_normalize_rom_names", &settings->bools.menu_streamlined_normalize_rom_names, true, DEFAULT_MENU_STREAMLINED_NORMALIZE_ROM_NAMES, false);
 #ifdef HAVE_OZONE
    SETTING_BOOL("ozone_collapse_sidebar",        &settings->bools.ozone_collapse_sidebar, true, DEFAULT_OZONE_COLLAPSE_SIDEBAR, false);
    SETTING_BOOL("ozone_scroll_content_metadata", &settings->bools.ozone_scroll_content_metadata, true, DEFAULT_OZONE_SCROLL_CONTENT_METADATA, false);

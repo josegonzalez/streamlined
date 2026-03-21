@@ -4014,6 +4014,10 @@ MSG_HASH(
    "streamlined_show_folder_thumbnails"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_NORMALIZE_ROM_NAMES,
+   "streamlined_normalize_rom_names"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "menu_xmb_thumbnail_scale_factor"
    )

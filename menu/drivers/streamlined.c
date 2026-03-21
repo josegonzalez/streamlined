@@ -76,6 +76,7 @@
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
 #include <formats/m3u_file.h>
+#include <playlists/label_sanitization.h>
 #include "../../content.h"
 #include "../../verbosity.h"
 
@@ -83,6 +84,13 @@
 #include <CoreText/CoreText.h>
 #include "../../ui/drivers/cocoa/apple_platform.h"
 #endif
+
+/* Forward declarations for helpers defined later in the file */
+static const char *streamlined_strip_sort_prefix(const char *name);
+static void streamlined_get_display_name(
+      const char *path, bool is_m3u_folder,
+      char *out, size_t out_size);
+static int streamlined_entry_cmp(const void *a, const void *b);
 
 /* ======================================================================
  * CONFIGURATION
@@ -1589,24 +1597,11 @@ static void streamlined_render_menu(streamlined_t *strm,
          }
 
          if (streamlined_check_m3u_folder(parent_dir, m3u_path, sizeof(m3u_path)))
-         {
-            const char *folder_name = path_basename(parent_dir);
-            if (!string_is_empty(folder_name))
-               strlcpy(title_buf, folder_name, sizeof(title_buf));
-         }
+            streamlined_get_display_name(parent_dir, true,
+                  title_buf, sizeof(title_buf));
          else
-         {
-            const char *game_name = path_basename(content_path);
-            if (!string_is_empty(game_name))
-            {
-               /* Copy and remove extension */
-               char *ext;
-               strlcpy(title_buf, game_name, sizeof(title_buf));
-               ext = strrchr(title_buf, '.');
-               if (ext)
-                  *ext = '\0';
-            }
-         }
+            streamlined_get_display_name(content_path, false,
+                  title_buf, sizeof(title_buf));
       }
       if (title_buf[0] == '\0')
          strlcpy(title_buf, "Quick Menu", sizeof(title_buf));
@@ -2664,12 +2659,11 @@ static void streamlined_populate_search_results(streamlined_t *strm)
       if (attr == RARCH_DIRECTORY)
       {
          char m3u_path[PATH_MAX_LENGTH];
-         const char *clean_name;
          if (!streamlined_check_m3u_folder(path, m3u_path, sizeof(m3u_path)))
             continue;
 
-         clean_name = streamlined_strip_sort_prefix(name);
-         strlcpy(display_name, clean_name, sizeof(display_name));
+         streamlined_get_display_name(path, true,
+               display_name, sizeof(display_name));
          if (!streamlined_fuzzy_match(strm->search_query, display_name))
             continue;
 
@@ -2680,8 +2674,8 @@ static void streamlined_populate_search_results(streamlined_t *strm)
       }
       else
       {
-         strlcpy(display_name, name, sizeof(display_name));
-         path_remove_extension(display_name);
+         streamlined_get_display_name(path, false,
+               display_name, sizeof(display_name));
 
          if (!streamlined_fuzzy_match(strm->search_query, display_name))
             continue;
@@ -2691,6 +2685,15 @@ static void streamlined_populate_search_results(streamlined_t *strm)
                MSG_UNKNOWN, FILE_TYPE_PLAIN,
                0, 0, NULL);
       }
+   }
+
+   /* Re-sort by normalized display names when enabled */
+   {
+      settings_t *settings = config_get_ptr();
+      if (settings->bools.menu_streamlined_normalize_rom_names
+            && list->size > 1)
+         qsort(list->list, list->size,
+               sizeof(struct item_file), streamlined_entry_cmp);
    }
 
    if (list->size == 0 && !string_is_empty(strm->search_query))
@@ -3027,6 +3030,117 @@ static void streamlined_populate_core_selection(streamlined_t *strm, const char 
 }
 
 /*
+ * Move trailing article (", The" / ", A" / ", An") to the front of the title.
+ * Only considers the portion before the first " - " subtitle separator.
+ * e.g. "Legend of Zelda, The - A Link to the Past"
+ *   -> "The Legend of Zelda - A Link to the Past"
+ */
+static void streamlined_fix_article(char *name, size_t name_size)
+{
+   static const char *articles[] = { ", The", ", A", ", An" };
+   char *subtitle;
+   size_t main_len;
+   unsigned i;
+
+   if (!name || name[0] == '\0')
+      return;
+
+   /* Find first " - " subtitle separator */
+   subtitle = strstr(name, " - ");
+   main_len = subtitle ? (size_t)(subtitle - name) : strlen(name);
+
+   for (i = 0; i < sizeof(articles) / sizeof(articles[0]); i++)
+   {
+      size_t art_len = strlen(articles[i]);
+      if (main_len > art_len)
+      {
+         /* Check if main title ends with this article */
+         const char *pos = name + main_len - art_len;
+         if (strncmp(pos, articles[i], art_len) == 0)
+         {
+            /* articles[i] is ", The" — skip the ", " to get just the article word */
+            const char *word = articles[i] + 2;
+            size_t word_len = art_len - 2;
+            size_t base_len = main_len - art_len; /* title without article */
+            char tmp[512];
+
+            /* Build: "The " + base title + subtitle */
+            snprintf(tmp, sizeof(tmp), "%.*s %.*s%s",
+                  (int)word_len, word,
+                  (int)base_len, name,
+                  subtitle ? subtitle : "");
+            strlcpy(name, tmp, name_size);
+            return;
+         }
+      }
+   }
+}
+
+/*
+ * Normalize a ROM display name:
+ * 1. Strip parenthesized/bracketed tags (No-Intro/GoodTools)
+ * 2. Fix trailing article placement
+ */
+static void streamlined_normalize_rom_name(char *name, size_t name_size)
+{
+   if (!name || name[0] == '\0')
+      return;
+   label_remove_parens_and_brackets(name);
+   /* Trim trailing whitespace left after tag removal */
+   {
+      size_t len = strlen(name);
+      while (len > 0 && (name[len - 1] == ' ' || name[len - 1] == '\t'))
+         len--;
+      name[len] = '\0';
+   }
+   streamlined_fix_article(name, name_size);
+}
+
+/*
+ * Central display-name pipeline: extract basename, strip extension (for ROMs)
+ * or sort prefix (for M3U folders), then optionally normalize.
+ */
+static void streamlined_get_display_name(
+      const char *path, bool is_m3u_folder,
+      char *out, size_t out_size)
+{
+   settings_t *settings = config_get_ptr();
+   const char *name = path_basename(path);
+
+   if (is_m3u_folder)
+   {
+      const char *clean = streamlined_strip_sort_prefix(name);
+      strlcpy(out, clean, out_size);
+   }
+   else
+   {
+      strlcpy(out, name, out_size);
+      path_remove_extension(out);
+   }
+
+   if (settings->bools.menu_streamlined_normalize_rom_names)
+      streamlined_normalize_rom_name(out, out_size);
+}
+
+/*
+ * Comparator for file_list_t entries used with qsort.
+ * Sorts FILE_TYPE_DIRECTORY first, then alphabetically (case-insensitive)
+ * by the display name stored in entry->path.
+ */
+static int streamlined_entry_cmp(const void *a, const void *b)
+{
+   const struct item_file *ea = (const struct item_file *)a;
+   const struct item_file *eb = (const struct item_file *)b;
+   bool dir_a = (ea->type == FILE_TYPE_DIRECTORY);
+   bool dir_b = (eb->type == FILE_TYPE_DIRECTORY);
+
+   if (dir_a != dir_b)
+      return dir_a ? -1 : 1;
+
+   return strcasecmp(ea->path, eb->path);
+}
+
+/*
  * Strip leading sort prefix from folder name (e.g., "1) Game Boy" -> "Game Boy")
  * Pattern: one or more digits followed by ") "
  * Returns pointer to the start of the actual name (within the same string)
@@ -3234,8 +3348,8 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
             {
                /* M3U game folder — show as launchable game */
                char display_name[256];
-               const char *clean_name = streamlined_strip_sort_prefix(name);
-               strlcpy(display_name, clean_name, sizeof(display_name));
+               streamlined_get_display_name(path, true,
+                     display_name, sizeof(display_name));
 
                menu_entries_append(list,
                      display_name,     /* folder name = game title */
@@ -3268,8 +3382,8 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
          {
             /* Show files (ROMs) - strip extension for cleaner display */
             char display_name[256];
-            strlcpy(display_name, name, sizeof(display_name));
-            path_remove_extension(display_name);
+            streamlined_get_display_name(path, false,
+                  display_name, sizeof(display_name));
 
             menu_entries_append(list,
                   display_name,     /* Display name (entry->path for rendering) */
@@ -3279,6 +3393,12 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
                   0, 0, NULL);
          }
       }
+
+      /* Re-sort by normalized display names when enabled */
+      if (settings->bools.menu_streamlined_normalize_rom_names
+            && list->size > 1)
+         qsort(list->list, list->size,
+               sizeof(struct item_file), streamlined_entry_cmp);
    }
 
    if (str_list)
@@ -3790,9 +3910,8 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
          char truncated[256];
          char display_name[256];
 
-         strlcpy(display_name, path_basename(strm->options_game_path),
-               sizeof(display_name));
-         path_remove_extension(display_name);
+         streamlined_get_display_name(strm->options_game_path, false,
+               display_name, sizeof(display_name));
 
          streamlined_truncate_text(strm, display_name,
                truncated, sizeof(truncated), max_w, FONT_NORMAL);
@@ -4742,9 +4861,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 #if TARGET_OS_TV
             {
                char display_name[256];
-               strlcpy(display_name, path_basename(strm->options_game_path),
-                     sizeof(display_name));
-               path_remove_extension(display_name);
+               streamlined_get_display_name(strm->options_game_path, false,
+                     display_name, sizeof(display_name));
                ios_show_confirm_dialog(
                      "Delete Autosave", display_name, "Delete",
                      streamlined_delete_confirm_cb, strm);
@@ -4788,7 +4906,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      size_t idx = file_indices[pick];
                      const char *picked_path = file_list->elems[idx].data;
                      unsigned picked_attr = file_list->elems[idx].attr.i;
-                     const char *display_name;
 
                      /* Resolve launch path for M3U game folders */
                      if (picked_attr == RARCH_DIRECTORY)
@@ -4797,21 +4914,18 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         streamlined_check_m3u_folder(picked_path, m3u_path, sizeof(m3u_path));
                         strlcpy(strm->random_game_path, m3u_path,
                               sizeof(strm->random_game_path));
-                        display_name = streamlined_strip_sort_prefix(
-                              path_basename(picked_path));
                      }
                      else
                      {
                         strlcpy(strm->random_game_path, picked_path,
                               sizeof(strm->random_game_path));
-                        display_name = path_basename(picked_path);
                      }
 
-                     /* Build display name (strip extension) */
-                     strlcpy(strm->random_display_name, display_name,
+                     /* Build display name */
+                     streamlined_get_display_name(picked_path,
+                           picked_attr == RARCH_DIRECTORY,
+                           strm->random_display_name,
                            sizeof(strm->random_display_name));
-                     if (picked_attr != RARCH_DIRECTORY)
-                        path_remove_extension(strm->random_display_name);
 
                      /* Check savestate */
                      strm->random_has_savestate = streamlined_check_savestate(

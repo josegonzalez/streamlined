@@ -12559,6 +12559,14 @@ MSG_HASH(
    "Show thumbnails for folders from the .media directory."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_NORMALIZE_ROM_NAMES,
+   "Clean ROM Names"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_NORMALIZE_ROM_NAMES,
+   "Remove No-Intro/GoodTools tags and fix article placement in game names."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "Thumbnail Scale Factor"
    )
