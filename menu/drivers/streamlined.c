@@ -235,6 +235,7 @@ typedef struct
    bool in_settings_submenu;
    bool return_to_settings_submenu;  /* Track if we should return to Advanced submenu */
    size_t saved_quick_menu_selection; /* Remember position in main quick menu */
+   size_t saved_advanced_selection;   /* Remember position in Advanced submenu */
 
    /* Save slot selector */
    gfx_thumbnail_t savestate_thumbnail;
@@ -2795,7 +2796,8 @@ static void streamlined_populate_entries(void *data,
          is_main_menu = true;
 
       /* Also check enum_idx from the menu stack */
-      if (!is_content_settings && !is_main_menu)
+      if (!is_content_settings && !is_main_menu
+            && !strm->return_to_main_settings_submenu)
       {
          struct menu_state *menu_st = menu_state_get_ptr();
          if (menu_st && menu_st->entries.list)
@@ -2885,9 +2887,12 @@ static void streamlined_populate_entries(void *data,
          /* Check if we should return to the Advanced settings submenu */
          if (strm->return_to_settings_submenu)
          {
+            struct menu_state *menu_st = menu_state_get_ptr();
             streamlined_populate_settings_submenu();
             strm->in_settings_submenu = true;
             strm->return_to_settings_submenu = false;
+            if (menu_st)
+               menu_st->selection_ptr = strm->saved_advanced_selection;
          }
          else
          {
@@ -3081,6 +3086,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
        */
       if (action == MENU_ACTION_OK && strm->in_settings_submenu)
       {
+         strm->saved_advanced_selection = menu_st->selection_ptr;
          strm->return_to_settings_submenu = true;
       }
    }
@@ -3152,6 +3158,19 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       }
 
       return 0;  /* Block other actions during core selection */
+   }
+
+   /* Handle cancel from RA settings to return to Main Settings submenu */
+   if (strm && strm->return_to_main_settings_submenu && action == MENU_ACTION_CANCEL)
+   {
+      strm->return_to_main_settings_submenu = false;
+      strm->is_custom_main_menu = true;
+      strm->in_main_settings_submenu = true;
+      strm->in_folder = false;
+      streamlined_populate_main_settings_submenu();
+      if (menu_st)
+         menu_st->selection_ptr = strm->saved_settings_selection;
+      return 0;
    }
 
    /* Handle custom main menu (launcher mode) navigation */
