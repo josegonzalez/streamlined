@@ -410,6 +410,11 @@ typedef struct settings
       unsigned cheevos_appearance_anchor;
       unsigned cheevos_visibility_summary;
 
+      unsigned menu_streamlined_notification_duration;
+      unsigned menu_streamlined_selection_color_red;
+      unsigned menu_streamlined_selection_color_green;
+      unsigned menu_streamlined_selection_color_blue;
+
 #ifdef HAVE_SMBCLIENT
       unsigned smb_client_auth_mode;
       unsigned smb_client_num_contexts;
@@ -494,6 +499,10 @@ typedef struct settings
       float input_analog_sensitivity;
       float input_sensor_accelerometer_sensitivity;
       float input_sensor_gyroscope_sensitivity;
+      float menu_streamlined_thumbnail_height;
+      float menu_streamlined_thumbnail_width;
+      float menu_streamlined_bg_opacity;
+
 #ifdef _3DS
       float bottom_font_scale;
 #endif

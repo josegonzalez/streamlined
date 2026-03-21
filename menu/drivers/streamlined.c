@@ -125,6 +125,30 @@ static uint32_t streamlined_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packe
 #define STREAMLINED_PILL_PADDING_RATIO 0.375f /* Horizontal padding as ratio of font size */
 #define STREAMLINED_MIN_FONT_SIZE      12    /* Minimum font size to ensure readability */
 
+/* Footer bar dimensions */
+#define STREAMLINED_FOOTER_HEIGHT         78.0f
+#define STREAMLINED_FOOTER_MARGIN         40.0f
+#define STREAMLINED_FOOTER_BTN_SPACING    20.0f
+
+/* Pill styling */
+#define STREAMLINED_PILL_HEIGHT_PAD       8.0f
+#define STREAMLINED_PILL_HORIZ_PAD        10.0f
+#define STREAMLINED_PILL_TEXT_GAP         8.0f
+#define STREAMLINED_ITEM_PILL_HEIGHT_MULT 1.5f
+
+/* Font sizing */
+#define STREAMLINED_FONT_SMALL_RATIO      0.75f
+#define STREAMLINED_FONT_TITLE_RATIO      1.1f
+#define STREAMLINED_GLYPH_WIDTH_RATIO     0.6f
+
+/* Text positioning */
+#define STREAMLINED_TEXT_BASELINE_OFFSET   0.35f
+#define STREAMLINED_TITLE_AREA_MULT       1.4f
+#define STREAMLINED_TITLE_Y_OFFSET        0.9f
+
+/* Input timing */
+#define STREAMLINED_CANCEL_IGNORE_FRAMES  3
+
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
  * ====================================================================== */
@@ -325,6 +349,12 @@ typedef struct
    bool return_to_options;         /* Deferred transition from search back to options */
    bool enter_search_deferred;    /* Deferred transition from options into search */
    unsigned cancel_ignore_frames; /* Block cancel for N frames after state transition */
+
+   /* Color picker state */
+   bool in_color_submenu;
+   unsigned color_channel;      /* 0=R, 1=G, 2=B */
+   unsigned color_hold_count;   /* consecutive same-direction inputs */
+   int color_hold_direction;    /* -1=left, 1=right, 0=none */
 
    /* Search mode state */
    bool in_search_mode;
@@ -862,8 +892,9 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
       unsigned video_width, unsigned video_height)
 {
    int i;
-   /* Larger thumbnail - 45% of screen height, maintain 4:3 aspect for frame */
-   int thumb_max_height = (int)(video_height * 0.45f);
+   settings_t *slot_settings = config_get_ptr();
+   /* Thumbnail height from settings, maintain 4:3 aspect for frame */
+   int thumb_max_height = (int)(video_height * slot_settings->floats.menu_streamlined_thumbnail_height);
    int thumb_max_width  = (int)(thumb_max_height * 4.0f / 3.0f);
 
    /* Polaroid frame dimensions */
@@ -937,7 +968,7 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
          int text_width = streamlined_get_text_width(strm, placeholder, FONT_NORMAL);
          int text_x = thumb_x + (thumb_max_width - text_width) / 2;
          /* Center vertically: account for font baseline by adding ~1/3 of font size */
-         int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * 0.35f);
+         int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
 
          streamlined_draw_text(strm, p_disp, video_width, video_height,
                text_x, text_y,
@@ -966,7 +997,7 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
          int text_width = streamlined_get_text_width_tiny(strm, "A");
          int text_x = dot_cx - text_width / 2;
          /* Center 'A' vertically: baseline + 0.35*font_size ≈ visual center */
-         int text_y = cy + (int)(strm->font_size_tiny * 0.35f);
+         int text_y = cy + (int)(strm->font_size_tiny * STREAMLINED_TEXT_BASELINE_OFFSET);
          streamlined_draw_text_tiny(strm, p_disp, video_width, video_height,
                text_x, text_y, "A",
                is_selected ? streamlined_color_text_accent : streamlined_color_text_dark);
@@ -992,12 +1023,14 @@ static void streamlined_draw_rom_thumbnail(streamlined_t *strm,
    int max_w, max_h, avail_top, avail_bottom, avail_h;
    int draw_x, draw_y;
 
-   /* Max width: 50% of screen */
-   max_w = (int)(video_width * 0.5f) - strm->margin_x;
+   {
+      settings_t *thumb_settings = config_get_ptr();
+      max_w = (int)(video_width * thumb_settings->floats.menu_streamlined_thumbnail_width) - strm->margin_x;
+   }
 
    /* Available vertical area: below title, above footer */
-   avail_top    = strm->margin_y + (int)(strm->font_size_title * 1.4f);
-   avail_bottom = (int)(video_height - 78.0f * strm->scale_factor);
+   avail_top    = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
+   avail_bottom = (int)(video_height - STREAMLINED_FOOTER_HEIGHT * strm->scale_factor);
    avail_h      = avail_bottom - avail_top - strm->margin_y * 2;
 
    if (avail_h <= 0 || max_w <= 0)
@@ -1153,6 +1186,7 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
    const char *type_folder;
    const char *base_name;
    char *ext;
+   bool found_m3u = false;
    settings_t *settings = config_get_ptr();
 
    strm->game_switcher_has_thumbnail = false;
@@ -1196,7 +1230,10 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
 
       if (streamlined_find_m3u_for_content(strm->game_switcher_content_path,
             m3u_path, sizeof(m3u_path)))
+      {
          thumb_content = m3u_path;
+         found_m3u     = true;
+      }
 
       base_name = path_basename(thumb_content);
       if (string_is_empty(base_name))
@@ -1213,11 +1250,14 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
 
    fill_pathname_join_special(thumb_path, parent_dir,
          ".media", sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         type_folder, sizeof(thumb_path));
+   if (!found_m3u)
+      fill_pathname_join(thumb_path, thumb_path,
+            type_folder, sizeof(thumb_path));
    fill_pathname_join(thumb_path, thumb_path,
          name_buf, sizeof(thumb_path));
    strlcat(thumb_path, ".png", sizeof(thumb_path));
+
+   RARCH_LOG("[StreamlinedMenu] Game Switcher thumb path: %s\n", thumb_path);
 
    if (!path_is_valid(thumb_path))
       return;
@@ -1384,7 +1424,7 @@ static void streamlined_render_game_switcher(streamlined_t *strm,
 {
    settings_t *settings = config_get_ptr();
    float scale         = strm->scale_factor;
-   float footer_height = 78.0f * scale;
+   float footer_height = STREAMLINED_FOOTER_HEIGHT * scale;
    int avail_top, avail_bottom;
 
    streamlined_sync_menu_stack(strm);
@@ -1402,7 +1442,7 @@ static void streamlined_render_game_switcher(streamlined_t *strm,
          const char *msg = "No recent games";
          int msg_w = streamlined_get_text_width(strm, msg, FONT_NORMAL);
          int msg_x = ((int)video_width - msg_w) / 2;
-         int msg_y = (int)(video_height / 2) + (int)(strm->font_size * 0.35f);
+         int msg_y = (int)(video_height / 2) + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
          streamlined_draw_text(strm, p_disp, video_width, video_height,
                msg_x, msg_y, msg, streamlined_color_text, false);
          return;
@@ -1442,7 +1482,7 @@ static void streamlined_render_game_switcher(streamlined_t *strm,
       int text_w = streamlined_get_text_width(strm, no_art, FONT_NORMAL);
       int text_x = ((int)video_width - text_w) / 2;
       int center_y = (avail_top + avail_bottom) / 2
-            + (int)(strm->font_size * 0.35f);
+            + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
 
       streamlined_draw_text(strm, p_disp, video_width, video_height,
             text_x, center_y, no_art, streamlined_color_text_muted, false);
@@ -1451,7 +1491,7 @@ static void streamlined_render_game_switcher(streamlined_t *strm,
    /* Footer: ◀ Game Name ▶ */
    {
       float footer_center_y = (float)video_height - (footer_height / 2.0f);
-      float text_y = footer_center_y + (strm->font_size * 0.35f);
+      float text_y = footer_center_y + (strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
       int max_name_w = (int)video_width - strm->margin_x * 4;
       char truncated[256];
       int name_w, arrow_w, total_w, start_x;
@@ -1539,15 +1579,15 @@ static void streamlined_render_random_preview(streamlined_t *strm,
       unsigned video_width, unsigned video_height)
 {
    float scale            = strm->scale_factor;
-   float footer_height    = 78.0f * scale;
-   float footer_margin    = 40.0f * scale;
-   float pill_h           = strm->font_size_small + 8.0f * scale;
-   float pill_pad         = 10.0f * scale;
-   float pill_text_gap    = 8.0f * scale;
-   float btn_spacing      = 20.0f * scale;
+   float footer_height    = STREAMLINED_FOOTER_HEIGHT * scale;
+   float footer_margin    = STREAMLINED_FOOTER_MARGIN * scale;
+   float pill_h           = strm->font_size_small + STREAMLINED_PILL_HEIGHT_PAD * scale;
+   float pill_pad         = STREAMLINED_PILL_HORIZ_PAD * scale;
+   float pill_text_gap    = STREAMLINED_PILL_TEXT_GAP * scale;
+   float btn_spacing      = STREAMLINED_FOOTER_BTN_SPACING * scale;
    float footer_center_y  = (float)video_height - (footer_height / 2.0f);
    float pill_y           = footer_center_y - (pill_h / 2.0f);
-   float text_y           = footer_center_y + (strm->font_size_small * 0.35f);
+   float text_y           = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_BASELINE_OFFSET);
 
    /* Draw content first */
    if (strm->random_show_text || !strm->random_has_thumbnail)
@@ -1556,16 +1596,16 @@ static void streamlined_render_random_preview(streamlined_t *strm,
       const char *header = "Random Game";
       int header_w = streamlined_get_title_width(strm, header);
       int header_x = ((int)video_width - header_w) / 2;
-      int header_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
+      int header_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_Y_OFFSET);
 
       streamlined_draw_title(strm, p_disp, video_width, video_height,
             header_x, header_y, header, streamlined_color_text);
 
       {
-         int avail_top = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+         int avail_top = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
          int avail_bottom = (int)(video_height - footer_height);
          int center_y = (avail_top + avail_bottom) / 2
-               + (int)(strm->font_size * 0.35f);
+               + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
          int max_w = (int)video_width - strm->margin_x * 2;
          char truncated[256];
 
@@ -1610,7 +1650,7 @@ static void streamlined_render_random_preview(streamlined_t *strm,
       else
       {
          int center_y = (int)(video_height - footer_height) / 2
-               + (int)(strm->font_size * 0.35f);
+               + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
          int name_w = streamlined_get_text_width(strm,
                strm->random_display_name, FONT_NORMAL);
          int name_x = ((int)video_width - name_w) / 2;
@@ -1736,9 +1776,9 @@ static int streamlined_render_search_keyboard(streamlined_t *strm,
 {
    int row, col;
    int key_w = (int)(strm->font_size * 1.8f);
-   int key_h = (int)(strm->font_size * 1.5f);
+   int key_h = (int)(strm->font_size * STREAMLINED_ITEM_PILL_HEIGHT_MULT);
    int key_gap = (int)(4 * strm->scale_factor);
-   int kb_start_y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+   int kb_start_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
    int search_bar_h = (int)(strm->font_size * 1.8f);
    int search_bar_y = kb_start_y;
    int kb_y = search_bar_y + search_bar_h + key_gap * 2;
@@ -2023,13 +2063,13 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    /* Calculate visible items: screen height minus title area and button legend area */
    {
-      int title_area = strm->margin_y + (int)(strm->font_size_title * 1.4f);
-      int bottom_area = (int)(78.0f * strm->scale_factor);
+      int title_area = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
+      int bottom_area = (int)(STREAMLINED_FOOTER_HEIGHT * strm->scale_factor);
       int search_kb_area = 0;
 #if !TARGET_OS_TV
       if (strm->in_search_mode)
       {
-         int _key_h = (int)(strm->font_size * 1.5f);
+         int _key_h = (int)(strm->font_size * STREAMLINED_ITEM_PILL_HEIGHT_MULT);
          int _key_gap = (int)(4 * strm->scale_factor);
          int _bar_h = (int)(strm->font_size * 1.8f);
          search_kb_area = _bar_h + _key_gap * 2
@@ -2161,7 +2201,7 @@ static void streamlined_render_menu(streamlined_t *strm,
    /* Draw title with ticker-based scrolling for long titles */
    {
       int max_title_width = video_width - strm->margin_x * 2;
-      int title_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
+      int title_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_Y_OFFSET);
       char title_ticker[256];
       unsigned x_offset = 0;
       font_data_t *title_font = strm->font_title.font
@@ -2216,7 +2256,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       start_idx = 0;
 
    /* Draw menu entries */
-   y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+   y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
 
 #if !TARGET_OS_TV
    /* Draw search keyboard and offset menu items below it */
@@ -2232,9 +2272,10 @@ static void streamlined_render_menu(streamlined_t *strm,
           && strm->rom_thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE)
       {
          float tw, th;
-         int max_tw = (int)(video_width * 0.5f) - strm->margin_x;
-         int avail_top = strm->margin_y + (int)(strm->font_size_title * 1.4f);
-         int avail_bot = (int)(video_height - 78.0f * strm->scale_factor);
+         settings_t *tw_settings = config_get_ptr();
+         int max_tw = (int)(video_width * tw_settings->floats.menu_streamlined_thumbnail_width) - strm->margin_x;
+         int avail_top = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
+         int avail_bot = (int)(video_height - STREAMLINED_FOOTER_HEIGHT * strm->scale_factor);
          int max_th = avail_bot - avail_top - strm->margin_y * 2;
          if (max_tw > 0 && max_th > 0)
          {
@@ -2253,7 +2294,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       bool is_selected = ((start_idx + i) == selection);
 
       /* Calculate consistent text position */
-      int pill_height = (int)(strm->font_size * 1.5f);
+      int pill_height = (int)(strm->font_size * STREAMLINED_ITEM_PILL_HEIGHT_MULT);
       int pill_y = y + (item_height - pill_height) / 2;
       int text_y = pill_y + pill_height / 2 + (int)(strm->font_size * 0.30f);
       int content_width = video_width - strm->margin_x * 2 - thumb_reserve;
@@ -2442,16 +2483,16 @@ static void streamlined_render_menu(streamlined_t *strm,
    /* Footer - Back on left, OK/Play on right, optionally Resume before Play */
    {
       float scale            = strm->scale_factor;
-      float footer_height    = 78.0f * scale;
-      float footer_margin    = 40.0f * scale;
-      float pill_h           = strm->font_size_small + 8.0f * scale;
-      float pill_pad         = 10.0f * scale;
-      float pill_text_gap    = 8.0f * scale;
-      float btn_spacing      = 20.0f * scale;
+      float footer_height    = STREAMLINED_FOOTER_HEIGHT * scale;
+      float footer_margin    = STREAMLINED_FOOTER_MARGIN * scale;
+      float pill_h           = strm->font_size_small + STREAMLINED_PILL_HEIGHT_PAD * scale;
+      float pill_pad         = STREAMLINED_PILL_HORIZ_PAD * scale;
+      float pill_text_gap    = STREAMLINED_PILL_TEXT_GAP * scale;
+      float btn_spacing      = STREAMLINED_FOOTER_BTN_SPACING * scale;
 
       float footer_center_y  = (float)video_height - (footer_height / 2.0f);
       float pill_y           = footer_center_y - (pill_h / 2.0f);
-      float text_y           = footer_center_y + (strm->font_size_small * 0.35f);
+      float text_y           = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_BASELINE_OFFSET);
 
       int back_key_w, ok_key_w;
       int back_pill_w, ok_pill_w;
@@ -2595,7 +2636,7 @@ static void streamlined_render_menu(streamlined_t *strm,
                      size_t break_pos   = len;
                      size_t i;
                      float line_spacing = strm->font_size_tiny * 1.2f;
-                     float baseline_off = strm->font_size_tiny * 0.35f;
+                     float baseline_off = strm->font_size_tiny * STREAMLINED_TEXT_BASELINE_OFFSET;
                      float line1_y, line2_y;
                      int line1_w, line2_w, line1_x, line2_x;
 
@@ -2665,7 +2706,7 @@ static void streamlined_render_menu(streamlined_t *strm,
                            sizeof(sublabel_buf));
                      sublabel_w   = tiny_w;
                      sublabel_text_y = footer_center_y
-                           + (strm->font_size_tiny * 0.35f);
+                           + (strm->font_size_tiny * STREAMLINED_TEXT_BASELINE_OFFSET);
                      sublabel_x = (int)(sublabel_left
                            + ((float)sublabel_avail - (float)sublabel_w)
                            / 2.0f);
@@ -2960,6 +3001,31 @@ static void streamlined_populate_main_settings_submenu(void)
             MENU_SETTING_ACTION,
             0, 0, NULL);
    }
+}
+
+static void streamlined_apply_selection_color(void)
+{
+   settings_t *settings = config_get_ptr();
+   unsigned r = settings->uints.menu_streamlined_selection_color_red;
+   unsigned g = settings->uints.menu_streamlined_selection_color_green;
+   unsigned b = settings->uints.menu_streamlined_selection_color_blue;
+   float rf = (float)r / 255.0f;
+   float gf = (float)g / 255.0f;
+   float bf = (float)b / 255.0f;
+   float lum;
+   int i;
+
+   for (i = 0; i < 4; i++)
+   {
+      streamlined_color_selection[i * 4 + 0] = rf;
+      streamlined_color_selection[i * 4 + 1] = gf;
+      streamlined_color_selection[i * 4 + 2] = bf;
+      streamlined_color_selection[i * 4 + 3] = 1.0f;
+   }
+
+   /* Auto-contrast text color based on luminance */
+   lum = 0.299f * rf + 0.587f * gf + 0.114f * bf;
+   streamlined_color_text_dark = (lum > 0.5f) ? 0x000000FF : 0xFFFFFFFF;
 }
 
 /*
@@ -3538,7 +3604,7 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
    {
       /* Cancelled — return to options menu */
       strm->in_options_menu = true;
-      strm->cancel_ignore_frames = 3;
+      strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
       streamlined_populate_options_menu(strm, strm->in_favorites,
             strm->in_game_switcher);
       streamlined_select_options_entry(
@@ -4887,8 +4953,8 @@ static void streamlined_context_reset(void *data, bool is_threaded)
 
    strm->scale_factor = scale_factor;
    strm->font_size = STREAMLINED_BASE_FONT_SIZE * scale_factor;
-   strm->font_size_small = STREAMLINED_BASE_FONT_SIZE * scale_factor * 0.75f;
-   strm->font_size_title = STREAMLINED_BASE_FONT_SIZE * scale_factor * 1.1f;
+   strm->font_size_small = STREAMLINED_BASE_FONT_SIZE * scale_factor * STREAMLINED_FONT_SMALL_RATIO;
+   strm->font_size_title = STREAMLINED_BASE_FONT_SIZE * scale_factor * STREAMLINED_FONT_TITLE_RATIO;
    /* Tiny font sized to match dot indicators (dot_radius * 2 is diameter) */
    strm->font_size_tiny = 4 * scale_factor * 2.5f;
 
@@ -4963,11 +5029,11 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    }
 
    strm->font.line_height = (int)(strm->font_size * STREAMLINED_LINE_HEIGHT);
-   strm->font.glyph_width = (int)(strm->font_size * 0.6f);
+   strm->font.glyph_width = (int)(strm->font_size * STREAMLINED_GLYPH_WIDTH_RATIO);
    strm->font_small.line_height = (int)(strm->font_size_small * STREAMLINED_LINE_HEIGHT);
-   strm->font_small.glyph_width = (int)(strm->font_size_small * 0.6f);
+   strm->font_small.glyph_width = (int)(strm->font_size_small * STREAMLINED_GLYPH_WIDTH_RATIO);
    strm->font_title.line_height = (int)(strm->font_size_title * STREAMLINED_LINE_HEIGHT);
-   strm->font_title.glyph_width = (int)(strm->font_size_title * 0.6f);
+   strm->font_title.glyph_width = (int)(strm->font_size_title * STREAMLINED_GLYPH_WIDTH_RATIO);
 
    if (strm->font.line_height < 20)
       strm->font.line_height = 20;
@@ -4988,6 +5054,14 @@ static void streamlined_context_reset(void *data, bool is_threaded)
 
    gfx_display_init_white_texture();
 
+   /* Apply user settings for selection color and background opacity */
+   streamlined_apply_selection_color();
+   {
+      float bg_opacity = settings->floats.menu_streamlined_bg_opacity;
+      int k;
+      for (k = 0; k < 4; k++)
+         streamlined_color_bg[k * 4 + 3] = bg_opacity;
+   }
 }
 
 static void streamlined_context_destroy(void *data)
@@ -5062,6 +5136,257 @@ static void streamlined_render(void *data, unsigned width, unsigned height, bool
    }
 }
 
+static void streamlined_draw_color_picker(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   settings_t *settings = config_get_ptr();
+   unsigned r_val = settings->uints.menu_streamlined_selection_color_red;
+   unsigned g_val = settings->uints.menu_streamlined_selection_color_green;
+   unsigned b_val = settings->uints.menu_streamlined_selection_color_blue;
+   float rf = (float)r_val / 255.0f;
+   float gf = (float)g_val / 255.0f;
+   float bf = (float)b_val / 255.0f;
+   unsigned channel_vals[3];
+   const char *channel_labels[3] = { "R", "G", "B" };
+   float scale = strm->scale_factor;
+   int margin_x = strm->margin_x;
+   int margin_y = strm->margin_y;
+   int ch;
+   char hex_buf[16];
+   char title_buf[64];
+
+   /* Title area */
+   int title_y = margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_Y_OFFSET);
+
+   /* Layout dimensions */
+   float footer_height = STREAMLINED_FOOTER_HEIGHT * scale;
+   int content_top = margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
+   int content_bottom = (int)video_height - (int)footer_height;
+   int content_height = content_bottom - content_top;
+
+   /* Slider layout */
+   int row_height = content_height / 4;  /* 3 rows + spacing */
+   int slider_h = (int)(strm->font_size * 0.6f);
+   if (slider_h < 8) slider_h = 8;
+   int knob_radius = (int)(slider_h * 0.8f);
+   if (knob_radius < 4) knob_radius = 4;
+
+   /* Horizontal layout: label ... slider ... hex ... swatch */
+   int label_w = (int)(strm->font_size * 2.0f);
+   int hex_w = (int)(strm->font_size * 3.0f);
+   int swatch_size = row_height * 2;
+   if (swatch_size > (int)(video_width * 0.12f))
+      swatch_size = (int)(video_width * 0.12f);
+   int swatch_gap = (int)(margin_x * 0.5f);
+   int slider_left = margin_x + label_w;
+   int slider_right = (int)video_width - margin_x - hex_w - swatch_gap - swatch_size;
+   int slider_w = slider_right - slider_left;
+   if (slider_w < 50) slider_w = 50;
+
+   /* Pill dimensions for selected row */
+   int pill_h = (int)(strm->font_size * STREAMLINED_ITEM_PILL_HEIGHT_MULT);
+
+   channel_vals[0] = r_val;
+   channel_vals[1] = g_val;
+   channel_vals[2] = b_val;
+
+   /* Draw background */
+   streamlined_draw_bg(strm, p_disp, userdata, video_width, video_height);
+
+   /* Bind fonts */
+   font_bind(&strm->font);
+   if (strm->font_small.font)
+      font_bind(&strm->font_small);
+   if (strm->font_title.font)
+      font_bind(&strm->font_title);
+
+   /* Draw title: "Selection Color  #RRGGBB" */
+   snprintf(title_buf, sizeof(title_buf), "Selection Color  #%02X%02X%02X",
+         r_val, g_val, b_val);
+   streamlined_draw_title(strm, p_disp, video_width, video_height,
+         margin_x, title_y, title_buf, streamlined_color_text);
+
+   /* Draw each channel row */
+   for (ch = 0; ch < 3; ch++)
+   {
+      int row_y = content_top + (ch + 1) * row_height - row_height / 2;
+      int slider_y = row_y - slider_h / 2;
+      int text_y = row_y + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
+      float knob_pos;
+      float grad_left[16], grad_right[16];
+      int cap_radius = slider_h / 2;
+      int bar_x = slider_left + cap_radius;
+      int bar_w = slider_w - slider_h;  /* inner bar width minus end caps */
+
+      /* Selection pill for active channel */
+      if ((unsigned)ch == strm->color_channel)
+      {
+         int pill_y = row_y - pill_h / 2;
+         int pill_x = margin_x;
+         int pill_w = slider_right + hex_w - margin_x;
+         float pill_color[16] = STREAMLINED_SOLID_COLOR(1.0f, 1.0f, 1.0f, 0.15f);
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               pill_x, pill_y, pill_w, pill_h,
+               video_width, video_height, pill_color);
+      }
+
+      /* Channel label */
+      {
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               margin_x, text_y, channel_labels[ch], streamlined_color_text, false);
+      }
+
+      /* Build gradient colors for this channel */
+      {
+         float left_r = rf, left_g = gf, left_b = bf;
+         float right_r = rf, right_g = gf, right_b = bf;
+         int v;
+
+         if (ch == 0)      { left_r = 0.0f; right_r = 1.0f; }
+         else if (ch == 1) { left_g = 0.0f; right_g = 1.0f; }
+         else              { left_b = 0.0f; right_b = 1.0f; }
+
+         /* Left two vertices = left color, right two = right color */
+         for (v = 0; v < 2; v++)
+         {
+            grad_left[v * 4 + 0] = left_r;
+            grad_left[v * 4 + 1] = left_g;
+            grad_left[v * 4 + 2] = left_b;
+            grad_left[v * 4 + 3] = 1.0f;
+         }
+         for (v = 2; v < 4; v++)
+         {
+            grad_left[v * 4 + 0] = left_r;
+            grad_left[v * 4 + 1] = left_g;
+            grad_left[v * 4 + 2] = left_b;
+            grad_left[v * 4 + 3] = 1.0f;
+         }
+         for (v = 0; v < 2; v++)
+         {
+            grad_right[v * 4 + 0] = right_r;
+            grad_right[v * 4 + 1] = right_g;
+            grad_right[v * 4 + 2] = right_b;
+            grad_right[v * 4 + 3] = 1.0f;
+         }
+         for (v = 2; v < 4; v++)
+         {
+            grad_right[v * 4 + 0] = right_r;
+            grad_right[v * 4 + 1] = right_g;
+            grad_right[v * 4 + 2] = right_b;
+            grad_right[v * 4 + 3] = 1.0f;
+         }
+
+         /* Draw left end cap (semicircle with left color) */
+         streamlined_draw_filled_circle(strm, p_disp, userdata,
+               slider_left + cap_radius, row_y, cap_radius,
+               video_width, video_height, grad_left);
+
+         /* Draw gradient bar — use vertex colors: top-left/bottom-left = left,
+          * top-right/bottom-right = right */
+         {
+            float grad_bar[16];
+            /* top-left */
+            grad_bar[0] = left_r; grad_bar[1] = left_g;
+            grad_bar[2] = left_b; grad_bar[3] = 1.0f;
+            /* top-right */
+            grad_bar[4] = right_r; grad_bar[5] = right_g;
+            grad_bar[6] = right_b; grad_bar[7] = 1.0f;
+            /* bottom-left */
+            grad_bar[8] = left_r; grad_bar[9] = left_g;
+            grad_bar[10] = left_b; grad_bar[11] = 1.0f;
+            /* bottom-right */
+            grad_bar[12] = right_r; grad_bar[13] = right_g;
+            grad_bar[14] = right_b; grad_bar[15] = 1.0f;
+
+            gfx_display_draw_quad(p_disp, userdata,
+                  video_width, video_height,
+                  bar_x, slider_y, bar_w, slider_h,
+                  video_width, video_height,
+                  grad_bar, NULL);
+         }
+
+         /* Draw right end cap (semicircle with right color) */
+         streamlined_draw_filled_circle(strm, p_disp, userdata,
+               slider_left + slider_w - cap_radius, row_y, cap_radius,
+               video_width, video_height, grad_right);
+      }
+
+      /* Draw knob (white filled circle) at current value position */
+      knob_pos = (float)channel_vals[ch] / 255.0f;
+      {
+         int knob_x = bar_x + (int)(knob_pos * (float)bar_w);
+         float knob_color[16] = STREAMLINED_SOLID_COLOR(1.0f, 1.0f, 1.0f, 1.0f);
+         streamlined_draw_filled_circle(strm, p_disp, userdata,
+               knob_x, row_y, knob_radius,
+               video_width, video_height, knob_color);
+      }
+
+      /* Draw hex value to right of slider */
+      snprintf(hex_buf, sizeof(hex_buf), "%02X", channel_vals[ch]);
+      {
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               slider_right + (int)(margin_x * 0.3f), text_y,
+               hex_buf, streamlined_color_text, false);
+      }
+   }
+
+   /* Draw color preview swatch */
+   {
+      int swatch_x = (int)video_width - margin_x - swatch_size;
+      int swatch_y = content_top + row_height - swatch_size / 2;
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            swatch_x, swatch_y, swatch_size, swatch_size,
+            video_width, video_height,
+            streamlined_color_selection, NULL);
+   }
+
+   /* Footer: [B] Back */
+   {
+      float footer_margin = STREAMLINED_FOOTER_MARGIN * scale;
+      float pill_fh = strm->font_size_small + STREAMLINED_PILL_HEIGHT_PAD * scale;
+      float pill_pad = STREAMLINED_PILL_HORIZ_PAD * scale;
+      float pill_text_gap = STREAMLINED_PILL_TEXT_GAP * scale;
+      float footer_center_y = (float)video_height - (footer_height / 2.0f);
+      float pill_fy = footer_center_y - (pill_fh / 2.0f);
+      float ftext_y = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_BASELINE_OFFSET);
+
+      const char *back_key = "B";
+      const char *back_str = msg_hash_to_str(
+            MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
+      int back_key_w = font_driver_get_message_width(
+            strm->font_small.font, back_key, strlen(back_key), 1.0f);
+      int back_pill_w = back_key_w + (int)(pill_pad * 2.0f);
+
+      streamlined_draw_rounded_pill(strm, p_disp, userdata,
+            (int)footer_margin, (int)pill_fy, back_pill_w, (int)pill_fh,
+            video_width, video_height, streamlined_color_selection);
+      gfx_display_draw_text(strm->font_small.font,
+            back_key,
+            (int)(footer_margin + pill_pad),
+            (int)ftext_y,
+            video_width, video_height,
+            streamlined_color_text_dark,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+      gfx_display_draw_text(strm->font_small.font,
+            back_str,
+            (int)(footer_margin + (float)back_pill_w + pill_text_gap),
+            (int)ftext_y,
+            video_width, video_height,
+            streamlined_color_text,
+            TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+   }
+
+   /* Flush fonts */
+   if (strm->font.font)
+      font_flush(video_width, video_height, &strm->font);
+   if (strm->font_small.font)
+      font_flush(video_width, video_height, &strm->font_small);
+   if (strm->font_title.font)
+      font_flush(video_width, video_height, &strm->font_title);
+}
+
 static void streamlined_frame(void *data, video_frame_info_t *video_info)
 {
    streamlined_t *strm = (streamlined_t*)data;
@@ -5078,6 +5403,8 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
 
    if (video_width == 0 || video_height == 0)
       return;
+
+   streamlined_apply_selection_color();
 
 #if TARGET_OS_TV
    /* Fade to black during deferred search/keyboard transitions (tvOS only) */
@@ -5107,7 +5434,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
          gfx_display_draw_text(strm->font.font,
                "Loading...",
                (int)(video_width / 2),
-               (int)(video_height / 2 + strm->font_size * 0.35f),
+               (int)(video_height / 2 + strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET),
                video_width, video_height,
                streamlined_color_text,
                TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
@@ -5136,7 +5463,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
          gfx_display_draw_text(strm->font.font,
                auto_save ? "Saving and Exiting..." : "Exiting...",
                (int)(video_width / 2),
-               (int)(video_height / 2 + strm->font_size * 0.35f),
+               (int)(video_height / 2 + strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET),
                video_width, video_height,
                streamlined_color_text,
                TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
@@ -5162,7 +5489,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
          gfx_display_draw_text(strm->font.font,
                strm->delete_done_label,
                (int)(video_width / 2),
-               (int)(video_height / 2 + strm->font_size * 0.35f),
+               (int)(video_height / 2 + strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET),
                video_width, video_height,
                streamlined_color_text,
                TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
@@ -5172,8 +5499,11 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       /* Advance ticker (normally done in render_menu which is skipped here) */
       strm->ticker_idx++;
 
-      /* After ~3 seconds (180 frames at 60fps), return to game list */
-      if (strm->ticker_idx - strm->delete_done_start > 180)
+      /* After notification_duration seconds, return to game list */
+      {
+         settings_t *notif_settings = config_get_ptr();
+         unsigned notif_frames = notif_settings->uints.menu_streamlined_notification_duration * 60;
+         if (strm->ticker_idx - strm->delete_done_start > notif_frames)
       {
          strm->delete_done = false;
 
@@ -5291,6 +5621,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
                menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
          }
       }
+      }
       return;
    }
 
@@ -5303,6 +5634,13 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       strm->margin_y = (int)(video_height * STREAMLINED_MARGIN_RATIO);
       if (strm->margin_x < 10) strm->margin_x = 10;
       if (strm->margin_y < 10) strm->margin_y = 10;
+   }
+
+   /* Color picker overlay — draws its own bg, fonts, and footer */
+   if (strm->in_color_submenu)
+   {
+      streamlined_draw_color_picker(strm, p_disp, userdata, video_width, video_height);
+      return;
    }
 
    font_bind(&strm->font);
@@ -5322,18 +5660,18 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       const char *header = strm->delete_is_game ? "Delete Game" : "Delete Autosave";
       int header_w = streamlined_get_title_width(strm, header);
       int header_x = ((int)video_width - header_w) / 2;
-      int header_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
+      int header_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_Y_OFFSET);
 
       streamlined_draw_title(strm, p_disp, video_width, video_height,
             header_x, header_y, header, streamlined_color_text);
 
       /* Game name centered */
       {
-         float footer_height = 78.0f * strm->scale_factor;
-         int avail_top = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+         float footer_height = STREAMLINED_FOOTER_HEIGHT * strm->scale_factor;
+         int avail_top = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
          int avail_bottom = (int)(video_height - footer_height);
          int center_y = (avail_top + avail_bottom) / 2
-               + (int)(strm->font_size * 0.35f);
+               + (int)(strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET);
          int max_w = (int)video_width - strm->margin_x * 2;
          char truncated[256];
          char display_name[256];
@@ -5369,14 +5707,14 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       /* Footer: [B] Back ... [A] Delete */
       {
          float scale = strm->scale_factor;
-         float footer_height = 78.0f * scale;
-         float footer_margin = 40.0f * scale;
-         float pill_h = strm->font_size_small + 8.0f * scale;
-         float pill_pad = 10.0f * scale;
-         float pill_text_gap = 8.0f * scale;
+         float footer_height = STREAMLINED_FOOTER_HEIGHT * scale;
+         float footer_margin = STREAMLINED_FOOTER_MARGIN * scale;
+         float pill_h = strm->font_size_small + STREAMLINED_PILL_HEIGHT_PAD * scale;
+         float pill_pad = STREAMLINED_PILL_HORIZ_PAD * scale;
+         float pill_text_gap = STREAMLINED_PILL_TEXT_GAP * scale;
          float footer_center_y = (float)video_height - (footer_height / 2.0f);
          float pill_y = footer_center_y - (pill_h / 2.0f);
-         float text_y = footer_center_y + (strm->font_size_small * 0.35f);
+         float text_y = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_BASELINE_OFFSET);
 
          const char *back_key = "B";
          const char *ok_key = "A";
@@ -5692,6 +6030,97 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       return 0;
 
    /* ================================================================
+    * COLOR PICKER INPUT HANDLING
+    * ================================================================ */
+   if (strm && strm->in_color_submenu)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->in_color_submenu = false;
+         strm->color_hold_count = 0;
+         strm->color_hold_direction = 0;
+         return 0;
+      }
+
+      if (action == MENU_ACTION_UP)
+      {
+         if (strm->color_channel > 0)
+            strm->color_channel--;
+         else
+            strm->color_channel = 2;
+         strm->color_hold_count = 0;
+         strm->color_hold_direction = 0;
+         return 0;
+      }
+
+      if (action == MENU_ACTION_DOWN)
+      {
+         if (strm->color_channel < 2)
+            strm->color_channel++;
+         else
+            strm->color_channel = 0;
+         strm->color_hold_count = 0;
+         strm->color_hold_direction = 0;
+         return 0;
+      }
+
+      if (action == MENU_ACTION_LEFT || action == MENU_ACTION_RIGHT)
+      {
+         settings_t *settings = config_get_ptr();
+         unsigned *channels[3];
+         unsigned *channel;
+         int dir = (action == MENU_ACTION_RIGHT) ? 1 : -1;
+         unsigned step;
+
+         channels[0] = &settings->uints.menu_streamlined_selection_color_red;
+         channels[1] = &settings->uints.menu_streamlined_selection_color_green;
+         channels[2] = &settings->uints.menu_streamlined_selection_color_blue;
+         channel = channels[strm->color_channel];
+
+         if (strm->color_hold_direction != dir)
+         {
+            strm->color_hold_count = 0;
+            strm->color_hold_direction = dir;
+         }
+         strm->color_hold_count++;
+
+         step = (strm->color_hold_count > 20) ? 10 : 1;
+
+         if (dir > 0)
+         {
+            if (*channel + step > 255)
+               *channel = 255;
+            else
+               *channel += step;
+         }
+         else
+         {
+            if (*channel < step)
+               *channel = 0;
+            else
+               *channel -= step;
+         }
+
+         streamlined_apply_selection_color();
+         return 0;
+      }
+
+      /* Consume all other actions */
+      return 0;
+   }
+
+   /* Color picker entry — intercept OK on Selection Color in Appearance */
+   if (strm && action == MENU_ACTION_OK && entry
+       && entry->enum_idx == MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR)
+   {
+      strm->in_color_submenu = true;
+      strm->color_channel = 0;
+      strm->color_hold_count = 0;
+      strm->color_hold_direction = 0;
+      return 0;
+   }
+
+   /* ================================================================
     * GAME SWITCHER INPUT HANDLING
     * ================================================================ */
 
@@ -5706,7 +6135,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->game_switcher_in_glo = false;
          strm->in_options_menu = false;
          streamlined_refresh_game_switcher_view(strm);
-         strm->cancel_ignore_frames = 3;
+         strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
          return 0;
       }
 
@@ -6256,7 +6685,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       {
          strm->selecting_core_for_folder = false;
          strm->in_options_menu = true;
-         strm->cancel_ignore_frames = 3;
+         strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
          streamlined_populate_options_menu(strm, strm->in_favorites, false);
          streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_FOLDER_CORE);
          return 0;
@@ -6282,7 +6711,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
             strm->selecting_core_for_folder = false;
             strm->in_options_menu = true;
-            strm->cancel_ignore_frames = 3;
+            strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
             streamlined_populate_options_menu(strm, strm->in_favorites, false);
             streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_FOLDER_CORE);
             return 0;
@@ -6303,7 +6732,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       {
          strm->selecting_core_for_game = false;
          strm->in_options_menu = true;
-         strm->cancel_ignore_frames = 3;
+         strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
          streamlined_populate_options_menu(strm, strm->in_favorites, false);
          streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
          return 0;
@@ -6329,7 +6758,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
             strm->selecting_core_for_game = false;
             strm->in_options_menu = true;
-            strm->cancel_ignore_frames = 3;
+            strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
             streamlined_populate_options_menu(strm, strm->in_favorites, false);
             streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
             return 0;
@@ -6356,7 +6785,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
                strm->selecting_core_for_game = false;
                strm->in_options_menu = true;
-               strm->cancel_ignore_frames = 3;
+               strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
                streamlined_populate_options_menu(strm, strm->in_favorites, false);
                streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
                return 0;
@@ -6382,7 +6811,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       {
          strm->in_delete_confirm = false;
          strm->in_options_menu = true;
-         strm->cancel_ignore_frames = 3;
+         strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
          streamlined_populate_options_menu(strm, strm->in_favorites,
                strm->in_game_switcher);
          streamlined_select_options_entry(
@@ -6429,7 +6858,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->random_thumbnail_path[0] = '\0';
          strm->in_random_preview = false;
          strm->in_options_menu = true;
-         strm->cancel_ignore_frames = 3;
+         strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
          streamlined_populate_options_menu(strm, strm->in_favorites, false);
          streamlined_select_options_entry(STREAMLINED_OPTIONS_RANDOM_GAME);
          return 0;
@@ -6840,7 +7269,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    {
       strm->return_to_options = false;
       strm->in_options_menu = true;
-      strm->cancel_ignore_frames = 3;
+      strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
       streamlined_populate_options_menu(strm, strm->in_favorites, false);
       streamlined_select_options_entry(STREAMLINED_OPTIONS_SEARCH);
       return 0;

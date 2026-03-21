@@ -12575,6 +12575,70 @@ MSG_HASH(
    "Choose between image-centric and text list views for the Game Switcher."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_THUMBNAIL_HEIGHT,
+   "Thumbnail Height"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_THUMBNAIL_HEIGHT,
+   "Maximum thumbnail height as a percentage of screen height."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_THUMBNAIL_WIDTH,
+   "Thumbnail Width"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_THUMBNAIL_WIDTH,
+   "Maximum thumbnail width as a percentage of screen width."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_NOTIFICATION_DURATION,
+   "Notification Duration"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_NOTIFICATION_DURATION,
+   "How long notification screens are displayed, in seconds."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_BG_OPACITY,
+   "Background Opacity"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_BG_OPACITY,
+   "Opacity of the menu background overlay."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR,
+   "Selection Color"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_SELECTION_COLOR,
+   "Customize the menu selection highlight color."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR_RED,
+   "Selection Color - Red"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_SELECTION_COLOR_RED,
+   "Red component of the menu selection highlight color (0-255)."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR_GREEN,
+   "Selection Color - Green"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_SELECTION_COLOR_GREEN,
+   "Green component of the menu selection highlight color (0-255)."
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR_BLUE,
+   "Selection Color - Blue"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_SELECTION_COLOR_BLUE,
+   "Blue component of the menu selection highlight color (0-255)."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "Thumbnail Scale Factor"
    )

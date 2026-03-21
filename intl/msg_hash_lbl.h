@@ -4022,6 +4022,38 @@ MSG_HASH(
    "streamlined_game_switcher_view"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_HEIGHT,
+   "menu_streamlined_thumbnail_height"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_WIDTH,
+   "menu_streamlined_thumbnail_width"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_NOTIFICATION_DURATION,
+   "menu_streamlined_notification_duration"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_BG_OPACITY,
+   "menu_streamlined_bg_opacity"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR,
+   "streamlined_selection_color"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR_RED,
+   "menu_streamlined_selection_color_red"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR_GREEN,
+   "menu_streamlined_selection_color_green"
+   )
+MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR_BLUE,
+   "menu_streamlined_selection_color_blue"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_MENU_XMB_THUMBNAIL_SCALE_FACTOR,
    "menu_xmb_thumbnail_scale_factor"
    )

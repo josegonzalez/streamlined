@@ -12200,6 +12200,14 @@ unsigned menu_displaylist_build_list(
                {MENU_ENUM_LABEL_MENU_XMB_ANIMATION_HORIZONTAL_HIGHLIGHT,      PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MENU_XMB_ANIMATION_OPENING_MAIN_MENU,         PARSE_ONLY_UINT,   false},
                {MENU_ENUM_LABEL_MENU_XMB_ANIMATION_MOVE_UP_DOWN,              PARSE_ONLY_UINT,   true},
+               {MENU_ENUM_LABEL_STREAMLINED_SHOW_FOLDER_THUMBNAILS,         PARSE_ONLY_BOOL,   false},
+               {MENU_ENUM_LABEL_STREAMLINED_NORMALIZE_ROM_NAMES,            PARSE_ONLY_BOOL,   false},
+               {MENU_ENUM_LABEL_STREAMLINED_GAME_SWITCHER_VIEW,             PARSE_ONLY_UINT,   false},
+               {MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_HEIGHT,               PARSE_ONLY_FLOAT,  false},
+               {MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_WIDTH,                PARSE_ONLY_FLOAT,  false},
+               {MENU_ENUM_LABEL_STREAMLINED_NOTIFICATION_DURATION,          PARSE_ONLY_UINT,   false},
+               {MENU_ENUM_LABEL_STREAMLINED_BG_OPACITY,                     PARSE_ONLY_FLOAT,  false},
+               {MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR,                PARSE_ACTION,      false},
             };
 
             for (i = 0; i < ARRAY_SIZE(build_list); i++)
@@ -12256,6 +12264,17 @@ unsigned menu_displaylist_build_list(
                      break;
                   case MENU_ENUM_LABEL_OZONE_SORT_AFTER_TRUNCATE_PLAYLIST_NAME:
                      if (truncate_playlist)
+                        build_list[i].checked = true;
+                     break;
+                  case MENU_ENUM_LABEL_STREAMLINED_SHOW_FOLDER_THUMBNAILS:
+                  case MENU_ENUM_LABEL_STREAMLINED_NORMALIZE_ROM_NAMES:
+                  case MENU_ENUM_LABEL_STREAMLINED_GAME_SWITCHER_VIEW:
+                  case MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_HEIGHT:
+                  case MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_WIDTH:
+                  case MENU_ENUM_LABEL_STREAMLINED_NOTIFICATION_DURATION:
+                  case MENU_ENUM_LABEL_STREAMLINED_BG_OPACITY:
+                  case MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR:
+                     if (string_is_equal(settings->arrays.menu_driver, "streamlined"))
                         build_list[i].checked = true;
                      break;
                   default:

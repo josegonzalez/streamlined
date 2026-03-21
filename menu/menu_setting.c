@@ -3512,6 +3512,14 @@ static size_t setting_get_string_representation_uint_streamlined_game_switcher_v
    }
 }
 
+static size_t setting_get_string_representation_uint_streamlined_notification_duration(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (!setting)
+      return 0;
+   return snprintf(s, len, "%us", *setting->value.target.unsigned_integer);
+}
+
 static void setting_set_string_representation_timedate_date_separator(char *s)
 {
    settings_t *settings                  = config_get_ptr();
@@ -20857,6 +20865,117 @@ static bool setting_append_list(
                   &setting_get_string_representation_uint_streamlined_game_switcher_view;
             menu_settings_list_current_add_range(list, list_info, 0, 1, 1, true, true);
             (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_RADIO_BUTTONS;
+
+            CONFIG_FLOAT(
+                  list, list_info,
+                  &settings->floats.menu_streamlined_thumbnail_height,
+                  MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_HEIGHT,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_THUMBNAIL_HEIGHT,
+                  DEFAULT_MENU_STREAMLINED_THUMBNAIL_HEIGHT,
+                  "%.2f",
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0.20, 0.80, 0.05, true, true);
+
+            CONFIG_FLOAT(
+                  list, list_info,
+                  &settings->floats.menu_streamlined_thumbnail_width,
+                  MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_WIDTH,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_THUMBNAIL_WIDTH,
+                  DEFAULT_MENU_STREAMLINED_THUMBNAIL_WIDTH,
+                  "%.2f",
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0.20, 0.80, 0.05, true, true);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.menu_streamlined_notification_duration,
+                  MENU_ENUM_LABEL_STREAMLINED_NOTIFICATION_DURATION,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_NOTIFICATION_DURATION,
+                  DEFAULT_MENU_STREAMLINED_NOTIFICATION_DURATION,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            (*list)[list_info->index - 1].get_string_representation =
+                  &setting_get_string_representation_uint_streamlined_notification_duration;
+            menu_settings_list_current_add_range(list, list_info, 1, 10, 1, true, true);
+
+            CONFIG_FLOAT(
+                  list, list_info,
+                  &settings->floats.menu_streamlined_bg_opacity,
+                  MENU_ENUM_LABEL_STREAMLINED_BG_OPACITY,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_BG_OPACITY,
+                  DEFAULT_MENU_STREAMLINED_BG_OPACITY,
+                  "%.2f",
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0.0, 1.0, 0.05, true, true);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.menu_streamlined_selection_color_red,
+                  MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR_RED,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR_RED,
+                  DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_RED,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.menu_streamlined_selection_color_green,
+                  MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR_GREEN,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR_GREEN,
+                  DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_GREEN,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.menu_streamlined_selection_color_blue,
+                  MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR_BLUE,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR_BLUE,
+                  DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_BLUE,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            menu_settings_list_current_add_range(list, list_info, 0, 255, 1, true, true);
+
+            CONFIG_ACTION(
+                  list, list_info,
+                  MENU_ENUM_LABEL_STREAMLINED_SELECTION_COLOR,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_SELECTION_COLOR,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group);
          }
 
          if (   string_is_equal(settings->arrays.menu_driver, "xmb")

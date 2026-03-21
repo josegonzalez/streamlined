@@ -2124,7 +2124,6 @@ static struct config_bool_setting *populate_settings_bool(
 #endif
    SETTING_BOOL("menu_streamlined_show_folder_thumbnails", &settings->bools.menu_streamlined_show_folder_thumbnails, true, DEFAULT_MENU_STREAMLINED_SHOW_FOLDER_THUMBNAILS, false);
    SETTING_BOOL("menu_streamlined_normalize_rom_names", &settings->bools.menu_streamlined_normalize_rom_names, true, DEFAULT_MENU_STREAMLINED_NORMALIZE_ROM_NAMES, false);
-   SETTING_UINT("menu_streamlined_game_switcher_view", &settings->uints.menu_streamlined_game_switcher_view, true, DEFAULT_MENU_STREAMLINED_GAME_SWITCHER_VIEW, false);
 #ifdef HAVE_OZONE
    SETTING_BOOL("ozone_collapse_sidebar",        &settings->bools.ozone_collapse_sidebar, true, DEFAULT_OZONE_COLLAPSE_SIDEBAR, false);
    SETTING_BOOL("ozone_scroll_content_metadata", &settings->bools.ozone_scroll_content_metadata, true, DEFAULT_OZONE_SCROLL_CONTENT_METADATA, false);
@@ -2339,6 +2338,9 @@ static struct config_float_setting *populate_settings_float(
    SETTING_FLOAT("ozone_font_scale_factor_time",     &settings->floats.ozone_font_scale_factor_time, true, DEFAULT_OZONE_FONT_SCALE_FACTOR_TIME, false);
    SETTING_FLOAT("ozone_font_scale_factor_footer",   &settings->floats.ozone_font_scale_factor_footer, true, DEFAULT_OZONE_FONT_SCALE_FACTOR_FOOTER, false);
 #endif
+   SETTING_FLOAT("menu_streamlined_thumbnail_height", &settings->floats.menu_streamlined_thumbnail_height, true, DEFAULT_MENU_STREAMLINED_THUMBNAIL_HEIGHT, false);
+   SETTING_FLOAT("menu_streamlined_thumbnail_width", &settings->floats.menu_streamlined_thumbnail_width, true, DEFAULT_MENU_STREAMLINED_THUMBNAIL_WIDTH, false);
+   SETTING_FLOAT("menu_streamlined_bg_opacity", &settings->floats.menu_streamlined_bg_opacity, true, DEFAULT_MENU_STREAMLINED_BG_OPACITY, false);
 #endif /* HAVE_MENU */
 
 #ifdef HAVE_CHEEVOS
@@ -2428,6 +2430,11 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("replay_checkpoint_interval",    &settings->uints.replay_checkpoint_interval,  true, DEFAULT_REPLAY_CHECKPOINT_INTERVAL, false);
    SETTING_UINT("savestate_max_keep",            &settings->uints.savestate_max_keep, true, DEFAULT_SAVESTATE_MAX_KEEP, false);
 #ifdef HAVE_MENU
+   SETTING_UINT("menu_streamlined_game_switcher_view", &settings->uints.menu_streamlined_game_switcher_view, true, DEFAULT_MENU_STREAMLINED_GAME_SWITCHER_VIEW, false);
+   SETTING_UINT("menu_streamlined_notification_duration", &settings->uints.menu_streamlined_notification_duration, true, DEFAULT_MENU_STREAMLINED_NOTIFICATION_DURATION, false);
+   SETTING_UINT("menu_streamlined_selection_color_red", &settings->uints.menu_streamlined_selection_color_red, true, DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_RED, false);
+   SETTING_UINT("menu_streamlined_selection_color_green", &settings->uints.menu_streamlined_selection_color_green, true, DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_GREEN, false);
+   SETTING_UINT("menu_streamlined_selection_color_blue", &settings->uints.menu_streamlined_selection_color_blue, true, DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_BLUE, false);
    SETTING_UINT("content_show_add_entry",        &settings->uints.menu_content_show_add_entry, true, DEFAULT_MENU_CONTENT_SHOW_ADD_ENTRY, false);
    SETTING_UINT("content_show_contentless_cores",&settings->uints.menu_content_show_contentless_cores, true, DEFAULT_MENU_CONTENT_SHOW_CONTENTLESS_CORES, false);
    SETTING_UINT("content_history_size",          &settings->uints.content_history_size, true, DEFAULT_CONTENT_HISTORY_SIZE, false);
