@@ -135,6 +135,12 @@ typedef struct
 /* Marker for conditional exit entry - shows "Exit" or "Quit" based on CLI launch */
 #define STREAMLINED_EXIT_MARKER 0xCAFF
 
+/* Marker constants for Game List Options menu entries */
+#define STREAMLINED_OPTIONS_RESET_GAME     0xCB00
+#define STREAMLINED_OPTIONS_SEARCH         0xCB01
+#define STREAMLINED_OPTIONS_RANDOM_GAME    0xCB02
+#define STREAMLINED_OPTIONS_DELETE_SAVE    0xCB03
+
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
 static const streamlined_quick_item_t streamlined_quick_menu_items[] = {
@@ -281,6 +287,15 @@ typedef struct
    /* Save state detection for resume */
    bool selected_is_file;         /* True when selection is a ROM (not folder) */
    bool selected_has_savestate;   /* True when selected ROM has a save state */
+
+   /* Options menu state */
+   bool in_options_menu;
+   char options_game_path[PATH_MAX_LENGTH];
+   char options_folder_path[PATH_MAX_LENGTH];
+   char options_core_path[PATH_MAX_LENGTH];
+   bool options_game_has_savestate;
+   size_t options_saved_selection;
+   bool options_was_in_folder;
 
    /* Loading screen state */
    bool loading_pending;          /* Waiting for loading screen to render */
@@ -911,7 +926,8 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
    menu_stack = menu_list->menu_stack[0];
    in_submenu = strm->in_folder
       || strm->in_main_settings_submenu
-      || strm->selecting_core;
+      || strm->selecting_core
+      || strm->in_options_menu;
 
    if (in_submenu && menu_stack->size == 1)
    {
@@ -1073,7 +1089,11 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    /* Get title - show game name for quick menu, "Settings" for submenu */
    title_buf[0] = '\0';
-   if (strm->selecting_core)
+   if (strm->in_options_menu)
+   {
+      strlcpy(title_buf, "Game List Options", sizeof(title_buf));
+   }
+   else if (strm->selecting_core)
    {
       strlcpy(title_buf, "Select Core", sizeof(title_buf));
    }
@@ -2024,6 +2044,74 @@ static bool streamlined_check_savestate(
    if (path_is_valid(check_path))
       return true;
    return false;
+}
+
+/*
+ * Delete the auto-save state file for a given ROM.
+ * Constructs the path using streamlined_build_savestate_base_path()
+ * and appends ".auto", then deletes the file.
+ */
+static void streamlined_delete_autosave_file(
+      const char *rom_path, const char *core_path)
+{
+   char base_path[PATH_MAX_LENGTH];
+   char auto_path[PATH_MAX_LENGTH];
+
+   base_path[0] = '\0';
+   streamlined_build_savestate_base_path(rom_path, core_path,
+         base_path, sizeof(base_path));
+
+   if (string_is_empty(base_path))
+      return;
+
+   snprintf(auto_path, sizeof(auto_path), "%s.auto", base_path);
+   filestream_delete(auto_path);
+}
+
+/*
+ * Populate the Game List Options menu.
+ * Entries are conditional on whether the selected game has a save state.
+ */
+static void streamlined_populate_options_menu(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+
+   if (!menu_st || !strm)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   if (strm->options_game_has_savestate)
+   {
+      menu_entries_append(list,
+            "Reset Game", "", STREAMLINED_OPTIONS_RESET_GAME,
+            MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+
+   menu_entries_append(list,
+         "Search", "", STREAMLINED_OPTIONS_SEARCH,
+         MENU_SETTING_ACTION, 0, 0, NULL);
+
+   menu_entries_append(list,
+         "Random Game", "", STREAMLINED_OPTIONS_RANDOM_GAME,
+         MENU_SETTING_ACTION, 0, 0, NULL);
+
+   if (strm->options_game_has_savestate)
+   {
+      menu_entries_append(list,
+            "Delete Autosave", "", STREAMLINED_OPTIONS_DELETE_SAVE,
+            MENU_SETTING_ACTION, 0, 0, NULL);
+   }
 }
 
 /*
@@ -3310,6 +3398,62 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       return 0;  /* Block other actions during core selection */
    }
 
+   /* Handle Game List Options menu */
+   if (strm && strm->in_options_menu)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->in_options_menu = false;
+         /* Re-populate the folder we were browsing */
+         if (strm->options_was_in_folder)
+            streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+         else
+         {
+            settings_t *settings = config_get_ptr();
+            streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+         }
+         menu_st->selection_ptr = strm->options_saved_selection;
+         return 0;
+      }
+
+      if (action == MENU_ACTION_OK && entry)
+      {
+         if (entry->enum_idx == STREAMLINED_OPTIONS_RESET_GAME)
+         {
+            /* Delete autosave and launch fresh */
+            streamlined_delete_autosave_file(
+                  strm->options_game_path, strm->options_core_path);
+
+            /* Save return-to-folder state */
+            strm->folder_selection = strm->options_saved_selection;
+            if (strm->options_was_in_folder)
+            {
+               strlcpy(strm->last_launched_folder, strm->options_folder_path,
+                     sizeof(strm->last_launched_folder));
+               strlcpy(strm->last_folder_core_path, strm->options_core_path,
+                     sizeof(strm->last_folder_core_path));
+               strm->return_to_folder = true;
+            }
+            else
+            {
+               strm->return_to_top_level = true;
+               strm->top_level_selection = strm->options_saved_selection;
+            }
+
+            strm->in_options_menu = false;
+            streamlined_request_loading(strm,
+                  strm->options_core_path, strm->options_game_path, false);
+            return 0;
+         }
+      }
+
+      /* Block non-navigation actions */
+      if (action == MENU_ACTION_SCAN
+          || action == MENU_ACTION_SEARCH
+          || action == MENU_ACTION_INFO)
+         return 0;
+   }
+
    /* Handle cancel from RA settings to return to Main Settings submenu */
    if (strm && strm->return_to_main_settings_submenu && action == MENU_ACTION_CANCEL)
    {
@@ -3530,6 +3674,34 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
             return 0;
          }
+      }
+
+      /* Y button = Open Game List Options menu */
+      if (action == MENU_ACTION_SEARCH && strm->selected_is_file && entry)
+      {
+         strm->options_saved_selection = menu_st->selection_ptr;
+         strlcpy(strm->options_game_path, entry->label,
+               sizeof(strm->options_game_path));
+         strlcpy(strm->options_folder_path, strm->current_folder_path,
+               sizeof(strm->options_folder_path));
+         strlcpy(strm->options_core_path, strm->folder_core_path,
+               sizeof(strm->options_core_path));
+         strm->options_game_has_savestate = strm->selected_has_savestate;
+         strm->options_was_in_folder = strm->in_folder;
+
+         /* Resolve core for top-level M3U entries */
+         if (string_is_empty(strm->options_core_path))
+         {
+            char parent_dir[PATH_MAX_LENGTH];
+            fill_pathname_parent_dir(parent_dir, entry->label, sizeof(parent_dir));
+            streamlined_read_folder_core(parent_dir, strm->options_core_path,
+                  sizeof(strm->options_core_path));
+         }
+
+         strm->in_options_menu = true;
+         streamlined_populate_options_menu(strm);
+         menu_st->selection_ptr = 0;
+         return 0;
       }
 
       /* Block non-navigation actions (SCAN, SEARCH, INFO, etc.)
