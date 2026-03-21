@@ -74,6 +74,7 @@ typedef struct
    uint32_t uploads;
    uint32_t downloads;
    retro_time_t start_time;
+   bool is_roms_sync;
 } task_cloud_sync_state_t;
 
 static slock_t *tcs_running_lock = NULL;
@@ -184,12 +185,13 @@ static file_list_t *task_cloud_sync_create_manifest(RFILE *file)
    return list;
 }
 
-static void task_cloud_sync_manifest_filename(char *s, size_t len, bool server)
+static void task_cloud_sync_manifest_filename(char *s, size_t len, bool server, const char *prefix)
 {
+   char filename[64];
    const char *path_dir_core_assets = config_get_ptr()->paths.directory_core_assets;
-   fill_pathname_join_special(s, path_dir_core_assets,
-         server ? MANIFEST_FILENAME_SERVER : MANIFEST_FILENAME_LOCAL,
-         len);
+   snprintf(filename, sizeof(filename), "%s%s", prefix ? prefix : "",
+         server ? MANIFEST_FILENAME_SERVER : MANIFEST_FILENAME_LOCAL);
+   fill_pathname_join_special(s, path_dir_core_assets, filename, len);
 }
 
 static void task_cloud_sync_manifest_handler(void *user_data, const char *path,
@@ -228,7 +230,8 @@ static void task_cloud_sync_fetch_server_manifest(task_cloud_sync_state_t *sync_
 {
    char        manifest_path[PATH_MAX_LENGTH];
 
-   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), true);
+   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), true,
+         sync_state->is_roms_sync ? "roms_" : "");
 
    sync_state->waiting = 1;
    if (!cloud_sync_read(MANIFEST_FILENAME_SERVER, manifest_path, task_cloud_sync_manifest_handler, sync_state))
@@ -243,7 +246,8 @@ static void task_cloud_sync_read_local_manifest(task_cloud_sync_state_t *sync_st
 {
    char manifest_path[PATH_MAX_LENGTH];
 
-   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), false);
+   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), false,
+         sync_state->is_roms_sync ? "roms_" : "");
 
    /* it is valid for there not to be a local manifest, if we have never done a sync before */
    if (path_is_valid(manifest_path))
@@ -390,6 +394,30 @@ static struct string_list *task_cloud_sync_directory_map(void)
    return list;
 }
 
+static struct string_list *task_cloud_sync_roms_directory_map(void)
+{
+   static struct string_list *list = NULL;
+   settings_t *settings = config_get_ptr();
+
+   if (!list)
+   {
+      union string_list_elem_attr attr = {0};
+      list = string_list_new();
+
+      string_list_append(list, "roms", attr);
+      list->elems[list->size - 1].userdata = strdup(settings->paths.directory_menu_content);
+   }
+
+   return list;
+}
+
+static struct string_list *task_cloud_sync_get_dirmap(task_cloud_sync_state_t *sync_state)
+{
+   if (sync_state->is_roms_sync)
+      return task_cloud_sync_roms_directory_map();
+   return task_cloud_sync_directory_map();
+}
+
 /**
  * task_cloud_sync_build_current_manifest:
  * @sync_state       : pointer to the current sync state
@@ -398,7 +426,7 @@ static struct string_list *task_cloud_sync_directory_map(void)
  */
 static void task_cloud_sync_build_current_manifest(task_cloud_sync_state_t *sync_state)
 {
-   struct string_list *dirlist = task_cloud_sync_directory_map();
+   struct string_list *dirlist = task_cloud_sync_get_dirmap(sync_state);
    size_t i;
 
    if (!(sync_state->current_manifest = (file_list_t *)calloc(1, sizeof(file_list_t))))
@@ -609,7 +637,7 @@ static void task_cloud_sync_fetch_server_file(task_cloud_sync_state_t *sync_stat
    size_t                         i;
    char                           filename[PATH_MAX_LENGTH];
    char                           directory[DIR_MAX_LENGTH];
-   struct string_list            *dirlist     = task_cloud_sync_directory_map();
+   struct string_list            *dirlist     = task_cloud_sync_get_dirmap(sync_state);
    struct item_file              *server_file = &sync_state->server_manifest->list[sync_state->server_idx];
    const char                    *key         = CS_FILE_KEY(server_file);
    /* the key from the server file is in "portable" format, use '/' */
@@ -934,7 +962,7 @@ static void task_cloud_sync_delete_server_file(task_cloud_sync_state_t *sync_sta
 
 static void task_cloud_sync_maybe_ignore(task_cloud_sync_state_t *sync_state)
 {
-   struct string_list *dirlist = task_cloud_sync_directory_map();
+   struct string_list *dirlist = task_cloud_sync_get_dirmap(sync_state);
    size_t i;
    bool found;
 
@@ -1191,7 +1219,8 @@ static void task_cloud_sync_update_manifests(task_cloud_sync_state_t *sync_state
    char   manifest_path[PATH_MAX_LENGTH];
    RFILE *file   = NULL;
 
-   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), false);
+   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), false,
+         sync_state->is_roms_sync ? "roms_" : "");
    file = task_cloud_sync_write_updated_manifest(sync_state->updated_local_manifest, manifest_path);
    if (file)
       filestream_close(file);
@@ -1199,7 +1228,8 @@ static void task_cloud_sync_update_manifests(task_cloud_sync_state_t *sync_state
    if (sync_state->need_manifest_uploaded)
    {
       RARCH_LOG(CSPFX "Uploading updated manifest to server...\n");
-      task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), true);
+      task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), true,
+            sync_state->is_roms_sync ? "roms_" : "");
       file = task_cloud_sync_write_updated_manifest(sync_state->updated_server_manifest, manifest_path);
       filestream_seek(file, 0, SEEK_SET);
       sync_state->waiting = 1;
@@ -1229,7 +1259,10 @@ static void task_cloud_sync_end_handler(void *user_data, const char *path, bool 
    if ((sync_state = (task_cloud_sync_state_t *)task->state))
    {
       char title[128];
-      size_t _len = strlcpy(title, "Cloud Sync finished", sizeof(title));
+      size_t _len = strlcpy(title,
+            sync_state->is_roms_sync
+            ? "Cloud Sync (Roms) finished"
+            : "Cloud Sync finished", sizeof(title));
       if (sync_state->failures || sync_state->conflicts)
          _len += strlcpy(title + _len, " with ", sizeof(title) - _len);
       if (sync_state->failures)
@@ -1410,7 +1443,7 @@ void task_push_cloud_sync_update_driver(void)
     * When the server changes it becomes a four way diff, which can lead to odd
     * conflicts or data loss. The easiest way to resolve it is to reset the last sync
     */
-   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), false);
+   task_cloud_sync_manifest_filename(manifest_path, sizeof(manifest_path), false, "");
    filestream_delete(manifest_path);
 }
 
@@ -1424,4 +1457,82 @@ void task_push_cloud_sync_resolve_keep_server(void)
 {
    RARCH_LOG(CSPFX "Starting sync with conflict resolution: keep server.\n");
    task_push_cloud_sync_with_mode(2);
+}
+
+static void task_cloud_sync_roms_task_handler(retro_task_t *task)
+{
+   task_cloud_sync_task_handler(task);
+}
+
+static bool task_cloud_sync_roms_task_finder(retro_task_t *task, void *user_data)
+{
+   if (!task)
+      return false;
+   return task->handler == task_cloud_sync_roms_task_handler;
+}
+
+static void task_push_cloud_sync_roms_with_mode(int conflict_resolution)
+{
+   char task_title[128];
+   task_finder_data_t       find_data;
+   task_cloud_sync_state_t *sync_state = NULL;
+   retro_task_t            *task       = NULL;
+   settings_t              *settings   = config_get_ptr();
+
+   if (!settings->bools.cloud_sync_enable || !settings->bools.cloud_sync_sync_roms)
+      return;
+
+   if (string_is_empty(settings->paths.directory_menu_content))
+      return;
+
+   if (!tcs_running_lock)
+      tcs_running_lock = slock_new();
+
+   find_data.func = task_cloud_sync_roms_task_finder;
+   if (task_queue_find(&find_data))
+   {
+      RARCH_LOG(CSPFX "Roms sync already in progress.\n");
+      return;
+   }
+
+   sync_state = (task_cloud_sync_state_t *)calloc(1, sizeof(task_cloud_sync_state_t));
+   if (!sync_state)
+      return;
+
+   if (!(task = task_init()))
+   {
+      free(sync_state);
+      return;
+   }
+
+   sync_state->phase               = CLOUD_SYNC_PHASE_BEGIN;
+   sync_state->start_time          = cpu_features_get_time_usec();
+   sync_state->conflict_resolution = conflict_resolution;
+   sync_state->is_roms_sync        = true;
+
+   strlcpy(task_title, "Cloud Sync (Roms) in progress", sizeof(task_title));
+
+   task->state    = sync_state;
+   task->title    = strdup(task_title);
+   task->handler  = task_cloud_sync_roms_task_handler;
+   task->callback = task_cloud_sync_cb;
+
+   task_queue_push(task);
+}
+
+void task_push_cloud_sync_roms(void)
+{
+   task_push_cloud_sync_roms_with_mode(0);
+}
+
+void task_push_cloud_sync_roms_resolve_keep_local(void)
+{
+   RARCH_LOG(CSPFX "Starting roms sync with conflict resolution: keep local.\n");
+   task_push_cloud_sync_roms_with_mode(1);
+}
+
+void task_push_cloud_sync_roms_resolve_keep_server(void)
+{
+   RARCH_LOG(CSPFX "Starting roms sync with conflict resolution: keep server.\n");
+   task_push_cloud_sync_roms_with_mode(2);
 }

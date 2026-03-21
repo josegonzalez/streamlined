@@ -156,6 +156,12 @@ enum event_command
    CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
    /* Resolve cloud sync conflicts by keeping server files */
    CMD_EVENT_CLOUD_SYNC_RESOLVE_KEEP_SERVER,
+   /* Trigger cloud sync for ROMs only */
+   CMD_EVENT_CLOUD_SYNC_ROMS,
+   /* Resolve cloud sync ROM conflicts by keeping local files */
+   CMD_EVENT_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL,
+   /* Resolve cloud sync ROM conflicts by keeping server files */
+   CMD_EVENT_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER,
 #endif
    /* Shutdown the OS */
    CMD_EVENT_SHUTDOWN,

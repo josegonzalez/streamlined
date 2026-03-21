@@ -5474,6 +5474,33 @@ static size_t setting_get_string_representation_uint_cloud_sync_sync_mode(
    }
    return 0;
 }
+
+static size_t setting_get_string_representation_uint_cloud_sync_roms_sync_mode(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (setting)
+   {
+      switch (*setting->value.target.unsigned_integer)
+      {
+         case CLOUD_SYNC_ROMS_MODE_AUTOMATIC:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE_AUTOMATIC),
+                  len);
+         case CLOUD_SYNC_ROMS_MODE_MANUAL:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE_MANUAL),
+                  len);
+         case CLOUD_SYNC_ROMS_MODE_ON_STARTUP:
+            return strlcpy(s,
+                  msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE_ON_STARTUP),
+                  len);
+      }
+   }
+   return 0;
+}
 #endif
 
 #if defined(HAVE_OVERLAY)
@@ -10440,6 +10467,33 @@ static bool setting_append_list(
 
          CONFIG_ACTION(
                list, list_info,
+               MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_SYNC_NOW,
+               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_NOW,
+               &group_info,
+               &subgroup_info,
+               parent_group);
+         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CLOUD_SYNC_ROMS);
+
+         CONFIG_ACTION(
+               list, list_info,
+               MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL,
+               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL,
+               &group_info,
+               &subgroup_info,
+               parent_group);
+         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CLOUD_SYNC_ROMS_RESOLVE_KEEP_LOCAL);
+
+         CONFIG_ACTION(
+               list, list_info,
+               MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER,
+               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER,
+               &group_info,
+               &subgroup_info,
+               parent_group);
+         MENU_SETTINGS_LIST_CURRENT_ADD_CMD(list, list_info, CMD_EVENT_CLOUD_SYNC_ROMS_RESOLVE_KEEP_SERVER);
+
+         CONFIG_ACTION(
+               list, list_info,
                MENU_ENUM_LABEL_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
                MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_RESOLVE_KEEP_LOCAL,
                &group_info,
@@ -12123,6 +12177,38 @@ static bool setting_append_list(
          (*list)[list_info->index - 1].get_string_representation =
             &setting_get_string_representation_uint_cloud_sync_sync_mode;
          menu_settings_list_current_add_range(list, list_info, 0, CLOUD_SYNC_MODE_LAST-1, 1, true, true);
+
+         CONFIG_BOOL(
+               list, list_info,
+               &settings->bools.cloud_sync_sync_roms,
+               MENU_ENUM_LABEL_CLOUD_SYNC_SYNC_ROMS,
+               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_SYNC_ROMS,
+               false,
+               MENU_ENUM_LABEL_VALUE_OFF,
+               MENU_ENUM_LABEL_VALUE_ON,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler,
+               SD_FLAG_NONE);
+
+         CONFIG_UINT(
+               list, list_info,
+               &settings->uints.cloud_sync_roms_sync_mode,
+               MENU_ENUM_LABEL_CLOUD_SYNC_ROMS_SYNC_MODE,
+               MENU_ENUM_LABEL_VALUE_CLOUD_SYNC_ROMS_SYNC_MODE,
+               CLOUD_SYNC_ROMS_MODE_AUTOMATIC,
+               &group_info,
+               &subgroup_info,
+               parent_group,
+               general_write_handler,
+               general_read_handler);
+         (*list)[list_info->index - 1].ui_type   = ST_UI_TYPE_UINT_COMBOBOX;
+         (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+         (*list)[list_info->index - 1].get_string_representation =
+            &setting_get_string_representation_uint_cloud_sync_roms_sync_mode;
+         menu_settings_list_current_add_range(list, list_info, 0, CLOUD_SYNC_ROMS_MODE_LAST-1, 1, true, true);
 
          CONFIG_STRING_OPTIONS(
                list, list_info,
