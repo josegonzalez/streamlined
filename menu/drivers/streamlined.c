@@ -2215,6 +2215,7 @@ static void streamlined_populate_core_selection(streamlined_t *strm, const char 
 
    /* Get list of all installed cores */
    core_info_get_list(&core_info_list);
+   core_info_qsort(core_info_list, CORE_INFO_LIST_SORT_DISPLAY_NAME);
 
    if (!core_info_list || core_info_list->count == 0)
    {
