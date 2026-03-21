@@ -160,6 +160,7 @@ typedef struct
 #define STREAMLINED_FAVORITES_ENTRY         0xCB09
 #define STREAMLINED_GAME_SWITCHER_ENTRY    0xCB0A
 #define STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER 0xCB0B
+#define STREAMLINED_OPTIONS_DELETE_GAME     0xCB0C
 
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
@@ -370,6 +371,9 @@ typedef struct
    bool in_delete_confirm;
    bool delete_done;
    uint64_t delete_done_start;     /* ticker_idx when deletion completed */
+   bool delete_is_game;           /* in_delete_confirm context: true = game, false = autosave */
+   bool delete_was_game;          /* Preserved past confirm for result-screen navigation */
+   char delete_done_label[64];    /* "Game Deleted" or "Deleted Autosave" */
 
    /* Loading screen state */
    bool loading_pending;          /* Waiting for loading screen to render */
@@ -445,6 +449,8 @@ static void streamlined_get_game_core_name(
 static bool streamlined_read_game_core(const char *folder_path,
       const char *game_name, char *core_path_out, size_t size);
 static void streamlined_select_options_entry(unsigned target_enum);
+static void streamlined_delete_game_files(const char *game_path);
+static void streamlined_remove_from_all_playlists(const char *game_path);
 
 enum streamlined_font_type { FONT_NORMAL, FONT_SMALL, FONT_TINY };
 
@@ -3117,6 +3123,145 @@ static void streamlined_delete_autosave_file(
 }
 
 /*
+ * Delete game files from disk.
+ * For M3U multi-disc games, deletes the entire subfolder.
+ * For single-file games, deletes just the file.
+ */
+static void streamlined_delete_game_files(const char *game_path)
+{
+   char m3u_path[PATH_MAX_LENGTH];
+
+   if (string_is_empty(game_path))
+      return;
+
+   if (streamlined_find_m3u_for_content(game_path,
+         m3u_path, sizeof(m3u_path)))
+   {
+      /* M3U game: delete entire subfolder */
+      char parent_dir[PATH_MAX_LENGTH];
+      fill_pathname_basedir(parent_dir, m3u_path, sizeof(parent_dir));
+      streamlined_strip_trailing_slash(parent_dir);
+
+      {
+         struct string_list *file_list = dir_list_new(
+               parent_dir, NULL, false, true, true, true);
+         if (file_list)
+         {
+            size_t j;
+            for (j = 0; j < file_list->size; j++)
+               filestream_delete(file_list->elems[j].data);
+            string_list_free(file_list);
+         }
+      }
+      /* Remove the now-empty directory */
+      filestream_delete(parent_dir);
+   }
+   else
+   {
+      /* Single file game */
+      filestream_delete(game_path);
+   }
+}
+
+/*
+ * Remove a game from history, favorites, and all .lpl playlist files.
+ */
+static void streamlined_remove_from_all_playlists(const char *game_path)
+{
+   settings_t *settings;
+
+   if (string_is_empty(game_path))
+      return;
+
+   /* Remove from history */
+   if (g_defaults.content_history)
+   {
+      playlist_delete_by_path(g_defaults.content_history, game_path);
+      playlist_write_file(g_defaults.content_history);
+   }
+
+   /* Remove from favorites */
+   if (g_defaults.content_favorites)
+   {
+      playlist_delete_by_path(g_defaults.content_favorites, game_path);
+      playlist_write_file(g_defaults.content_favorites);
+   }
+
+   /* Scan playlist directory for .lpl files */
+   settings = config_get_ptr();
+   if (settings && !string_is_empty(settings->paths.directory_playlist))
+   {
+      struct string_list *lpl_list = dir_list_new(
+            settings->paths.directory_playlist,
+            "lpl", false, false, false, false);
+      if (lpl_list)
+      {
+         size_t j;
+         for (j = 0; j < lpl_list->size; j++)
+         {
+            playlist_config_t pl_config;
+            playlist_t *pl;
+            memset(&pl_config, 0, sizeof(pl_config));
+            pl_config.capacity = COLLECTION_SIZE;
+            strlcpy(pl_config.path, lpl_list->elems[j].data,
+                  sizeof(pl_config.path));
+            pl = playlist_init(&pl_config);
+            if (pl)
+            {
+               if (playlist_entry_exists(pl, game_path))
+               {
+                  playlist_delete_by_path(pl, game_path);
+                  playlist_write_file(pl);
+               }
+               playlist_free(pl);
+            }
+         }
+         string_list_free(lpl_list);
+      }
+   }
+
+   /* For M3U games: also remove M3U path and first disc path */
+   {
+      char m3u_path[PATH_MAX_LENGTH];
+      if (streamlined_find_m3u_for_content(game_path,
+            m3u_path, sizeof(m3u_path)))
+      {
+         char resolved[PATH_MAX_LENGTH];
+         /* Remove M3U path if different from game_path */
+         if (!string_is_equal(game_path, m3u_path))
+         {
+            if (g_defaults.content_history)
+            {
+               playlist_delete_by_path(g_defaults.content_history, m3u_path);
+               playlist_write_file(g_defaults.content_history);
+            }
+            if (g_defaults.content_favorites)
+            {
+               playlist_delete_by_path(g_defaults.content_favorites, m3u_path);
+               playlist_write_file(g_defaults.content_favorites);
+            }
+         }
+         /* Remove first disc path if different from game_path */
+         if (streamlined_resolve_m3u_content(m3u_path,
+               resolved, sizeof(resolved))
+               && !string_is_equal(game_path, resolved))
+         {
+            if (g_defaults.content_history)
+            {
+               playlist_delete_by_path(g_defaults.content_history, resolved);
+               playlist_write_file(g_defaults.content_history);
+            }
+            if (g_defaults.content_favorites)
+            {
+               playlist_delete_by_path(g_defaults.content_favorites, resolved);
+               playlist_write_file(g_defaults.content_favorites);
+            }
+         }
+      }
+   }
+}
+
+/*
  * Populate the Game List Options menu.
  * Entries are conditional on whether the selected game has a save state.
  */
@@ -3214,6 +3359,21 @@ static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favor
       menu_entries_append(list,
             "Remove from Game Switcher", "", STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER,
             MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+
+   /* Delete Game (last item — hidden when game is currently running) */
+   {
+      bool hide_delete = false;
+      if (in_game_switcher && strm->game_switcher_index == 0)
+      {
+         const char *content_path = path_get(RARCH_PATH_CONTENT);
+         if (!string_is_empty(content_path))
+            hide_delete = true;
+      }
+      if (!hide_delete)
+         menu_entries_append(list,
+               "Delete Game", "", STREAMLINED_OPTIONS_DELETE_GAME,
+               MENU_SETTING_ACTION, 0, 0, NULL);
    }
 }
 
@@ -3354,8 +3514,22 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
 
    if (confirmed)
    {
-      streamlined_delete_autosave_file(
-            strm->options_game_path, streamlined_effective_core(strm));
+      if (strm->delete_is_game)
+      {
+         streamlined_delete_game_files(strm->options_game_path);
+         streamlined_remove_from_all_playlists(strm->options_game_path);
+         strlcpy(strm->delete_done_label, "Game Deleted",
+               sizeof(strm->delete_done_label));
+         strm->delete_was_game = true;
+      }
+      else
+      {
+         streamlined_delete_autosave_file(
+               strm->options_game_path, streamlined_effective_core(strm));
+         strlcpy(strm->delete_done_label, "Deleted Autosave",
+               sizeof(strm->delete_done_label));
+         strm->delete_was_game = false;
+      }
       strm->in_options_menu = false;
       strm->delete_done = true;
       strm->delete_done_start = strm->ticker_idx;
@@ -3365,8 +3539,11 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
       /* Cancelled — return to options menu */
       strm->in_options_menu = true;
       strm->cancel_ignore_frames = 3;
-      streamlined_populate_options_menu(strm, strm->in_favorites, false);
-      streamlined_select_options_entry(STREAMLINED_OPTIONS_DELETE_SAVE);
+      streamlined_populate_options_menu(strm, strm->in_favorites,
+            strm->in_game_switcher);
+      streamlined_select_options_entry(
+            strm->delete_is_game ? STREAMLINED_OPTIONS_DELETE_GAME
+                                 : STREAMLINED_OPTIONS_DELETE_SAVE);
    }
 }
 #endif
@@ -4970,7 +5147,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       return;
    }
 
-   /* "Deleted Autosave" result screen — shown for ~3 seconds */
+   /* Delete result screen — shown for ~3 seconds */
    if (strm->delete_done)
    {
       gfx_display_draw_quad(p_disp, userdata,
@@ -4983,7 +5160,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       {
          font_bind(&strm->font);
          gfx_display_draw_text(strm->font.font,
-               "Deleted Autosave",
+               strm->delete_done_label,
                (int)(video_width / 2),
                (int)(video_height / 2 + strm->font_size * 0.35f),
                video_width, video_height,
@@ -4999,22 +5176,120 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       if (strm->ticker_idx - strm->delete_done_start > 180)
       {
          strm->delete_done = false;
-         if (strm->in_game_switcher)
+
+         if (strm->delete_was_game)
          {
-            strm->game_switcher_has_savestate = false;
-            streamlined_refresh_game_switcher_view(strm);
+            /* Game was deleted — navigate based on context */
+            if (strm->in_game_switcher)
+            {
+               playlist_t *history = g_defaults.content_history;
+               if (!history || playlist_size(history) == 0)
+               {
+                  /* History empty — exit game switcher to top level */
+                  strm->in_game_switcher = false;
+                  {
+                     settings_t *settings = config_get_ptr();
+                     streamlined_populate_folder_menu(strm,
+                           settings->paths.directory_menu_content, false);
+                  }
+                  if (strm->in_folder)
+                     menu_state_get_ptr()->selection_ptr = strm->main_menu_selection;
+                  else if (strm->in_favorites)
+                     menu_state_get_ptr()->selection_ptr = strm->favorites_saved_selection;
+                  else
+                     menu_state_get_ptr()->selection_ptr = strm->game_switcher_saved_selection;
+                  strm->in_folder = false;
+                  strm->in_favorites = false;
+                  strm->selected_has_savestate = false;
+                  strm->selected_is_file = false;
+                  gfx_thumbnail_reset(&strm->rom_thumbnail);
+                  strm->rom_thumbnail_path[0] = '\0';
+                  strm->rom_thumbnail_selection = (size_t)-1;
+               }
+               else
+               {
+                  if (strm->game_switcher_index >= playlist_size(history))
+                     strm->game_switcher_index = playlist_size(history) - 1;
+                  streamlined_refresh_game_switcher_view(strm);
+               }
+            }
+            else if (strm->in_favorites)
+            {
+               playlist_t *fav = g_defaults.content_favorites;
+               if (!fav || playlist_size(fav) == 0)
+               {
+                  /* Last favorite deleted — return to top level */
+                  settings_t *settings = config_get_ptr();
+                  strm->in_favorites = false;
+                  strm->selected_has_savestate = false;
+                  strm->selected_is_file = false;
+                  gfx_thumbnail_reset(&strm->rom_thumbnail);
+                  strm->rom_thumbnail_path[0] = '\0';
+                  strm->rom_thumbnail_selection = (size_t)-1;
+                  streamlined_populate_folder_menu(strm,
+                        settings->paths.directory_menu_content, false);
+                  menu_state_get_ptr()->selection_ptr = 0;
+               }
+               else
+               {
+                  streamlined_populate_favorites_menu(strm);
+                  strm->rom_thumbnail_selection = (size_t)-1;
+                  if (strm->options_saved_selection >= playlist_size(fav))
+                     menu_state_get_ptr()->selection_ptr = playlist_size(fav) - 1;
+                  else
+                     menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
+               }
+            }
+            else if (strm->options_was_in_folder)
+            {
+               streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+               {
+                  struct menu_state *ms = menu_state_get_ptr();
+                  menu_list_t *ml = ms->entries.list;
+                  file_list_t *fl = ml ? MENU_LIST_GET_SELECTION(ml, 0) : NULL;
+                  size_t count = fl ? fl->size : 0;
+                  if (strm->options_saved_selection >= count && count > 0)
+                     ms->selection_ptr = count - 1;
+                  else
+                     ms->selection_ptr = strm->options_saved_selection;
+               }
+            }
+            else
+            {
+               settings_t *settings = config_get_ptr();
+               streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+               {
+                  struct menu_state *ms = menu_state_get_ptr();
+                  menu_list_t *ml = ms->entries.list;
+                  file_list_t *fl = ml ? MENU_LIST_GET_SELECTION(ml, 0) : NULL;
+                  size_t count = fl ? fl->size : 0;
+                  if (strm->options_saved_selection >= count && count > 0)
+                     ms->selection_ptr = count - 1;
+                  else
+                     ms->selection_ptr = strm->options_saved_selection;
+               }
+            }
          }
-         else if (strm->in_favorites)
-            streamlined_populate_favorites_menu(strm);
-         else if (strm->options_was_in_folder)
-            streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
          else
          {
-            settings_t *settings = config_get_ptr();
-            streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+            /* Autosave was deleted — existing behavior */
+            if (strm->in_game_switcher)
+            {
+               strm->game_switcher_has_savestate = false;
+               streamlined_refresh_game_switcher_view(strm);
+            }
+            else if (strm->in_favorites)
+               streamlined_populate_favorites_menu(strm);
+            else if (strm->options_was_in_folder)
+               streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+            else
+            {
+               settings_t *settings = config_get_ptr();
+               streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+            }
+            if (!strm->in_game_switcher)
+               menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
          }
-         if (!strm->in_game_switcher)
-            menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
       }
       return;
    }
@@ -5044,7 +5319,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
    {
 #if !TARGET_OS_TV
       /* Confirmation view: centered text + footer with Back/Delete */
-      const char *header = "Delete Autosave";
+      const char *header = strm->delete_is_game ? "Delete Game" : "Delete Autosave";
       int header_w = streamlined_get_title_width(strm, header);
       int header_x = ((int)video_width - header_w) / 2;
       int header_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
@@ -5074,6 +5349,20 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
             int name_x = ((int)video_width - name_w) / 2;
             streamlined_draw_text(strm, p_disp, video_width, video_height,
                   name_x, center_y, truncated, streamlined_color_text, false);
+         }
+
+         /* Preservation note for game deletion */
+         if (strm->delete_is_game && strm->font_small.font)
+         {
+            const char *note = "Saves, save states, and thumbnails will not be deleted.";
+            int note_w = font_driver_get_message_width(
+                  strm->font_small.font, note, strlen(note), 1.0f);
+            int note_x = ((int)video_width - note_w) / 2;
+            int note_y = center_y + (int)(strm->font_size * 1.2f);
+            gfx_display_draw_text(strm->font_small.font,
+                  note, note_x, note_y,
+                  video_width, video_height, streamlined_color_text_muted,
+                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
          }
       }
 
@@ -5496,6 +5785,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
          {
             strm->in_delete_confirm = true;
+            strm->delete_is_game = false;
             strm->game_switcher_in_glo = false;
             strm->in_options_menu = false;
 #if TARGET_OS_TV
@@ -5505,6 +5795,29 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      display_name, sizeof(display_name), false);
                ios_show_confirm_dialog(
                      "Delete Autosave", display_name, "Delete",
+                     streamlined_delete_confirm_cb, strm);
+            }
+#endif
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_GAME)
+         {
+            strm->in_delete_confirm = true;
+            strm->delete_is_game = true;
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+#if TARGET_OS_TV
+            {
+               char display_name[256];
+               char dialog_msg[512];
+               streamlined_get_display_name(strm->options_game_path,
+                     display_name, sizeof(display_name), false);
+               snprintf(dialog_msg, sizeof(dialog_msg),
+                     "%s\n\nSaves, save states, and thumbnails will not be deleted.",
+                     display_name);
+               ios_show_confirm_dialog(
+                     "Delete Game", dialog_msg, "Delete",
                      streamlined_delete_confirm_cb, strm);
             }
 #endif
@@ -6062,7 +6375,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    if (strm && strm->delete_done)
       return 0;
 
-   /* Handle delete autosave confirmation input */
+   /* Handle delete confirmation input */
    if (strm && strm->in_delete_confirm)
    {
       if (action == MENU_ACTION_CANCEL)
@@ -6070,15 +6383,32 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_delete_confirm = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = 3;
-         streamlined_populate_options_menu(strm, strm->in_favorites, false);
-         streamlined_select_options_entry(STREAMLINED_OPTIONS_DELETE_SAVE);
+         streamlined_populate_options_menu(strm, strm->in_favorites,
+               strm->in_game_switcher);
+         streamlined_select_options_entry(
+               strm->delete_is_game ? STREAMLINED_OPTIONS_DELETE_GAME
+                                    : STREAMLINED_OPTIONS_DELETE_SAVE);
          return 0;
       }
 
       if (action == MENU_ACTION_OK)
       {
-         streamlined_delete_autosave_file(
-               strm->options_game_path, streamlined_effective_core(strm));
+         if (strm->delete_is_game)
+         {
+            streamlined_delete_game_files(strm->options_game_path);
+            streamlined_remove_from_all_playlists(strm->options_game_path);
+            strlcpy(strm->delete_done_label, "Game Deleted",
+                  sizeof(strm->delete_done_label));
+            strm->delete_was_game = true;
+         }
+         else
+         {
+            streamlined_delete_autosave_file(
+                  strm->options_game_path, streamlined_effective_core(strm));
+            strlcpy(strm->delete_done_label, "Deleted Autosave",
+                  sizeof(strm->delete_done_label));
+            strm->delete_was_game = false;
+         }
          strm->in_delete_confirm = false;
          strm->in_options_menu = false;
          strm->delete_done = true;
@@ -6652,6 +6982,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
          {
             strm->in_delete_confirm = true;
+            strm->delete_is_game = false;
             strm->in_options_menu = false;
 #if TARGET_OS_TV
             {
@@ -6660,6 +6991,28 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      display_name, sizeof(display_name), false);
                ios_show_confirm_dialog(
                      "Delete Autosave", display_name, "Delete",
+                     streamlined_delete_confirm_cb, strm);
+            }
+#endif
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_GAME)
+         {
+            strm->in_delete_confirm = true;
+            strm->delete_is_game = true;
+            strm->in_options_menu = false;
+#if TARGET_OS_TV
+            {
+               char display_name[256];
+               char dialog_msg[512];
+               streamlined_get_display_name(strm->options_game_path,
+                     display_name, sizeof(display_name), false);
+               snprintf(dialog_msg, sizeof(dialog_msg),
+                     "%s\n\nSaves, save states, and thumbnails will not be deleted.",
+                     display_name);
+               ios_show_confirm_dialog(
+                     "Delete Game", dialog_msg, "Delete",
                      streamlined_delete_confirm_cb, strm);
             }
 #endif
