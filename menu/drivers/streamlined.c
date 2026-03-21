@@ -303,12 +303,15 @@ static bool streamlined_read_folder_core(
 static bool streamlined_check_m3u_folder(const char *dir_path,
       char *m3u_path_out, size_t m3u_path_size);
 
+enum streamlined_font_type { FONT_NORMAL, FONT_SMALL, FONT_TINY };
+
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
       unsigned video_width, unsigned video_height,
       int x, int y,
       const char *text, uint32_t color, bool small_font);
-static int streamlined_get_text_width(streamlined_t *strm, const char *text, bool small_font);
+static int streamlined_get_text_width(streamlined_t *strm, const char *text,
+      enum streamlined_font_type font_type);
 
 static void streamlined_draw_bg(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
@@ -419,9 +422,22 @@ static void streamlined_draw_title(streamlined_t *strm,
    }
 }
 
-static int streamlined_get_text_width(streamlined_t *strm, const char *text, bool small_font)
+static int streamlined_get_text_width(streamlined_t *strm, const char *text,
+      enum streamlined_font_type font_type)
 {
-   font_data_t *font = small_font ? strm->font_small.font : strm->font.font;
+   font_data_t *font;
+   switch (font_type)
+   {
+      case FONT_TINY:
+         font = strm->font_tiny.font ? strm->font_tiny.font : strm->font_small.font;
+         break;
+      case FONT_SMALL:
+         font = strm->font_small.font;
+         break;
+      default:
+         font = strm->font.font;
+         break;
+   }
    if (font && text)
       return font_driver_get_message_width(font, text, strlen(text), 1.0f);
    return 0;
@@ -498,7 +514,8 @@ static bool streamlined_should_hide_value(const char *value)
 
 /* Truncate text to fit within max_width, adding ellipsis if needed */
 static void streamlined_truncate_text(streamlined_t *strm, const char *text,
-      char *out, size_t out_size, int max_width, bool small_font)
+      char *out, size_t out_size, int max_width,
+      enum streamlined_font_type font_type)
 {
    int text_width;
    size_t len;
@@ -507,7 +524,7 @@ static void streamlined_truncate_text(streamlined_t *strm, const char *text,
       return;
 
    strlcpy(out, text, out_size);
-   text_width = streamlined_get_text_width(strm, out, small_font);
+   text_width = streamlined_get_text_width(strm, out, font_type);
 
    if (text_width <= max_width)
       return;
@@ -525,7 +542,7 @@ static void streamlined_truncate_text(streamlined_t *strm, const char *text,
          out[len - 2] = '.';
          out[len - 3] = '.';
       }
-      text_width = streamlined_get_text_width(strm, out, small_font);
+      text_width = streamlined_get_text_width(strm, out, font_type);
    }
 }
 
@@ -768,7 +785,7 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
 
       /* Draw placeholder text centered in thumbnail area */
       {
-         int text_width = streamlined_get_text_width(strm, placeholder, false);
+         int text_width = streamlined_get_text_width(strm, placeholder, FONT_NORMAL);
          int text_x = thumb_x + (thumb_max_width - text_width) / 2;
          /* Center vertically: account for font baseline by adding ~1/3 of font size */
          int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * 0.35f);
@@ -910,6 +927,8 @@ static void streamlined_render_menu(streamlined_t *strm,
    size_t list_size, selection, i, start_idx, max_visible;
    int y, item_height;
    char title_buf[256];
+   char selected_sublabel[512];
+   bool show_sublabel;
 
    if (!strm->font.font || !p_disp || !menu_st)
       return;
@@ -927,6 +946,11 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    list_size = list->size;
    selection = menu_st->selection_ptr;
+   selected_sublabel[0] = '\0';
+   show_sublabel = strm->in_settings_submenu
+                || strm->in_main_settings_submenu
+                || strm->return_to_settings_submenu
+                || strm->return_to_main_settings_submenu;
    item_height = strm->font.line_height;
    if (item_height <= 0)
       item_height = 20;
@@ -1204,7 +1228,11 @@ static void streamlined_render_menu(streamlined_t *strm,
       MENU_ENTRY_INITIALIZE(entry);
       entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
                    | MENU_ENTRY_FLAG_VALUE_ENABLED;
+      if (is_selected && show_sublabel)
+         entry.flags |= MENU_ENTRY_FLAG_SUBLABEL_ENABLED;
       menu_entry_get(&entry, 0, (unsigned)(start_idx + i), NULL, true);
+      if (is_selected && show_sublabel)
+         strlcpy(selected_sublabel, entry.sublabel, sizeof(selected_sublabel));
 
       /* For custom menus, prefer path (our custom label) over rich_label (RA's label)
        * For custom main menu, use label (display name) since path contains full file path
@@ -1255,7 +1283,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       if (is_selected)
       {
          int pill_width;
-         int text_width = streamlined_get_text_width(strm, display_label, false);
+         int text_width = streamlined_get_text_width(strm, display_label, FONT_NORMAL);
          int max_value_width = content_width * 45 / 100;
          int value_gap = (int)(16 * strm->scale_factor);
          int max_label_width = show_value
@@ -1322,8 +1350,8 @@ static void streamlined_render_menu(streamlined_t *strm,
             int value_right_edge = strm->margin_x + content_width;
 
             streamlined_truncate_text(strm, entry.value, truncated_value,
-                  sizeof(truncated_value), max_value_width, false);
-            value_width = streamlined_get_text_width(strm, truncated_value, false);
+                  sizeof(truncated_value), max_value_width, FONT_NORMAL);
+            value_width = streamlined_get_text_width(strm, truncated_value, FONT_NORMAL);
 
             streamlined_draw_text(strm, p_disp, video_width, video_height,
                   value_right_edge - value_width, text_y,
@@ -1341,7 +1369,7 @@ static void streamlined_render_menu(streamlined_t *strm,
          char truncated_label[256];
 
          streamlined_truncate_text(strm, display_label, truncated_label,
-               sizeof(truncated_label), max_label_width, false);
+               sizeof(truncated_label), max_label_width, FONT_NORMAL);
 
          streamlined_draw_text(strm, p_disp, video_width, video_height,
                strm->margin_x, text_y,
@@ -1355,8 +1383,8 @@ static void streamlined_render_menu(streamlined_t *strm,
             int value_right_edge = strm->margin_x + content_width;
 
             streamlined_truncate_text(strm, entry.value, truncated_value,
-                  sizeof(truncated_value), max_value_width, false);
-            value_width = streamlined_get_text_width(strm, truncated_value, false);
+                  sizeof(truncated_value), max_value_width, FONT_NORMAL);
+            value_width = streamlined_get_text_width(strm, truncated_value, FONT_NORMAL);
 
             streamlined_draw_text(strm, p_disp, video_width, video_height,
                   value_right_edge - value_width, text_y,
@@ -1485,6 +1513,149 @@ static void streamlined_render_menu(streamlined_t *strm,
                   video_width, video_height,
                   streamlined_color_text,
                   TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         }
+
+         /* Draw sublabel text between Back and rightmost button group */
+         if (show_sublabel && selected_sublabel[0] != '\0')
+         {
+            int back_str_w = font_driver_get_message_width(
+                  strm->font_small.font, back_str, strlen(back_str), 1.0f);
+            float sublabel_left = footer_margin + (float)back_pill_w
+                  + pill_text_gap + (float)back_str_w + btn_spacing;
+            float sublabel_right = strm->selected_has_savestate
+                  ? (ok_pill_x - btn_spacing
+                     - (float)font_driver_get_message_width(
+                        strm->font_small.font, "Resume", 6, 1.0f)
+                     - pill_text_gap
+                     - (float)(font_driver_get_message_width(
+                        strm->font_small.font, "X", 1, 1.0f)
+                        + (int)(pill_pad * 2.0f))
+                     - btn_spacing)
+                  : ok_pill_x - btn_spacing;
+            int sublabel_avail = (int)(sublabel_right - sublabel_left);
+
+            if (sublabel_avail > 0)
+            {
+               char sublabel_buf[512];
+               int sublabel_w;
+               int sublabel_x;
+               float sublabel_text_y = text_y;
+
+               sublabel_w = streamlined_get_text_width(strm,
+                     selected_sublabel, FONT_SMALL);
+
+               if (sublabel_w > sublabel_avail)
+               {
+                  int tiny_w = streamlined_get_text_width(strm,
+                        selected_sublabel, FONT_TINY);
+
+                  if (tiny_w > sublabel_avail)
+                  {
+                     /* Word-wrap into two lines */
+                     char line1[512];
+                     char line2[512];
+                     font_data_t *tiny_font = strm->font_tiny.font
+                           ? strm->font_tiny.font : strm->font_small.font;
+                     size_t len         = strlen(selected_sublabel);
+                     size_t last_space  = 0;
+                     size_t break_pos   = len;
+                     size_t i;
+                     float line_spacing = strm->font_size_tiny * 1.2f;
+                     float baseline_off = strm->font_size_tiny * 0.35f;
+                     float line1_y, line2_y;
+                     int line1_w, line2_w, line1_x, line2_x;
+
+                     /* Find word-wrap break point */
+                     for (i = 1; i <= len; i++)
+                     {
+                        if (selected_sublabel[i - 1] == ' ')
+                           last_space = i - 1;
+                        if (font_driver_get_message_width(tiny_font,
+                              selected_sublabel, i, 1.0f) > sublabel_avail)
+                        {
+                           break_pos = (last_space > 0) ? last_space : i;
+                           break;
+                        }
+                     }
+
+                     /* Line 1: text up to break point */
+                     strlcpy(line1, selected_sublabel, sizeof(line1));
+                     line1[break_pos] = '\0';
+
+                     /* Line 2: remainder, skip space at break */
+                     if (break_pos < len
+                           && selected_sublabel[break_pos] == ' ')
+                        strlcpy(line2, selected_sublabel + break_pos + 1,
+                              sizeof(line2));
+                     else
+                        strlcpy(line2, selected_sublabel + break_pos,
+                              sizeof(line2));
+
+                     /* Truncate line 2 if too wide */
+                     streamlined_truncate_text(strm, line2, sublabel_buf,
+                           sizeof(sublabel_buf), sublabel_avail, FONT_TINY);
+                     strlcpy(line2, sublabel_buf, sizeof(line2));
+
+                     /* Vertical positioning: center both lines */
+                     line1_y = footer_center_y
+                           - (line_spacing * 0.5f) + baseline_off;
+                     line2_y = footer_center_y
+                           + (line_spacing * 0.5f) + baseline_off;
+
+                     /* Center each line horizontally */
+                     line1_w = streamlined_get_text_width(strm,
+                           line1, FONT_TINY);
+                     line2_w = streamlined_get_text_width(strm,
+                           line2, FONT_TINY);
+                     line1_x = (int)(sublabel_left
+                           + ((float)sublabel_avail - (float)line1_w)
+                           / 2.0f);
+                     line2_x = (int)(sublabel_left
+                           + ((float)sublabel_avail - (float)line2_w)
+                           / 2.0f);
+
+                     /* Draw both lines */
+                     streamlined_draw_text_tiny(strm, p_disp,
+                           video_width, video_height,
+                           line1_x, (int)line1_y,
+                           line1, streamlined_color_text_muted);
+                     streamlined_draw_text_tiny(strm, p_disp,
+                           video_width, video_height,
+                           line2_x, (int)line2_y,
+                           line2, streamlined_color_text_muted);
+                  }
+                  else
+                  {
+                     /* Fits on single FONT_TINY line */
+                     strlcpy(sublabel_buf, selected_sublabel,
+                           sizeof(sublabel_buf));
+                     sublabel_w   = tiny_w;
+                     sublabel_text_y = footer_center_y
+                           + (strm->font_size_tiny * 0.35f);
+                     sublabel_x = (int)(sublabel_left
+                           + ((float)sublabel_avail - (float)sublabel_w)
+                           / 2.0f);
+                     streamlined_draw_text_tiny(strm, p_disp,
+                           video_width, video_height,
+                           sublabel_x, (int)sublabel_text_y,
+                           sublabel_buf, streamlined_color_text_muted);
+                  }
+               }
+               else
+               {
+                  strlcpy(sublabel_buf, selected_sublabel,
+                        sizeof(sublabel_buf));
+                  sublabel_x = (int)(sublabel_left
+                        + ((float)sublabel_avail - (float)sublabel_w)
+                        / 2.0f);
+                  gfx_display_draw_text(strm->font_small.font,
+                        sublabel_buf,
+                        sublabel_x, (int)sublabel_text_y,
+                        video_width, video_height,
+                        streamlined_color_text_muted,
+                        TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+               }
+            }
          }
       }
    }
