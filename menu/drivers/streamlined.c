@@ -1438,7 +1438,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       const char *ok_key     = "A";
       const char *back_str   = msg_hash_to_str(
             MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
-      const char *ok_str     = strm->selected_is_file
+      const char *ok_str     = (strm->selected_is_file && !strm->is_quick_menu)
                                ? "Play"
                                : msg_hash_to_str(
                                     MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
@@ -1497,7 +1497,7 @@ static void streamlined_render_menu(streamlined_t *strm,
                TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
          /* Draw [X] Resume pill to the left of [A] Play when save state exists */
-         if (strm->selected_has_savestate)
+         if (strm->selected_has_savestate && !strm->is_quick_menu)
          {
             const char *resume_key = "X";
             const char *resume_str = "Resume";
@@ -3253,6 +3253,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->saved_advanced_selection = menu_st->selection_ptr;
          strm->return_to_settings_submenu = true;
       }
+
+      /* Block X button in quick menu - Resume doesn't apply here */
+      if (action == MENU_ACTION_SCAN)
+         return 0;
    }
 
    /* Handle core selection mode */
