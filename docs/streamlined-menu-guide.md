@@ -27,13 +27,13 @@ The main menu displays your game folders, each optionally showing a thumbnail im
 
 ### ROM Thumbnails
 
-When you highlight a game, its thumbnail appears on the right side of the screen. Thumbnails are loaded from a `.media` folder inside the game's directory:
+When you highlight a game, its thumbnail appears on the right side of the screen. Thumbnails are loaded from RetroArch's standard thumbnails directory using the core's database name as the system folder:
 
 ```text
-{game_folder}/.media/{Type}/{romname}.png
+{thumbnails_directory}/{System Name}/{Type}/{romname}.png
 ```
 
-Where `{Type}` is one of `Screenshot`, `Title`, or `Boxart`, depending on your **Primary Thumbnail** setting.
+Where `{System Name}` is derived from the assigned core's database field (e.g., `Nintendo - Game Boy`, `Sony - PlayStation`) and `{Type}` is one of `Named_Snaps`, `Named_Titles`, or `Named_Boxarts`, depending on your **Primary Thumbnail** setting. This means thumbnails downloaded for playlists are automatically shared with the Streamlined menu.
 
 ### Launching a Game
 
@@ -161,17 +161,19 @@ When you launch a game, the menu checks for a core in this order:
 
 ## Setting Up Thumbnails
 
-### Thumbnails Locations
+### ROM Thumbnail Locations
 
-Place thumbnail images for individual games inside a `.media` folder within the game's directory:
+ROM thumbnails use RetroArch's standard thumbnail directory structure. The system name is determined by the core assigned to the folder (via its `.info` file's database field):
 
 ```text
-{game_folder}/.media/Screenshot/{romname}.png
-{game_folder}/.media/Title/{romname}.png
-{game_folder}/.media/Boxart/{romname}.png
+{thumbnails_directory}/{System Name}/Named_Snaps/{romname}.png
+{thumbnails_directory}/{System Name}/Named_Titles/{romname}.png
+{thumbnails_directory}/{System Name}/Named_Boxarts/{romname}.png
 ```
 
-Use the ROM's filename without its extension as the image name. The type subfolder used depends on your **Primary Thumbnail** setting (Screenshot, Title Screen, or Boxart).
+Use the ROM's filename without its extension as the image name. Special characters (`& * / : \` " < > ? \ |`) are replaced with underscores. The type subfolder used depends on your **Primary Thumbnail** setting (Screenshot, Title Screen, or Boxart).
+
+If you've downloaded thumbnails through RetroArch's playlist thumbnail downloader, those same images are automatically used by the Streamlined menu — no extra setup needed.
 
 ### Folder Thumbnails
 

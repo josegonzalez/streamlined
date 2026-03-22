@@ -738,19 +738,136 @@ static void streamlined_reset_rom_thumbnail(streamlined_t *strm)
 }
 
 /*
- * Build a .media thumbnail path.
- * Path: {base_dir}/.media/{type_folder}/{name}.png
- * Pass NULL for type_folder to skip the type subfolder (e.g. directory thumbnails).
+ * Build a standard RetroArch thumbnail path for ROM content.
+ * Path: {thumbnails_dir}/{system_name}/{type_folder}/{sanitized_name}.png
+ *
+ * Resolves system_name from the core's databases field (pipe-separated).
+ * Tries each database name; uses the first path where the file exists.
+ * If none exist, populates out with the first candidate path.
+ *
+ * Returns true if the thumbnail file exists on disk.
  */
-static void streamlined_build_media_path(
-      const char *base_dir, const char *type_folder, const char *name,
+static bool streamlined_build_thumbnail_path(
+      const char *content_path,
+      const char *core_path,
+      unsigned thumbnail_type,
       char *out, size_t out_size)
 {
-   fill_pathname_join_special(out, base_dir, ".media", out_size);
-   if (type_folder)
-      fill_pathname_join(out, out, type_folder, out_size);
-   fill_pathname_join(out, out, name, out_size);
-   strlcat(out, ".png", out_size);
+   char name_buf[PATH_MAX_LENGTH];
+   char sanitized[NAME_MAX_LENGTH];
+   char first_candidate[PATH_MAX_LENGTH];
+   const char *type_folder;
+   const char *base_name;
+   char *ext;
+   size_t i;
+   core_info_t *cinfo              = NULL;
+   struct string_list *db_list     = NULL;
+   settings_t *settings            = config_get_ptr();
+   const char *dir_thumbnails      = settings->paths.directory_thumbnails;
+   bool allow_non_png              = settings->bools.playlist_allow_non_png;
+   static const char * const THUMB_EXTENSIONS[] = {
+      ".png", ".jpg", ".jpeg", ".bmp", ".tga", NULL
+   };
+
+   out[0]             = '\0';
+   first_candidate[0] = '\0';
+
+   if (   string_is_empty(content_path)
+       || string_is_empty(core_path)
+       || string_is_empty(dir_thumbnails))
+      return false;
+
+   /* Map thumbnail type to folder name */
+   switch (thumbnail_type)
+   {
+      case 1:  type_folder = "Named_Snaps";   break;
+      case 2:  type_folder = "Named_Titles";   break;
+      case 3:  type_folder = "Named_Boxarts";  break;
+      default: return false;
+   }
+
+   /* Extract content basename and strip extension */
+   base_name = path_basename(content_path);
+   if (string_is_empty(base_name))
+      return false;
+
+   strlcpy(name_buf, base_name, sizeof(name_buf));
+   ext = strrchr(name_buf, '.');
+   if (ext)
+      *ext = '\0';
+
+   /* Sanitize name and append .png */
+   gfx_thumbnail_fill_content_img(
+         sanitized, sizeof(sanitized), name_buf, false);
+   if (string_is_empty(sanitized))
+      return false;
+
+   /* Look up core info to get databases list */
+   if (!core_info_find(core_path, &cinfo) || !cinfo)
+      return false;
+
+   db_list = cinfo->databases_list;
+   if (!db_list || db_list->size == 0)
+      return false;
+
+   /* Try each database name as system_name */
+   for (i = 0; i < db_list->size; i++)
+   {
+      int j;
+      char sys_dir[DIR_MAX_LENGTH];
+      char type_dir[DIR_MAX_LENGTH];
+      char candidate[PATH_MAX_LENGTH];
+      const char *db_name = db_list->elems[i].data;
+
+      if (string_is_empty(db_name))
+         continue;
+
+      /* Build: {dir_thumbnails}/{db_name}/{type_folder}/{sanitized} */
+      fill_pathname_join_special(sys_dir,
+            dir_thumbnails, db_name, sizeof(sys_dir));
+      fill_pathname_join_special(type_dir,
+            sys_dir, type_folder, sizeof(type_dir));
+      fill_pathname_join_special(candidate,
+            type_dir, sanitized, sizeof(candidate));
+
+      /* Save first candidate as fallback */
+      if (first_candidate[0] == '\0')
+         strlcpy(first_candidate, candidate, sizeof(first_candidate));
+
+      RARCH_LOG("[StreamlinedMenu] Trying thumbnail: %s\n", candidate);
+
+      /* Check .png first (already set by gfx_thumbnail_fill_content_img) */
+      if (path_is_valid(candidate))
+      {
+         RARCH_LOG("[StreamlinedMenu] Thumbnail found: %s\n", candidate);
+         strlcpy(out, candidate, out_size);
+         return true;
+      }
+
+      /* Extension fallback if non-png allowed */
+      if (allow_non_png)
+      {
+         for (j = 1; THUMB_EXTENSIONS[j]; j++)
+         {
+            char *ext_ptr = path_get_extension_mutable(candidate);
+            if (!ext_ptr)
+               break;
+            strlcpy(ext_ptr,
+                  THUMB_EXTENSIONS[j], 6);
+            if (path_is_valid(candidate))
+            {
+               strlcpy(out, candidate, out_size);
+               return true;
+            }
+         }
+      }
+   }
+
+   /* Nothing found on disk; return first candidate for "missing" state */
+   RARCH_LOG("[StreamlinedMenu] No thumbnail found, expected: %s\n",
+         first_candidate);
+   strlcpy(out, first_candidate, out_size);
+   return false;
 }
 
 /*
@@ -823,17 +940,14 @@ static void streamlined_load_slot_thumbnail(streamlined_t *strm, int preview_slo
 }
 
 /*
- * Load a ROM thumbnail from the .media folder relative to the ROM's directory.
- * Path: {current_folder}/.media/{type}/{rom_basename_without_ext}.png
- * Type mapping: 1->Screenshot, 2->Title, 3->Boxart (0 = off)
+ * Load a ROM thumbnail using the standard RetroArch thumbnail path.
+ * Path: {thumbnails_dir}/{system_name}/{type}/{sanitized_name}.png
+ * System name is derived from the core's databases field.
  */
-static void streamlined_load_rom_thumbnail(streamlined_t *strm, const char *rom_file_path)
+static void streamlined_load_rom_thumbnail(streamlined_t *strm,
+      const char *rom_file_path, const char *core_path)
 {
    char thumb_path[PATH_MAX_LENGTH];
-   char name_buf[PATH_MAX_LENGTH];
-   const char *type_folder;
-   const char *base_name;
-   char *ext;
    settings_t *settings = config_get_ptr();
 
    if (!strm || string_is_empty(rom_file_path))
@@ -847,28 +961,17 @@ static void streamlined_load_rom_thumbnail(streamlined_t *strm, const char *rom_
       return;
    }
 
-   /* Map type: 1->Screenshot, 2->Title, 3->Boxart */
-   switch (settings->uints.gfx_thumbnails)
+   /* Build standard thumbnail path */
+   streamlined_build_thumbnail_path(rom_file_path, core_path,
+         settings->uints.gfx_thumbnails,
+         thumb_path, sizeof(thumb_path));
+
+   if (string_is_empty(thumb_path))
    {
-      case 1:  type_folder = "Screenshot"; break;
-      case 2:  type_folder = "Title";      break;
-      case 3:  type_folder = "Boxart";     break;
-      default: return;
-   }
-
-   /* Get ROM base filename and strip extension */
-   base_name = path_basename(rom_file_path);
-   if (string_is_empty(base_name))
+      gfx_thumbnail_reset(&strm->rom_thumbnail);
+      strm->rom_thumbnail_path[0] = '\0';
       return;
-
-   strlcpy(name_buf, base_name, sizeof(name_buf));
-   ext = strrchr(name_buf, '.');
-   if (ext)
-      *ext = '\0';
-
-   /* Build path: {current_folder}/.media/{type}/{name}.png */
-   streamlined_build_media_path(strm->current_folder_path,
-         type_folder, name_buf, thumb_path, sizeof(thumb_path));
+   }
 
    /* Skip if same path already loaded */
    if (string_is_equal(thumb_path, strm->rom_thumbnail_path))
@@ -880,7 +983,6 @@ static void streamlined_load_rom_thumbnail(streamlined_t *strm, const char *rom_
    gfx_thumbnail_reset(&strm->rom_thumbnail);
    gfx_thumbnail_request_file(thumb_path, &strm->rom_thumbnail,
          settings->uints.gfx_thumbnail_upscale_threshold);
-
 }
 
 /*
@@ -912,8 +1014,11 @@ static void streamlined_load_dir_thumbnail(streamlined_t *strm,
       return;
 
    /* Build path: {parent_path}/.media/{dirname}.png */
-   streamlined_build_media_path(parent_path, NULL, dir_name,
-         thumb_path, sizeof(thumb_path));
+   fill_pathname_join_special(thumb_path, parent_path, ".media",
+                              sizeof(thumb_path));
+
+   fill_pathname_join(thumb_path, thumb_path, dir_name, sizeof(thumb_path));
+   strlcat(thumb_path, ".png", sizeof(thumb_path));
 
    /* Skip if same path already loaded */
    if (string_is_equal(thumb_path, strm->rom_thumbnail_path))
@@ -1160,10 +1265,6 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
 static void streamlined_load_random_thumbnail(streamlined_t *strm)
 {
    char thumb_path[PATH_MAX_LENGTH];
-   char name_buf[PATH_MAX_LENGTH];
-   const char *type_folder;
-   const char *base_name;
-   char *ext;
    settings_t *settings = config_get_ptr();
 
    strm->random_has_thumbnail = false;
@@ -1174,31 +1275,23 @@ static void streamlined_load_random_thumbnail(streamlined_t *strm)
    if (settings->uints.gfx_thumbnails == 0)
       return;
 
-   switch (settings->uints.gfx_thumbnails)
    {
-      case 1:  type_folder = "Screenshot"; break;
-      case 2:  type_folder = "Title";      break;
-      case 3:  type_folder = "Boxart";     break;
-      default: return;
-   }
+      char m3u_path[PATH_MAX_LENGTH];
+      const char *thumb_content = strm->random_game_path;
 
-   base_name = path_basename(strm->random_game_path);
-   if (string_is_empty(base_name))
-      return;
+      if (streamlined_find_m3u_for_content(strm->random_game_path,
+            m3u_path, sizeof(m3u_path)))
+         thumb_content = m3u_path;
 
-   strlcpy(name_buf, base_name, sizeof(name_buf));
-   ext = strrchr(name_buf, '.');
-   if (ext)
-      *ext = '\0';
-
-   streamlined_build_media_path(strm->options_folder_path,
-         type_folder, name_buf, thumb_path, sizeof(thumb_path));
-
-   if (!path_is_valid(thumb_path))
-   {
-      strm->random_has_thumbnail = false;
-      strm->random_show_text = true;
-      return;
+      if (!streamlined_build_thumbnail_path(thumb_content,
+            strm->folder_core_path,
+            settings->uints.gfx_thumbnails,
+            thumb_path, sizeof(thumb_path)))
+      {
+         strm->random_has_thumbnail = false;
+         strm->random_show_text     = true;
+         return;
+      }
    }
 
    strlcpy(strm->random_thumbnail_path, thumb_path,
@@ -1216,17 +1309,11 @@ static void streamlined_load_random_thumbnail(streamlined_t *strm)
 /*
  * Load the thumbnail for the current game switcher entry.
  * Priority: 1. Autosave screenshot (.auto.png)
- *           2. Primary thumbnail from .media folder
+ *           2. Standard thumbnail path
  */
 static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
 {
    char thumb_path[PATH_MAX_LENGTH];
-   char name_buf[PATH_MAX_LENGTH];
-   char parent_dir[PATH_MAX_LENGTH];
-   const char *type_folder;
-   const char *base_name;
-   char *ext;
-   bool found_m3u = false;
    settings_t *settings = config_get_ptr();
 
    strm->game_switcher_has_thumbnail = false;
@@ -1252,17 +1339,9 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
       return;
    }
 
-   /* Tier 2: Primary thumbnail from .media folder */
+   /* Tier 2: Standard thumbnail path */
    if (settings->uints.gfx_thumbnails == 0)
       return;
-
-   switch (settings->uints.gfx_thumbnails)
-   {
-      case 1:  type_folder = "Screenshot"; break;
-      case 2:  type_folder = "Title";      break;
-      case 3:  type_folder = "Boxart";     break;
-      default: return;
-   }
 
    {
       char m3u_path[PATH_MAX_LENGTH];
@@ -1270,34 +1349,13 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
 
       if (streamlined_find_m3u_for_content(strm->game_switcher_content_path,
             m3u_path, sizeof(m3u_path)))
-      {
          thumb_content = m3u_path;
-         found_m3u     = true;
-      }
 
-      base_name = path_basename(thumb_content);
-      if (string_is_empty(base_name))
+      if (!streamlined_build_thumbnail_path(thumb_content,
+            strm->game_switcher_core_path,
+            settings->uints.gfx_thumbnails,
+            thumb_path, sizeof(thumb_path)))
          return;
-
-      strlcpy(name_buf, base_name, sizeof(name_buf));
-      ext = strrchr(name_buf, '.');
-      if (ext)
-         *ext = '\0';
-
-      streamlined_get_content_folder_path(thumb_content,
-            parent_dir, sizeof(parent_dir));
-   }
-
-   streamlined_build_media_path(parent_dir,
-         found_m3u ? NULL : type_folder, name_buf,
-         thumb_path, sizeof(thumb_path));
-
-   RARCH_LOG("[StreamlinedMenu] Game Switcher thumb path: %s\n", thumb_path);
-
-   if (!path_is_valid(thumb_path))
-   {
-      strm->game_switcher_has_thumbnail = false;
-      return;
    }
 
    strlcpy(strm->game_switcher_thumbnail_path, thumb_path,
@@ -2014,29 +2072,24 @@ static void streamlined_render_menu(streamlined_t *strm,
          {
             if (strm->in_favorites || strm->in_game_switcher)
             {
-               /* Temporarily set current_folder_path for thumbnail lookup */
-               char saved_folder[PATH_MAX_LENGTH];
+               char entry_core_path[PATH_MAX_LENGTH];
                char m3u_path[PATH_MAX_LENGTH];
-               char content_folder[PATH_MAX_LENGTH];
                const char *thumb_content = entry.label;
-
-               strlcpy(saved_folder, strm->current_folder_path, sizeof(saved_folder));
 
                if (streamlined_find_m3u_for_content(entry.label,
                      m3u_path, sizeof(m3u_path)))
                   thumb_content = m3u_path;
 
-               streamlined_get_content_folder_path(thumb_content,
-                     content_folder, sizeof(content_folder));
-               strlcpy(strm->current_folder_path, content_folder,
-                     sizeof(strm->current_folder_path));
+               streamlined_resolve_content_core(entry.label,
+                     entry_core_path, sizeof(entry_core_path),
+                     NULL, 0, NULL);
 
-               streamlined_load_rom_thumbnail(strm, thumb_content);
-               strlcpy(strm->current_folder_path, saved_folder,
-                     sizeof(strm->current_folder_path));
+               streamlined_load_rom_thumbnail(strm, thumb_content,
+                     entry_core_path);
             }
             else
-               streamlined_load_rom_thumbnail(strm, entry.label);
+               streamlined_load_rom_thumbnail(strm, entry.label,
+                     strm->folder_core_path);
          }
          else
          {
