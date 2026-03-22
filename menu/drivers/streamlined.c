@@ -726,6 +726,59 @@ static void streamlined_truncate_text(streamlined_t *strm, const char *text,
 }
 
 /* ======================================================================
+ * HELPER FUNCTIONS
+ * ====================================================================== */
+
+/* Reset ROM/directory thumbnail state to force a fresh load */
+static void streamlined_reset_rom_thumbnail(streamlined_t *strm)
+{
+   gfx_thumbnail_reset(&strm->rom_thumbnail);
+   strm->rom_thumbnail_path[0] = '\0';
+   strm->rom_thumbnail_selection = (size_t)-1;
+}
+
+/*
+ * Build a .media thumbnail path.
+ * Path: {base_dir}/.media/{type_folder}/{name}.png
+ * Pass NULL for type_folder to skip the type subfolder (e.g. directory thumbnails).
+ */
+static void streamlined_build_media_path(
+      const char *base_dir, const char *type_folder, const char *name,
+      char *out, size_t out_size)
+{
+   fill_pathname_join_special(out, base_dir, ".media", out_size);
+   if (type_folder)
+      fill_pathname_join(out, out, type_folder, out_size);
+   fill_pathname_join(out, out, name, out_size);
+   strlcat(out, ".png", out_size);
+}
+
+/*
+ * Get and clear the menu selection list for repopulation.
+ * Returns the file_list_t* (already cleared) or NULL on failure.
+ */
+static file_list_t *streamlined_get_cleared_menu_list(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+
+   if (!menu_st)
+      return NULL;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return NULL;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return NULL;
+
+   menu_entries_clear(list);
+   return list;
+}
+
+/* ======================================================================
  * SAVE SLOT SELECTOR
  * ====================================================================== */
 
@@ -814,13 +867,8 @@ static void streamlined_load_rom_thumbnail(streamlined_t *strm, const char *rom_
       *ext = '\0';
 
    /* Build path: {current_folder}/.media/{type}/{name}.png */
-   fill_pathname_join_special(thumb_path, strm->current_folder_path,
-         ".media", sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         type_folder, sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         name_buf, sizeof(thumb_path));
-   strlcat(thumb_path, ".png", sizeof(thumb_path));
+   streamlined_build_media_path(strm->current_folder_path,
+         type_folder, name_buf, thumb_path, sizeof(thumb_path));
 
    /* Skip if same path already loaded */
    if (string_is_equal(thumb_path, strm->rom_thumbnail_path))
@@ -864,11 +912,8 @@ static void streamlined_load_dir_thumbnail(streamlined_t *strm,
       return;
 
    /* Build path: {parent_path}/.media/{dirname}.png */
-   fill_pathname_join_special(thumb_path, parent_path,
-         ".media", sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         dir_name, sizeof(thumb_path));
-   strlcat(thumb_path, ".png", sizeof(thumb_path));
+   streamlined_build_media_path(parent_path, NULL, dir_name,
+         thumb_path, sizeof(thumb_path));
 
    /* Skip if same path already loaded */
    if (string_is_equal(thumb_path, strm->rom_thumbnail_path))
@@ -1146,13 +1191,8 @@ static void streamlined_load_random_thumbnail(streamlined_t *strm)
    if (ext)
       *ext = '\0';
 
-   fill_pathname_join_special(thumb_path, strm->options_folder_path,
-         ".media", sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         type_folder, sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         name_buf, sizeof(thumb_path));
-   strlcat(thumb_path, ".png", sizeof(thumb_path));
+   streamlined_build_media_path(strm->options_folder_path,
+         type_folder, name_buf, thumb_path, sizeof(thumb_path));
 
    if (!path_is_valid(thumb_path))
    {
@@ -1248,19 +1288,17 @@ static void streamlined_load_game_switcher_thumbnail(streamlined_t *strm)
             parent_dir, sizeof(parent_dir));
    }
 
-   fill_pathname_join_special(thumb_path, parent_dir,
-         ".media", sizeof(thumb_path));
-   if (!found_m3u)
-      fill_pathname_join(thumb_path, thumb_path,
-            type_folder, sizeof(thumb_path));
-   fill_pathname_join(thumb_path, thumb_path,
-         name_buf, sizeof(thumb_path));
-   strlcat(thumb_path, ".png", sizeof(thumb_path));
+   streamlined_build_media_path(parent_dir,
+         found_m3u ? NULL : type_folder, name_buf,
+         thumb_path, sizeof(thumb_path));
 
    RARCH_LOG("[StreamlinedMenu] Game Switcher thumb path: %s\n", thumb_path);
 
    if (!path_is_valid(thumb_path))
+   {
+      strm->game_switcher_has_thumbnail = false;
       return;
+   }
 
    strlcpy(strm->game_switcher_thumbnail_path, thumb_path,
          sizeof(strm->game_switcher_thumbnail_path));
@@ -1541,9 +1579,7 @@ static void streamlined_enter_game_switcher(streamlined_t *strm)
    else
    {
       streamlined_populate_game_switcher_menu(strm);
-      gfx_thumbnail_reset(&strm->rom_thumbnail);
-      strm->rom_thumbnail_path[0] = '\0';
-      strm->rom_thumbnail_selection = (size_t)-1;
+      streamlined_reset_rom_thumbnail(strm);
       menu_st->selection_ptr = 0;
    }
 }
@@ -2742,24 +2778,11 @@ static void streamlined_render_menu(streamlined_t *strm,
 
 static void streamlined_populate_menu_items(const streamlined_quick_item_t *items)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_cleared_menu_list();
    size_t i;
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (i = 0; items[i].label != NULL; i++)
    {
@@ -2797,25 +2820,12 @@ static bool streamlined_is_disc_control_available(void)
 /* Populate quick menu, with dynamic Exit/Quit based on CLI launch */
 static void streamlined_populate_quick_menu(void)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_cleared_menu_list();
    const streamlined_quick_item_t *item;
    bool from_cli = streamlined_is_launched_from_cli();
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (item = streamlined_quick_menu_items; item->label != NULL || item->action == STREAMLINED_EXIT_MARKER; item++)
    {
@@ -2852,25 +2862,12 @@ static void streamlined_populate_quick_menu(void)
 /* Populate settings submenu, conditionally including Disc Control */
 static void streamlined_populate_settings_submenu(void)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_cleared_menu_list();
    const streamlined_quick_item_t *item;
    bool show_disc_control = streamlined_is_disc_control_available();
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (item = streamlined_settings_menu_items; item->label != NULL; item++)
    {
@@ -2924,24 +2921,11 @@ static void streamlined_populate_settings_submenu(void)
 /* Populate main menu settings submenu (Settings categories + main menu items) */
 static void streamlined_populate_main_settings_submenu(void)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_cleared_menu_list();
    const streamlined_quick_item_t *item;
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (item = streamlined_main_settings_items; item->label != NULL; item++)
    {
@@ -3613,6 +3597,43 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
    }
 }
 #endif
+
+/*
+ * Enter the delete confirmation flow for a game or autosave.
+ * Shared between Game Switcher GLO and regular GLO handlers.
+ */
+static void streamlined_enter_delete_confirm(streamlined_t *strm,
+      bool is_game, bool from_game_switcher)
+{
+   strm->in_delete_confirm = true;
+   strm->delete_is_game = is_game;
+   strm->in_options_menu = false;
+   if (from_game_switcher)
+      strm->game_switcher_in_glo = false;
+#if TARGET_OS_TV
+   {
+      char display_name[256];
+      streamlined_get_display_name(strm->options_game_path,
+            display_name, sizeof(display_name), false);
+      if (is_game)
+      {
+         char dialog_msg[512];
+         snprintf(dialog_msg, sizeof(dialog_msg),
+               "%s\n\nSaves, save states, and thumbnails will not be deleted.",
+               display_name);
+         ios_show_confirm_dialog(
+               "Delete Game", dialog_msg, "Delete",
+               streamlined_delete_confirm_cb, strm);
+      }
+      else
+      {
+         ios_show_confirm_dialog(
+               "Delete Autosave", display_name, "Delete",
+               streamlined_delete_confirm_cb, strm);
+      }
+   }
+#endif
+}
 
 /*
  * Clean up search mode state. If clear_query is false, the search query
@@ -5532,9 +5553,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
                   strm->in_favorites = false;
                   strm->selected_has_savestate = false;
                   strm->selected_is_file = false;
-                  gfx_thumbnail_reset(&strm->rom_thumbnail);
-                  strm->rom_thumbnail_path[0] = '\0';
-                  strm->rom_thumbnail_selection = (size_t)-1;
+                  streamlined_reset_rom_thumbnail(strm);
                }
                else
                {
@@ -5553,9 +5572,7 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
                   strm->in_favorites = false;
                   strm->selected_has_savestate = false;
                   strm->selected_is_file = false;
-                  gfx_thumbnail_reset(&strm->rom_thumbnail);
-                  strm->rom_thumbnail_path[0] = '\0';
-                  strm->rom_thumbnail_selection = (size_t)-1;
+                  streamlined_reset_rom_thumbnail(strm);
                   streamlined_populate_folder_menu(strm,
                         settings->paths.directory_menu_content, false);
                   menu_state_get_ptr()->selection_ptr = 0;
@@ -5850,9 +5867,7 @@ static void streamlined_populate_entries(void *data,
                strm->is_custom_main_menu = true;
                strm->in_folder = false;
                strm->return_to_top_level = false;
-               gfx_thumbnail_reset(&strm->rom_thumbnail);
-               strm->rom_thumbnail_path[0] = '\0';
-               strm->rom_thumbnail_selection = (size_t)-1;
+               streamlined_reset_rom_thumbnail(strm);
                if (menu_st_local)
                   menu_st_local->selection_ptr = strm->top_level_selection;
             }
@@ -5868,9 +5883,7 @@ static void streamlined_populate_entries(void *data,
                strm->is_custom_main_menu = true;
                strm->in_folder = true;
                strm->return_to_folder = false;
-               gfx_thumbnail_reset(&strm->rom_thumbnail);
-               strm->rom_thumbnail_path[0] = '\0';
-               strm->rom_thumbnail_selection = (size_t)-1;
+               streamlined_reset_rom_thumbnail(strm);
                /* Restore selection to the game that was played */
                if (menu_st_local)
                   menu_st_local->selection_ptr = strm->folder_selection;
@@ -6171,9 +6184,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                strm->in_favorites = false;
                strm->selected_has_savestate = false;
                strm->selected_is_file = false;
-               gfx_thumbnail_reset(&strm->rom_thumbnail);
-               strm->rom_thumbnail_path[0] = '\0';
-               strm->rom_thumbnail_selection = (size_t)-1;
+               streamlined_reset_rom_thumbnail(strm);
                return 0;
             }
 
@@ -6213,43 +6224,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
          if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
          {
-            strm->in_delete_confirm = true;
-            strm->delete_is_game = false;
-            strm->game_switcher_in_glo = false;
-            strm->in_options_menu = false;
-#if TARGET_OS_TV
-            {
-               char display_name[256];
-               streamlined_get_display_name(strm->options_game_path,
-                     display_name, sizeof(display_name), false);
-               ios_show_confirm_dialog(
-                     "Delete Autosave", display_name, "Delete",
-                     streamlined_delete_confirm_cb, strm);
-            }
-#endif
+            streamlined_enter_delete_confirm(strm, false, true);
             return 0;
          }
 
          if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_GAME)
          {
-            strm->in_delete_confirm = true;
-            strm->delete_is_game = true;
-            strm->game_switcher_in_glo = false;
-            strm->in_options_menu = false;
-#if TARGET_OS_TV
-            {
-               char display_name[256];
-               char dialog_msg[512];
-               streamlined_get_display_name(strm->options_game_path,
-                     display_name, sizeof(display_name), false);
-               snprintf(dialog_msg, sizeof(dialog_msg),
-                     "%s\n\nSaves, save states, and thumbnails will not be deleted.",
-                     display_name);
-               ios_show_confirm_dialog(
-                     "Delete Game", dialog_msg, "Delete",
-                     streamlined_delete_confirm_cb, strm);
-            }
-#endif
+            streamlined_enter_delete_confirm(strm, true, true);
             return 0;
          }
 
@@ -6332,13 +6313,11 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_favorites = false;
             strm->selected_has_savestate = false;
             strm->selected_is_file = false;
-            gfx_thumbnail_reset(&strm->rom_thumbnail);
-            strm->rom_thumbnail_path[0] = '\0';
-            strm->rom_thumbnail_selection = (size_t)-1;
+            streamlined_reset_rom_thumbnail(strm);
             return 0;
          }
 
-         if (action == MENU_ACTION_LEFT && hist_size > 0)
+         if ((action == MENU_ACTION_LEFT || action == MENU_ACTION_SCROLL_UP) && hist_size > 0)
          {
             if (strm->game_switcher_index == 0)
                strm->game_switcher_index = hist_size - 1;
@@ -6348,7 +6327,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             return 0;
          }
 
-         if (action == MENU_ACTION_RIGHT && hist_size > 0)
+         if ((action == MENU_ACTION_RIGHT || action == MENU_ACTION_SCROLL_DOWN) && hist_size > 0)
          {
             strm->game_switcher_index++;
             if (strm->game_switcher_index >= hist_size)
@@ -6427,9 +6406,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_favorites = false;
             strm->selected_has_savestate = false;
             strm->selected_is_file = false;
-            gfx_thumbnail_reset(&strm->rom_thumbnail);
-            strm->rom_thumbnail_path[0] = '\0';
-            strm->rom_thumbnail_selection = (size_t)-1;
+            streamlined_reset_rom_thumbnail(strm);
             return 0;
          }
 
@@ -7338,9 +7315,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   strm->in_favorites = false;
                   strm->selected_has_savestate = false;
                   strm->selected_is_file = false;
-                  gfx_thumbnail_reset(&strm->rom_thumbnail);
-                  strm->rom_thumbnail_path[0] = '\0';
-                  strm->rom_thumbnail_selection = (size_t)-1;
+                  streamlined_reset_rom_thumbnail(strm);
                   streamlined_populate_folder_menu(strm,
                         settings->paths.directory_menu_content, false);
                   menu_st->selection_ptr = 0;
@@ -7410,41 +7385,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
          if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_SAVE)
          {
-            strm->in_delete_confirm = true;
-            strm->delete_is_game = false;
-            strm->in_options_menu = false;
-#if TARGET_OS_TV
-            {
-               char display_name[256];
-               streamlined_get_display_name(strm->options_game_path,
-                     display_name, sizeof(display_name), false);
-               ios_show_confirm_dialog(
-                     "Delete Autosave", display_name, "Delete",
-                     streamlined_delete_confirm_cb, strm);
-            }
-#endif
+            streamlined_enter_delete_confirm(strm, false, false);
             return 0;
          }
 
          if (entry->enum_idx == STREAMLINED_OPTIONS_DELETE_GAME)
          {
-            strm->in_delete_confirm = true;
-            strm->delete_is_game = true;
-            strm->in_options_menu = false;
-#if TARGET_OS_TV
-            {
-               char display_name[256];
-               char dialog_msg[512];
-               streamlined_get_display_name(strm->options_game_path,
-                     display_name, sizeof(display_name), false);
-               snprintf(dialog_msg, sizeof(dialog_msg),
-                     "%s\n\nSaves, save states, and thumbnails will not be deleted.",
-                     display_name);
-               ios_show_confirm_dialog(
-                     "Delete Game", dialog_msg, "Delete",
-                     streamlined_delete_confirm_cb, strm);
-            }
-#endif
+            streamlined_enter_delete_confirm(strm, true, false);
             return 0;
          }
 
@@ -7660,9 +7607,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_favorites = false;
          strm->selected_has_savestate = false;
          strm->selected_is_file = false;
-         gfx_thumbnail_reset(&strm->rom_thumbnail);
-         strm->rom_thumbnail_path[0] = '\0';
-         strm->rom_thumbnail_selection = (size_t)-1;
+         streamlined_reset_rom_thumbnail(strm);
          if (!string_is_empty(start_dir))
             streamlined_populate_folder_menu(strm, start_dir, false);
          menu_st->selection_ptr = strm->favorites_saved_selection;
@@ -7684,9 +7629,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_folder = false;
             strm->selected_has_savestate = false;
             strm->selected_is_file = false;
-            gfx_thumbnail_reset(&strm->rom_thumbnail);
-            strm->rom_thumbnail_path[0] = '\0';
-            strm->rom_thumbnail_selection = (size_t)-1;
+            streamlined_reset_rom_thumbnail(strm);
             /* Restore saved main menu selection */
             menu_st->selection_ptr = strm->main_menu_selection;
          }
@@ -7752,9 +7695,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_folder = false;
             strm->folder_core_path[0] = '\0';
             streamlined_populate_favorites_menu(strm);
-            gfx_thumbnail_reset(&strm->rom_thumbnail);
-            strm->rom_thumbnail_path[0] = '\0';
-            strm->rom_thumbnail_selection = (size_t)-1;
+            streamlined_reset_rom_thumbnail(strm);
             menu_st->selection_ptr = 0;
             return 0;
          }
@@ -7790,9 +7731,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                strm->in_folder = true;
                strm->selected_has_savestate = false;
                strm->selected_is_file = false;
-               gfx_thumbnail_reset(&strm->rom_thumbnail);
-               strm->rom_thumbnail_path[0] = '\0';
-               strm->rom_thumbnail_selection = (size_t)-1;
+               streamlined_reset_rom_thumbnail(strm);
                menu_st->selection_ptr = 0;
                return 0;
             }

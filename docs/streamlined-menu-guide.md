@@ -9,7 +9,7 @@ The Streamlined menu is a custom, MinUI-inspired menu designed for simplicity an
 | Button             | Action                                                                |
 | ------------------ | --------------------------------------------------------------------- |
 | D-Pad Up / Down    | Navigate lists                                                        |
-| D-Pad Left / Right | Cycle between Game Switcher, save slots, and color picker values      |
+| D-Pad Left / Right | Cycle between Game Switcher, save slots, and color picker values (L/R also cycle in image-centric Game Switcher) |
 | A                  | Select / Confirm / Play                                               |
 | B                  | Back — resumes your game when pressed from the Quick Menu main screen |
 | Y                  | Open Game List Options for the highlighted game                       |
@@ -68,7 +68,7 @@ Favorites persist across sessions and are saved automatically.
 
 The Game Switcher shows your recently played games, letting you jump back into any of them quickly. It offers two viewing modes:
 
-- **Image-centric** (default): Shows a large thumbnail of the selected game. Use **Left** and **Right** to browse through your recent games, with the game name displayed in the footer.
+- **Image-centric** (default): Shows a large thumbnail of the selected game. Use **Left** and **Right** (or **L** and **R**) to browse through your recent games, with the game name displayed in the footer.
 - **Text list**: A traditional list view. Use **Up** and **Down** to browse.
 
 Press **A** to play the selected game, or **Y** to open Game List Options.
