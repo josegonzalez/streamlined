@@ -2431,6 +2431,7 @@ static struct config_uint_setting *populate_settings_uint(
    SETTING_UINT("savestate_max_keep",            &settings->uints.savestate_max_keep, true, DEFAULT_SAVESTATE_MAX_KEEP, false);
 #ifdef HAVE_MENU
    SETTING_UINT("menu_streamlined_game_switcher_view", &settings->uints.menu_streamlined_game_switcher_view, true, DEFAULT_MENU_STREAMLINED_GAME_SWITCHER_VIEW, false);
+   SETTING_UINT("menu_streamlined_playlist_display_mode", &settings->uints.menu_streamlined_playlist_display_mode, true, 0, false);
    SETTING_UINT("menu_streamlined_notification_duration", &settings->uints.menu_streamlined_notification_duration, true, DEFAULT_MENU_STREAMLINED_NOTIFICATION_DURATION, false);
    SETTING_UINT("menu_streamlined_selection_color_red", &settings->uints.menu_streamlined_selection_color_red, true, DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_RED, false);
    SETTING_UINT("menu_streamlined_selection_color_green", &settings->uints.menu_streamlined_selection_color_green, true, DEFAULT_MENU_STREAMLINED_SELECTION_COLOR_GREEN, false);

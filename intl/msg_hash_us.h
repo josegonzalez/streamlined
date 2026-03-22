@@ -12575,6 +12575,14 @@ MSG_HASH(
    "Choose between image-centric and text list views for the Game Switcher."
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_PLAYLIST_DISPLAY_MODE,
+   "Playlist Display"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_PLAYLIST_DISPLAY_MODE,
+   "Show playlists grouped under a single entry or as individual top-level items."
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_VALUE_STREAMLINED_THUMBNAIL_HEIGHT,
    "Thumbnail Height"
    )

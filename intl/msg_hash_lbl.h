@@ -4022,6 +4022,10 @@ MSG_HASH(
    "streamlined_game_switcher_view"
    )
 MSG_HASH(
+   MENU_ENUM_LABEL_STREAMLINED_PLAYLIST_DISPLAY_MODE,
+   "menu_streamlined_playlist_display_mode"
+   )
+MSG_HASH(
    MENU_ENUM_LABEL_STREAMLINED_THUMBNAIL_HEIGHT,
    "menu_streamlined_thumbnail_height"
    )

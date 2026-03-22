@@ -3512,6 +3512,19 @@ static size_t setting_get_string_representation_uint_streamlined_game_switcher_v
    }
 }
 
+static size_t setting_get_string_representation_uint_streamlined_playlist_display_mode(
+      rarch_setting_t *setting, char *s, size_t len)
+{
+   if (!setting)
+      return 0;
+   switch (*setting->value.target.unsigned_integer)
+   {
+      default:
+      case 0:  return strlcpy(s, "Grouped", len);
+      case 1:  return strlcpy(s, "Top Level", len);
+   }
+}
+
 static size_t setting_get_string_representation_uint_streamlined_notification_duration(
       rarch_setting_t *setting, char *s, size_t len)
 {
@@ -20863,6 +20876,23 @@ static bool setting_append_list(
             (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
             (*list)[list_info->index - 1].get_string_representation =
                   &setting_get_string_representation_uint_streamlined_game_switcher_view;
+            menu_settings_list_current_add_range(list, list_info, 0, 1, 1, true, true);
+            (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_RADIO_BUTTONS;
+
+            CONFIG_UINT(
+                  list, list_info,
+                  &settings->uints.menu_streamlined_playlist_display_mode,
+                  MENU_ENUM_LABEL_STREAMLINED_PLAYLIST_DISPLAY_MODE,
+                  MENU_ENUM_LABEL_VALUE_STREAMLINED_PLAYLIST_DISPLAY_MODE,
+                  0,
+                  &group_info,
+                  &subgroup_info,
+                  parent_group,
+                  general_write_handler,
+                  general_read_handler);
+            (*list)[list_info->index - 1].action_ok = &setting_action_ok_uint;
+            (*list)[list_info->index - 1].get_string_representation =
+                  &setting_get_string_representation_uint_streamlined_playlist_display_mode;
             menu_settings_list_current_add_range(list, list_info, 0, 1, 1, true, true);
             (*list)[list_info->index - 1].ui_type = ST_UI_TYPE_UINT_RADIO_BUTTONS;
 

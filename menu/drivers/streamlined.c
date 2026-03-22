@@ -189,6 +189,12 @@ typedef struct
 #define STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER 0xCB0B
 #define STREAMLINED_OPTIONS_DELETE_GAME     0xCB0C
 #define STREAMLINED_OPTIONS_RENAME_GAMES   0xCB0D
+#define STREAMLINED_PLAYLISTS_ENTRY        0xCB0E
+#define STREAMLINED_PLAYLIST_ITEM_ENTRY    0xCB0F
+#define STREAMLINED_OPTIONS_ADD_TO_PLAYLIST     0xCB10
+#define STREAMLINED_OPTIONS_REMOVE_FROM_PLAYLIST 0xCB11
+#define STREAMLINED_PLAYLIST_MANAGE_CREATE  0xCB12
+#define STREAMLINED_PLAYLIST_MANAGE_DELETE  0xCB13
 
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
@@ -350,6 +356,41 @@ typedef struct
    char options_game_core_path[PATH_MAX_LENGTH];
    bool in_favorites;
    size_t favorites_saved_selection;
+
+   /* Playlist browsing state */
+   bool in_playlists;                              /* Viewing list of all playlists */
+   bool in_playlist;                               /* Viewing entries of a specific playlist */
+   size_t playlists_saved_selection;                /* Selection when entering playlists list */
+   size_t playlist_saved_selection;                 /* Selection when entering a specific playlist */
+   char current_playlist_path[PATH_MAX_LENGTH];     /* Path to currently open .lpl file */
+   char current_playlist_name[256];                 /* Display name of current playlist */
+
+   /* Playlist management state */
+   bool in_playlist_manage;                        /* Viewing create/delete menu for playlists */
+   size_t playlist_manage_saved_selection;          /* Selection in playlists list */
+   char playlist_delete_path[PATH_MAX_LENGTH];     /* Path of playlist to delete */
+   char playlist_delete_name[256];                 /* Name of playlist to delete */
+
+   /* Add to playlist state */
+   bool selecting_playlist;                        /* Choosing which playlist to add game to */
+   char add_to_playlist_game_path[PATH_MAX_LENGTH]; /* Game path to add */
+   char add_to_playlist_core_path[PATH_MAX_LENGTH]; /* Core path for the game */
+
+   /* Playlist naming state */
+   bool in_playlist_naming;                        /* Typing a name for new playlist */
+   char playlist_name_buf[256];                    /* Name being typed */
+   size_t playlist_name_len;                       /* Current length */
+   bool playlist_naming_done;                      /* tvOS: keyboard callback fired */
+   bool playlist_name_focus_create;                /* non-tvOS: focus on Create button */
+#if TARGET_OS_TV
+   char *playlist_name_kb_ptr;
+   size_t playlist_name_kb_size;
+   size_t playlist_name_kb_offset;
+#else
+   int playlist_name_kb_row;
+   int playlist_name_kb_col;
+#endif
+
    bool return_to_options;         /* Deferred transition from search back to options */
    bool enter_search_deferred;    /* Deferred transition from options into search */
    unsigned cancel_ignore_frames; /* Block cancel for N frames after state transition */
@@ -483,9 +524,14 @@ static bool streamlined_check_m3u_folder(const char *dir_path,
 static bool streamlined_find_m3u_for_content(const char *content_path,
       char *m3u_out, size_t m3u_size);
 static void streamlined_populate_search_results(streamlined_t *strm);
-static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites, bool in_game_switcher);
+static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites, bool in_game_switcher, bool in_playlist);
 static void streamlined_populate_favorites_menu(streamlined_t *strm);
 static void streamlined_strip_trailing_slash(char *path);
+static void streamlined_populate_playlists_menu(streamlined_t *strm);
+static void streamlined_populate_playlist_entries(streamlined_t *strm);
+static void streamlined_populate_playlist_manage_menu(streamlined_t *strm);
+static void streamlined_populate_playlist_selection(streamlined_t *strm);
+static bool streamlined_is_special_playlist(const char *filename);
 static void streamlined_get_content_folder_path(const char *game_path, char *folder_out, size_t folder_size);
 static bool streamlined_resolve_content_core(const char *game_path, char *core_out, size_t core_size, char *game_core_out, size_t game_core_size, playlist_t *playlist);
 static void streamlined_populate_core_selection(streamlined_t *strm, const char *content_path);
@@ -1246,6 +1292,11 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       return;
 
    menu_stack = menu_list->menu_stack[0];
+
+   /* IMPORTANT: Every submenu/sub-view state must be listed here.
+    * If a new state is added but not included in this check, the menu
+    * stack marker will be popped prematurely and the B (cancel) button
+    * will background the app instead of navigating back. */
    in_submenu = strm->in_folder
       || strm->in_favorites
       || strm->in_main_settings_submenu
@@ -1260,7 +1311,12 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       || strm->delete_done
       || strm->rename_pending
       || strm->rename_active
-      || strm->rename_done;
+      || strm->rename_done
+      || strm->in_playlists
+      || strm->in_playlist
+      || strm->in_playlist_manage
+      || strm->in_playlist_naming
+      || strm->selecting_playlist;
 
    if (in_submenu && menu_stack->size == 1)
    {
@@ -1878,43 +1934,45 @@ static void streamlined_render_random_preview(streamlined_t *strm,
 
 #if !TARGET_OS_TV
 /*
- * Render the search bar and QWERTY keyboard for search mode.
- * Returns the total height consumed so menu items can be offset.
+ * Render an input bar and QWERTY keyboard grid.
+ * Shared between search mode and playlist naming mode.
+ * Returns the total height consumed so content below can be offset.
  */
-static int streamlined_render_search_keyboard(streamlined_t *strm,
+static int streamlined_render_keyboard_grid(streamlined_t *strm,
       gfx_display_t *p_disp, void *userdata,
-      unsigned video_width, unsigned video_height)
+      unsigned video_width, unsigned video_height,
+      const char *text_buf, int kb_row, int kb_col, bool focus_below)
 {
    int row, col;
    int key_w = (int)(strm->font_size * 1.8f);
    int key_h = (int)(strm->font_size * STREAMLINED_ITEM_PILL_HEIGHT_MULT);
    int key_gap = (int)(4 * strm->scale_factor);
    int kb_start_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT);
-   int search_bar_h = (int)(strm->font_size * 1.8f);
-   int search_bar_y = kb_start_y;
-   int kb_y = search_bar_y + search_bar_h + key_gap * 2;
+   int input_bar_h = (int)(strm->font_size * 1.8f);
+   int input_bar_y = kb_start_y;
+   int kb_y = input_bar_y + input_bar_h + key_gap * 2;
    int max_row_width = 10 * key_w + 9 * key_gap;
    int kb_start_x = (video_width - max_row_width) / 2;
 
-   /* Draw search bar */
+   /* Draw input bar */
    {
-      char search_display[260];
+      char display_buf[260];
       int bar_width = max_row_width;
       int bar_x = kb_start_x;
-      int text_y = search_bar_y + search_bar_h / 2 + (int)(strm->font_size * 0.30f);
+      int text_y = input_bar_y + input_bar_h / 2 + (int)(strm->font_size * 0.30f);
 
       streamlined_draw_rounded_pill(strm, p_disp, userdata,
-            bar_x, search_bar_y, bar_width, search_bar_h,
+            bar_x, input_bar_y, bar_width, input_bar_h,
             video_width, video_height, streamlined_color_selection);
 
-      if (strm->search_query[0] != '\0')
-         snprintf(search_display, sizeof(search_display), "%s|", strm->search_query);
+      if (text_buf && text_buf[0] != '\0')
+         snprintf(display_buf, sizeof(display_buf), "%s|", text_buf);
       else
-         strlcpy(search_display, "|", sizeof(search_display));
+         strlcpy(display_buf, "|", sizeof(display_buf));
 
       streamlined_draw_text(strm, p_disp, video_width, video_height,
             bar_x + strm->pill_padding, text_y,
-            search_display, streamlined_color_text_dark, false);
+            display_buf, streamlined_color_text_dark, false);
    }
 
    /* Draw keyboard rows */
@@ -1929,8 +1987,8 @@ static int streamlined_render_search_keyboard(streamlined_t *strm,
          /* Space bar - wide centered key */
          int space_w = key_w * 5 + key_gap * 4;
          int space_x = kb_start_x + (max_row_width - space_w) / 2;
-         bool is_selected = !strm->search_focus_list
-               && strm->search_kb_row == row && strm->search_kb_col == 0;
+         bool is_selected = !focus_below
+               && kb_row == row && kb_col == 0;
          float *bg_color = is_selected ? streamlined_color_selection : streamlined_color_bg;
          uint32_t text_color = is_selected
                ? streamlined_color_text_dark : streamlined_color_text;
@@ -1951,8 +2009,8 @@ static int streamlined_render_search_keyboard(streamlined_t *strm,
          for (col = 0; col < row_len; col++)
          {
             char ch = streamlined_kb_rows[row][col];
-            bool is_selected = !strm->search_focus_list
-                  && strm->search_kb_row == row && strm->search_kb_col == col;
+            bool is_selected = !focus_below
+                  && kb_row == row && kb_col == col;
             float *bg_color = is_selected
                   ? streamlined_color_selection : streamlined_color_bg;
             uint32_t text_color = is_selected
@@ -1981,8 +2039,22 @@ static int streamlined_render_search_keyboard(streamlined_t *strm,
       }
    }
 
-   return search_bar_h + key_gap * 2
+   return input_bar_h + key_gap * 2
          + STREAMLINED_KB_NUM_ROWS * (key_h + key_gap);
+}
+
+/*
+ * Render the search bar and QWERTY keyboard for search mode.
+ * Wrapper around streamlined_render_keyboard_grid.
+ */
+static int streamlined_render_search_keyboard(streamlined_t *strm,
+      gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   return streamlined_render_keyboard_grid(strm, p_disp, userdata,
+         video_width, video_height,
+         strm->search_query, strm->search_kb_row, strm->search_kb_col,
+         strm->search_focus_list);
 }
 #endif
 
@@ -2087,19 +2159,34 @@ static void streamlined_render_menu(streamlined_t *strm,
          else if (!string_is_empty(entry.label)
                && path_is_valid(entry.label))
          {
-            if (strm->in_favorites || strm->in_game_switcher)
+            if (strm->in_favorites || strm->in_game_switcher || strm->in_playlist)
             {
                char entry_core_path[PATH_MAX_LENGTH];
                char m3u_path[PATH_MAX_LENGTH];
                const char *thumb_content = entry.label;
+               playlist_t *resolve_pl = NULL;
+               playlist_config_t resolve_config;
 
                if (streamlined_find_m3u_for_content(entry.label,
                      m3u_path, sizeof(m3u_path)))
                   thumb_content = m3u_path;
 
+               /* For playlists, load the playlist so core can be resolved from entry */
+               if (strm->in_playlist && !string_is_empty(strm->current_playlist_path))
+               {
+                  memset(&resolve_config, 0, sizeof(resolve_config));
+                  resolve_config.capacity = COLLECTION_SIZE;
+                  strlcpy(resolve_config.path, strm->current_playlist_path,
+                        sizeof(resolve_config.path));
+                  resolve_pl = playlist_init(&resolve_config);
+               }
+
                streamlined_resolve_content_core(entry.label,
                      entry_core_path, sizeof(entry_core_path),
-                     NULL, 0, NULL);
+                     NULL, 0, resolve_pl);
+
+               if (resolve_pl)
+                  playlist_free(resolve_pl);
 
                streamlined_load_rom_thumbnail(strm, thumb_content,
                      entry_core_path);
@@ -2131,6 +2218,26 @@ static void streamlined_render_menu(streamlined_t *strm,
                      g_defaults.content_favorites))
                   strm->selected_has_savestate = streamlined_check_savestate(
                         entry.label, fav_core);
+            }
+            else if (strm->in_playlist)
+            {
+               /* Resolve core for playlist entry */
+               char pl_core[PATH_MAX_LENGTH];
+               playlist_config_t tmp_config;
+               playlist_t *tmp_pl;
+               memset(&tmp_config, 0, sizeof(tmp_config));
+               tmp_config.capacity = COLLECTION_SIZE;
+               strlcpy(tmp_config.path, strm->current_playlist_path, sizeof(tmp_config.path));
+               tmp_pl = playlist_init(&tmp_config);
+               if (tmp_pl)
+               {
+                  if (streamlined_resolve_content_core(entry.label,
+                        pl_core, sizeof(pl_core),
+                        NULL, 0, tmp_pl))
+                     strm->selected_has_savestate = streamlined_check_savestate(
+                           entry.label, pl_core);
+                  playlist_free(tmp_pl);
+               }
             }
             else if (strm->in_game_switcher)
             {
@@ -2236,6 +2343,29 @@ static void streamlined_render_menu(streamlined_t *strm,
    else if (strm->is_custom_main_menu && strm->in_favorites)
    {
       strlcpy(title_buf, "Favorites", sizeof(title_buf));
+   }
+   else if (strm->in_playlist_naming)
+   {
+      strlcpy(title_buf, "Create Playlist", sizeof(title_buf));
+   }
+   else if (strm->is_custom_main_menu && strm->in_playlist_manage)
+   {
+      strlcpy(title_buf, "Manage Playlists", sizeof(title_buf));
+   }
+   else if (strm->is_custom_main_menu && strm->in_playlist)
+   {
+      if (!string_is_empty(strm->current_playlist_name))
+         strlcpy(title_buf, strm->current_playlist_name, sizeof(title_buf));
+      else
+         strlcpy(title_buf, "Playlist", sizeof(title_buf));
+   }
+   else if (strm->is_custom_main_menu && strm->in_playlists)
+   {
+      strlcpy(title_buf, "Playlists", sizeof(title_buf));
+   }
+   else if (strm->selecting_playlist)
+   {
+      strlcpy(title_buf, "Select Playlist", sizeof(title_buf));
    }
    else if (strm->is_custom_main_menu && strm->in_folder)
    {
@@ -2369,6 +2499,45 @@ static void streamlined_render_menu(streamlined_t *strm,
    if (strm->in_search_mode)
       y += streamlined_render_search_keyboard(strm, p_disp, userdata,
             video_width, video_height);
+
+   /* Draw playlist naming keyboard with Create button below */
+   if (strm->in_playlist_naming)
+   {
+      int kb_height = streamlined_render_keyboard_grid(strm, p_disp, userdata,
+            video_width, video_height,
+            strm->playlist_name_buf,
+            strm->playlist_name_kb_row,
+            strm->playlist_name_kb_col,
+            strm->playlist_name_focus_create);
+
+      /* Draw "Create" button below keyboard */
+      {
+         int key_w = (int)(strm->font_size * 1.8f);
+         int key_h = (int)(strm->font_size * STREAMLINED_ITEM_PILL_HEIGHT_MULT);
+         int key_gap = (int)(4 * strm->scale_factor);
+         int max_row_width = 10 * key_w + 9 * key_gap;
+         int btn_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_MULT)
+               + kb_height + key_gap;
+         int btn_w = key_w * 4 + key_gap * 3;
+         int btn_x = ((int)video_width - btn_w) / 2;
+         int btn_text_y = btn_y + key_h / 2 + (int)(strm->font_size * 0.30f);
+         bool create_selected = strm->playlist_name_focus_create;
+         float *bg_color = create_selected ? streamlined_color_selection : streamlined_color_bg;
+         uint32_t text_color = create_selected
+               ? streamlined_color_text_dark : streamlined_color_text;
+         const char *create_label = "Create";
+         int label_w = streamlined_get_text_width(strm, create_label, FONT_NORMAL);
+
+         streamlined_draw_rounded_pill(strm, p_disp, userdata,
+               btn_x, btn_y, btn_w, key_h,
+               video_width, video_height, bg_color);
+         streamlined_draw_text(strm, p_disp, video_width, video_height,
+               btn_x + (btn_w - label_w) / 2, btn_text_y,
+               create_label, text_color, false);
+
+         y += kb_height + key_gap + key_h + key_gap;
+      }
+   }
 #endif
 
    /* Reserve space on the right for thumbnail when one is visible */
@@ -3847,7 +4016,7 @@ static void streamlined_start_rename_games(streamlined_t *strm)
  * Populate the Game List Options menu.
  * Entries are conditional on whether the selected game has a save state.
  */
-static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites, bool in_game_switcher)
+static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favorites, bool in_game_switcher, bool in_playlist)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
@@ -3941,6 +4110,20 @@ static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favor
          menu_entries_append(list,
                "Add to Favorites", "", STREAMLINED_OPTIONS_ADD_FAVORITE,
                MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+
+   /* Playlist: Add to / Remove from */
+   if (in_playlist)
+   {
+      menu_entries_append(list,
+            "Remove from Playlist", "", STREAMLINED_OPTIONS_REMOVE_FROM_PLAYLIST,
+            MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+   else
+   {
+      menu_entries_append(list,
+            "Add to Playlist", "", STREAMLINED_OPTIONS_ADD_TO_PLAYLIST,
+            MENU_SETTING_ACTION, 0, 0, NULL);
    }
 
    /* Remove from Game Switcher (only in game switcher context) */
@@ -4094,6 +4277,16 @@ static void streamlined_search_keyboard_cb(void *userdata, const char *line)
    strm->search_keyboard_done = true;
 }
 
+static void streamlined_playlist_name_keyboard_cb(void *userdata, const char *line)
+{
+   streamlined_t *strm = (streamlined_t *)userdata;
+   if (!strm)
+      return;
+   if (line)
+      strlcpy(strm->playlist_name_buf, line, sizeof(strm->playlist_name_buf));
+   strm->playlist_naming_done = true;
+}
+
 static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
 {
    streamlined_t *strm = (streamlined_t *)userdata;
@@ -4130,7 +4323,7 @@ static void streamlined_delete_confirm_cb(void *userdata, bool confirmed)
       strm->in_options_menu = true;
       strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
       streamlined_populate_options_menu(strm, strm->in_favorites,
-            strm->in_game_switcher);
+            strm->in_game_switcher, strm->in_playlist);
       streamlined_select_options_entry(
             strm->delete_is_game ? STREAMLINED_OPTIONS_DELETE_GAME
                                  : STREAMLINED_OPTIONS_DELETE_SAVE);
@@ -4865,6 +5058,513 @@ static void streamlined_populate_favorites_menu(streamlined_t *strm)
 }
 
 /*
+ * Check if a playlist filename is a built-in special playlist that should
+ * be filtered out from user playlist listings.
+ */
+static bool streamlined_is_special_playlist(const char *filename)
+{
+   if (string_ends_with(filename, "_history.lpl")
+         || string_ends_with(filename, "_favorites.lpl")
+         || string_ends_with(filename, "_image_history.lpl")
+         || string_ends_with(filename, "_music_history.lpl")
+         || string_ends_with(filename, "_video_history.lpl"))
+      return true;
+   return false;
+}
+
+/*
+ * Set state flags to return from a playlist to the appropriate parent.
+ */
+static void streamlined_exit_playlist(streamlined_t *strm)
+{
+   settings_t *settings = config_get_ptr();
+
+   strm->in_playlist = false;
+   strm->current_playlist_path[0] = '\0';
+   strm->current_playlist_name[0] = '\0';
+
+   if (settings && settings->uints.menu_streamlined_playlist_display_mode == 1)
+   {
+      /* Top-level mode: return directly to main menu */
+      strm->return_to_top_level = true;
+      strm->top_level_selection = strm->playlist_saved_selection;
+      strm->in_playlists = false;
+   }
+   /* else: grouped mode handled by back button going to playlists list */
+}
+
+/*
+ * Exit the playlists list and return to the top-level menu.
+ */
+static void streamlined_exit_playlists(streamlined_t *strm)
+{
+   strm->return_to_top_level = true;
+   strm->top_level_selection = strm->playlists_saved_selection;
+   strm->in_playlists = false;
+   strm->in_playlist = false;
+}
+
+/*
+ * Populate the menu with a list of all user playlists (.lpl files).
+ */
+static void streamlined_populate_playlists_menu(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   settings_t *settings = config_get_ptr();
+   struct string_list *lpl_list;
+
+   if (!menu_st || !strm || !settings)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   if (string_is_empty(settings->paths.directory_playlist))
+   {
+      menu_entries_append(list,
+            "No playlist directory configured", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   lpl_list = dir_list_new(
+         settings->paths.directory_playlist,
+         "lpl", false, false, false, false);
+
+   if (!lpl_list || lpl_list->size == 0)
+   {
+      if (lpl_list)
+         string_list_free(lpl_list);
+      menu_entries_append(list,
+            "No playlists", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   dir_list_sort(lpl_list, true);
+
+   {
+      size_t j;
+      for (j = 0; j < lpl_list->size; j++)
+      {
+         const char *lpl_path = lpl_list->elems[j].data;
+         const char *filename = path_basename(lpl_path);
+         char display_name[256];
+
+         if (string_is_empty(filename))
+            continue;
+
+         /* Filter out built-in special playlists */
+         if (streamlined_is_special_playlist(filename))
+            continue;
+
+         /* Strip .lpl extension for display */
+         strlcpy(display_name, filename, sizeof(display_name));
+         path_remove_extension(display_name);
+
+         menu_entries_append(list,
+               display_name, lpl_path,
+               STREAMLINED_PLAYLIST_ITEM_ENTRY,
+               MENU_SETTING_ACTION,
+               0, 0, NULL);
+      }
+   }
+
+   string_list_free(lpl_list);
+
+   if (list->size == 0)
+   {
+      menu_entries_append(list,
+            "No playlists", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+   }
+}
+
+/*
+ * Populate the menu with entries from a specific playlist.
+ * Follows the same pattern as streamlined_populate_favorites_menu().
+ */
+static void streamlined_populate_playlist_entries(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   playlist_config_t pl_config;
+   playlist_t *pl;
+   size_t pl_size, j;
+
+   if (!menu_st || !strm)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   if (string_is_empty(strm->current_playlist_path))
+   {
+      menu_entries_append(list,
+            "No playlist selected", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   memset(&pl_config, 0, sizeof(pl_config));
+   pl_config.capacity = COLLECTION_SIZE;
+   strlcpy(pl_config.path, strm->current_playlist_path, sizeof(pl_config.path));
+   pl = playlist_init(&pl_config);
+
+   if (!pl)
+   {
+      menu_entries_append(list,
+            "Failed to load playlist", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   pl_size = playlist_size(pl);
+   if (pl_size == 0)
+   {
+      menu_entries_append(list,
+            "No games", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      playlist_free(pl);
+      return;
+   }
+
+   for (j = 0; j < pl_size; j++)
+   {
+      const struct playlist_entry *pl_entry = NULL;
+      char resolved_path[PATH_MAX_LENGTH];
+
+      playlist_get_index(pl, j, &pl_entry);
+      if (!pl_entry || string_is_empty(pl_entry->path))
+         continue;
+
+      strlcpy(resolved_path, pl_entry->path, sizeof(resolved_path));
+      playlist_resolve_path(PLAYLIST_LOAD, false,
+            resolved_path, sizeof(resolved_path));
+
+      {
+         char m3u_path[PATH_MAX_LENGTH];
+         if (streamlined_find_m3u_for_content(resolved_path,
+               m3u_path, sizeof(m3u_path)))
+         {
+            char name_buf[256];
+            char m3u_parent[PATH_MAX_LENGTH];
+            fill_pathname_parent_dir(m3u_parent, m3u_path, sizeof(m3u_parent));
+            streamlined_strip_trailing_slash(m3u_parent);
+            streamlined_get_display_name(m3u_parent,
+                  name_buf, sizeof(name_buf), true);
+            menu_entries_append(list,
+                  name_buf, resolved_path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
+         else if (!string_is_empty(pl_entry->label))
+         {
+            menu_entries_append(list,
+                  pl_entry->label, resolved_path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
+         else
+         {
+            char name_buf[256];
+            streamlined_get_display_name(resolved_path,
+                  name_buf, sizeof(name_buf), false);
+            menu_entries_append(list,
+                  name_buf, resolved_path,
+                  MSG_UNKNOWN, FILE_TYPE_PLAIN,
+                  0, 0, NULL);
+         }
+      }
+   }
+
+   playlist_free(pl);
+}
+
+/*
+ * Populate the playlist management menu (Y button on playlists list).
+ */
+static void streamlined_populate_playlist_manage_menu(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+
+   if (!menu_st || !strm)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   menu_entries_append(list,
+         "Create Playlist", "",
+         STREAMLINED_PLAYLIST_MANAGE_CREATE,
+         MENU_SETTING_ACTION, 0, 0, NULL);
+
+   if (!string_is_empty(strm->playlist_delete_name))
+   {
+      char label[256];
+      snprintf(label, sizeof(label), "Delete %s", strm->playlist_delete_name);
+      menu_entries_append(list,
+            label, strm->playlist_delete_path,
+            STREAMLINED_PLAYLIST_MANAGE_DELETE,
+            MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+}
+
+/*
+ * Populate a list of playlists for the "Add to Playlist" selection.
+ */
+static void streamlined_populate_playlist_selection(streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   settings_t *settings = config_get_ptr();
+   struct string_list *lpl_list;
+
+   if (!menu_st || !strm || !settings)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list)
+      return;
+
+   menu_entries_clear(list);
+
+   if (string_is_empty(settings->paths.directory_playlist))
+   {
+      menu_entries_append(list,
+            "No playlist directory", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   lpl_list = dir_list_new(
+         settings->paths.directory_playlist,
+         "lpl", false, false, false, false);
+
+   if (!lpl_list || lpl_list->size == 0)
+   {
+      if (lpl_list)
+         string_list_free(lpl_list);
+      menu_entries_append(list,
+            "No playlists available", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+      return;
+   }
+
+   dir_list_sort(lpl_list, true);
+
+   {
+      size_t j;
+      for (j = 0; j < lpl_list->size; j++)
+      {
+         const char *lpl_path = lpl_list->elems[j].data;
+         const char *filename = path_basename(lpl_path);
+         char display_name[256];
+
+         if (string_is_empty(filename))
+            continue;
+
+         if (streamlined_is_special_playlist(filename))
+            continue;
+
+         strlcpy(display_name, filename, sizeof(display_name));
+         path_remove_extension(display_name);
+
+         menu_entries_append(list,
+               display_name, lpl_path,
+               STREAMLINED_OPTIONS_ADD_TO_PLAYLIST,
+               MENU_SETTING_ACTION,
+               0, 0, NULL);
+      }
+   }
+
+   string_list_free(lpl_list);
+
+   if (list->size == 0)
+   {
+      menu_entries_append(list,
+            "No playlists available", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE,
+            0, 0, NULL);
+   }
+}
+
+/*
+ * Add a game to a user playlist (.lpl file).
+ */
+static void streamlined_add_to_playlist(const char *lpl_path,
+      const char *game_path, const char *core_path)
+{
+   playlist_config_t pl_config;
+   playlist_t *pl;
+   struct playlist_entry entry;
+   char display_name[256];
+   core_info_t *core_info = NULL;
+   const char *core_name = "DETECT";
+
+   if (string_is_empty(lpl_path) || string_is_empty(game_path))
+      return;
+
+   memset(&pl_config, 0, sizeof(pl_config));
+   pl_config.capacity = COLLECTION_SIZE;
+   strlcpy(pl_config.path, lpl_path, sizeof(pl_config.path));
+   pl = playlist_init(&pl_config);
+   if (!pl)
+      return;
+
+   /* Check duplicate */
+   if (playlist_entry_exists(pl, game_path))
+   {
+      playlist_free(pl);
+      return;
+   }
+
+   /* Derive display name */
+   {
+      bool is_m3u = m3u_file_is_m3u(game_path);
+      if (is_m3u)
+      {
+         char parent_dir[PATH_MAX_LENGTH];
+         fill_pathname_parent_dir(parent_dir, game_path, sizeof(parent_dir));
+         streamlined_strip_trailing_slash(parent_dir);
+         streamlined_get_display_name(parent_dir,
+               display_name, sizeof(display_name), true);
+      }
+      else
+         streamlined_get_display_name(game_path,
+               display_name, sizeof(display_name), false);
+   }
+
+   /* Resolve core name */
+   if (!string_is_empty(core_path)
+         && core_info_find(core_path, &core_info) && core_info)
+      core_name = core_info->core_name ? core_info->core_name : "DETECT";
+
+   memset(&entry, 0, sizeof(entry));
+   entry.path      = (char*)game_path;
+   entry.label     = display_name;
+   entry.core_path = (char*)(string_is_empty(core_path) ? "DETECT" : core_path);
+   entry.core_name = (char*)core_name;
+
+   playlist_push(pl, &entry);
+   playlist_qsort(pl);
+   playlist_write_file(pl);
+   playlist_free(pl);
+}
+
+/*
+ * Remove a game from a user playlist (.lpl file).
+ */
+static void streamlined_remove_from_playlist(const char *lpl_path,
+      const char *game_path)
+{
+   playlist_config_t pl_config;
+   playlist_t *pl;
+
+   if (string_is_empty(lpl_path) || string_is_empty(game_path))
+      return;
+
+   memset(&pl_config, 0, sizeof(pl_config));
+   pl_config.capacity = COLLECTION_SIZE;
+   strlcpy(pl_config.path, lpl_path, sizeof(pl_config.path));
+   pl = playlist_init(&pl_config);
+   if (!pl)
+      return;
+
+   playlist_delete_by_path(pl, game_path);
+   playlist_write_file(pl);
+   playlist_free(pl);
+}
+
+/*
+ * Create a new empty playlist with the given name.
+ */
+static bool streamlined_create_playlist(const char *name)
+{
+   settings_t *settings = config_get_ptr();
+   char lpl_path[PATH_MAX_LENGTH];
+   playlist_config_t pl_config;
+   playlist_t *pl;
+
+   if (!settings || string_is_empty(name)
+         || string_is_empty(settings->paths.directory_playlist))
+      return false;
+
+   fill_pathname_join_special(lpl_path,
+         settings->paths.directory_playlist,
+         name, sizeof(lpl_path));
+   strlcat(lpl_path, ".lpl", sizeof(lpl_path));
+
+   memset(&pl_config, 0, sizeof(pl_config));
+   pl_config.capacity = COLLECTION_SIZE;
+   strlcpy(pl_config.path, lpl_path, sizeof(pl_config.path));
+   pl = playlist_init(&pl_config);
+   if (!pl)
+      return false;
+
+   playlist_write_file(pl);
+   playlist_free(pl);
+   return true;
+}
+
+/*
+ * Delete a playlist file and its runtime companion.
+ */
+static void streamlined_delete_playlist(const char *lpl_path)
+{
+   char runtime_path[PATH_MAX_LENGTH];
+
+   if (string_is_empty(lpl_path))
+      return;
+
+   filestream_delete(lpl_path);
+
+   /* Also delete .lpl.runtime if it exists */
+   strlcpy(runtime_path, lpl_path, sizeof(runtime_path));
+   strlcat(runtime_path, ".runtime", sizeof(runtime_path));
+   filestream_delete(runtime_path);
+}
+
+/*
  * Populate the menu with a list of all installed cores.
  * Used when the user needs to select which core to use for a folder.
  */
@@ -5342,6 +6042,58 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
                "Game Switcher", "streamlined_game_switcher",
                STREAMLINED_GAME_SWITCHER_ENTRY,
                MENU_SETTING_ACTION, 0, 0);
+      }
+   }
+
+   /* Add Playlists entries at top level when enabled */
+   if (!show_folder_slash)
+   {
+      settings_t *pl_settings = config_get_ptr();
+      if (pl_settings && pl_settings->bools.menu_content_show_playlists)
+      {
+         if (pl_settings->uints.menu_streamlined_playlist_display_mode == 0)
+         {
+            /* Grouped mode: single "Playlists" entry */
+            menu_entries_prepend(list,
+                  "Playlists", "streamlined_playlists",
+                  STREAMLINED_PLAYLISTS_ENTRY,
+                  MENU_SETTING_ACTION, 0, 0);
+         }
+         else
+         {
+            /* Top-level mode: each playlist as its own entry */
+            if (!string_is_empty(pl_settings->paths.directory_playlist))
+            {
+               struct string_list *lpl_list = dir_list_new(
+                     pl_settings->paths.directory_playlist,
+                     "lpl", false, false, false, false);
+               if (lpl_list)
+               {
+                  size_t j;
+                  dir_list_sort(lpl_list, true);
+                  /* Prepend in reverse order so alphabetical first ends up on top */
+                  for (j = lpl_list->size; j > 0; j--)
+                  {
+                     const char *lpl_path = lpl_list->elems[j - 1].data;
+                     const char *filename = path_basename(lpl_path);
+                     char display_name[256];
+
+                     if (string_is_empty(filename)
+                           || streamlined_is_special_playlist(filename))
+                        continue;
+
+                     strlcpy(display_name, filename, sizeof(display_name));
+                     path_remove_extension(display_name);
+
+                     menu_entries_prepend(list,
+                           display_name, lpl_path,
+                           STREAMLINED_PLAYLIST_ITEM_ENTRY,
+                           MENU_SETTING_ACTION, 0, 0);
+                  }
+                  string_list_free(lpl_list);
+               }
+            }
+         }
       }
    }
 
@@ -6959,6 +7711,21 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             streamlined_refresh_game_switcher_view(strm);
             return 0;
          }
+
+         /* Add to Playlist — show playlist selection */
+         if (entry->enum_idx == STREAMLINED_OPTIONS_ADD_TO_PLAYLIST)
+         {
+            const char *eff_core = streamlined_effective_core(strm);
+            strlcpy(strm->add_to_playlist_game_path, strm->options_game_path,
+                  sizeof(strm->add_to_playlist_game_path));
+            strlcpy(strm->add_to_playlist_core_path, eff_core ? eff_core : "",
+                  sizeof(strm->add_to_playlist_core_path));
+            strm->selecting_playlist = true;
+            strm->in_options_menu = false;
+            streamlined_populate_playlist_selection(strm);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
       }
 
       /* Allow navigation in GLO */
@@ -7065,7 +7832,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
             strm->game_switcher_in_glo = true;
             strm->in_options_menu = true;
-            streamlined_populate_options_menu(strm, false, true);
+            streamlined_populate_options_menu(strm, false, true, false);
             menu_st->selection_ptr = 0;
             return 0;
          }
@@ -7151,7 +7918,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                strm->game_switcher_index = menu_st->selection_ptr;
                strm->game_switcher_in_glo = true;
                strm->in_options_menu = true;
-               streamlined_populate_options_menu(strm, false, true);
+               streamlined_populate_options_menu(strm, false, true, false);
                menu_st->selection_ptr = 0;
             }
             return 0;
@@ -7350,7 +8117,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->selecting_core_for_folder = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
          streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_FOLDER_CORE);
          return 0;
       }
@@ -7376,7 +8143,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->selecting_core_for_folder = false;
             strm->in_options_menu = true;
             strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-            streamlined_populate_options_menu(strm, strm->in_favorites, false);
+            streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
             streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_FOLDER_CORE);
             return 0;
          }
@@ -7397,7 +8164,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->selecting_core_for_game = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
          streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
          return 0;
       }
@@ -7423,7 +8190,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->selecting_core_for_game = false;
             strm->in_options_menu = true;
             strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-            streamlined_populate_options_menu(strm, strm->in_favorites, false);
+            streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
             streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
             return 0;
          }
@@ -7450,7 +8217,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                strm->selecting_core_for_game = false;
                strm->in_options_menu = true;
                strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-               streamlined_populate_options_menu(strm, strm->in_favorites, false);
+               streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
                streamlined_select_options_entry(STREAMLINED_OPTIONS_SET_GAME_CORE);
                return 0;
             }
@@ -7500,7 +8267,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
          streamlined_populate_options_menu(strm, strm->in_favorites,
-               strm->in_game_switcher);
+               strm->in_game_switcher, strm->in_playlist);
          streamlined_select_options_entry(
                strm->delete_is_game ? STREAMLINED_OPTIONS_DELETE_GAME
                                     : STREAMLINED_OPTIONS_DELETE_SAVE);
@@ -7546,7 +8313,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_random_preview = false;
          strm->in_options_menu = true;
          strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
          streamlined_select_options_entry(STREAMLINED_OPTIONS_RANDOM_GAME);
          return 0;
       }
@@ -7635,6 +8402,121 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       }
 
       return 0;  /* Block all other actions */
+   }
+
+   /* Playlist naming mode: keyboard input for new playlist name */
+   if (strm && strm->in_playlist_naming)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+#if TARGET_OS_TV
+         if (ios_keyboard_active())
+            ios_keyboard_end();
+#endif
+         strm->in_playlist_naming = false;
+         strm->in_playlist_manage = true;
+         strm->in_playlists = true;
+         streamlined_populate_playlist_manage_menu(strm);
+         menu_st->selection_ptr = 0;
+         return 0;
+      }
+
+#if TARGET_OS_TV
+      /* tvOS: wait for keyboard done, then create */
+      if (strm->playlist_naming_done)
+      {
+         strm->playlist_name_len = strlen(strm->playlist_name_buf);
+         if (strm->playlist_name_len > 0)
+            streamlined_create_playlist(strm->playlist_name_buf);
+         strm->in_playlist_naming = false;
+         strm->in_playlists = true;
+         streamlined_populate_playlists_menu(strm);
+         menu_st->selection_ptr = 0;
+         return 0;
+      }
+      return 0;  /* Block input while tvOS keyboard active */
+#else
+      /* non-tvOS: on-screen QWERTY keyboard */
+      if (!strm->playlist_name_focus_create)
+      {
+         /* Keyboard grid navigation */
+         if (action == MENU_ACTION_UP)
+         {
+            strm->playlist_name_kb_row--;
+            if (strm->playlist_name_kb_row < 0)
+               strm->playlist_name_kb_row = STREAMLINED_KB_NUM_ROWS - 1;
+            if (strm->playlist_name_kb_col >= streamlined_kb_row_lens[strm->playlist_name_kb_row])
+               strm->playlist_name_kb_col = streamlined_kb_row_lens[strm->playlist_name_kb_row] - 1;
+            return 0;
+         }
+         if (action == MENU_ACTION_DOWN)
+         {
+            strm->playlist_name_kb_row++;
+            if (strm->playlist_name_kb_row >= STREAMLINED_KB_NUM_ROWS)
+            {
+               strm->playlist_name_focus_create = true;
+               strm->playlist_name_kb_row = STREAMLINED_KB_NUM_ROWS - 1;
+               return 0;
+            }
+            if (strm->playlist_name_kb_col >= streamlined_kb_row_lens[strm->playlist_name_kb_row])
+               strm->playlist_name_kb_col = streamlined_kb_row_lens[strm->playlist_name_kb_row] - 1;
+            return 0;
+         }
+         if (action == MENU_ACTION_LEFT)
+         {
+            strm->playlist_name_kb_col--;
+            if (strm->playlist_name_kb_col < 0)
+               strm->playlist_name_kb_col = streamlined_kb_row_lens[strm->playlist_name_kb_row] - 1;
+            return 0;
+         }
+         if (action == MENU_ACTION_RIGHT)
+         {
+            strm->playlist_name_kb_col++;
+            if (strm->playlist_name_kb_col >= streamlined_kb_row_lens[strm->playlist_name_kb_row])
+               strm->playlist_name_kb_col = 0;
+            return 0;
+         }
+         if (action == MENU_ACTION_OK)
+         {
+            char ch = streamlined_kb_rows[strm->playlist_name_kb_row][strm->playlist_name_kb_col];
+            if (ch == '\x08')
+            {
+               if (strm->playlist_name_len > 0)
+               {
+                  strm->playlist_name_len--;
+                  strm->playlist_name_buf[strm->playlist_name_len] = '\0';
+               }
+            }
+            else if (strm->playlist_name_len < sizeof(strm->playlist_name_buf) - 1)
+            {
+               strm->playlist_name_buf[strm->playlist_name_len++] = ch;
+               strm->playlist_name_buf[strm->playlist_name_len] = '\0';
+            }
+            return 0;
+         }
+         return 0;
+      }
+      else
+      {
+         /* "Create" button focused */
+         if (action == MENU_ACTION_UP)
+         {
+            strm->playlist_name_focus_create = false;
+            return 0;
+         }
+         if (action == MENU_ACTION_OK)
+         {
+            if (strm->playlist_name_len > 0)
+               streamlined_create_playlist(strm->playlist_name_buf);
+            strm->in_playlist_naming = false;
+            strm->in_playlists = true;
+            streamlined_populate_playlists_menu(strm);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+         return 0;
+      }
+#endif
    }
 
    /* Deferred transition: options -> search (absorbs lingering OK press) */
@@ -7957,8 +8839,73 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       strm->return_to_options = false;
       strm->in_options_menu = true;
       strm->cancel_ignore_frames = STREAMLINED_CANCEL_IGNORE_FRAMES;
-      streamlined_populate_options_menu(strm, strm->in_favorites, false);
+      streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
       streamlined_select_options_entry(STREAMLINED_OPTIONS_SEARCH);
+      return 0;
+   }
+
+   /* Handle playlist selection (Add to Playlist flow) */
+   if (strm && strm->selecting_playlist)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->selecting_playlist = false;
+         strm->in_options_menu = true;
+         streamlined_populate_options_menu(strm, strm->in_favorites,
+               strm->in_game_switcher, strm->in_playlist);
+         menu_st->selection_ptr = 0;
+         return 0;
+      }
+
+      if (action == MENU_ACTION_OK && entry)
+      {
+         const char *lpl_path = entry->label;
+         streamlined_add_to_playlist(lpl_path,
+               strm->add_to_playlist_game_path,
+               strm->add_to_playlist_core_path);
+         strm->selecting_playlist = false;
+
+         /* Return to the appropriate game list */
+         if (strm->in_game_switcher)
+         {
+            strm->game_switcher_in_glo = false;
+            strm->in_options_menu = false;
+            streamlined_refresh_game_switcher_view(strm);
+         }
+         else if (strm->in_playlist)
+         {
+            strm->in_options_menu = false;
+            streamlined_populate_playlist_entries(strm);
+            menu_st->selection_ptr = strm->options_saved_selection;
+         }
+         else if (strm->in_favorites)
+         {
+            strm->in_options_menu = false;
+            streamlined_populate_favorites_menu(strm);
+            menu_st->selection_ptr = strm->options_saved_selection;
+         }
+         else if (strm->options_was_in_folder)
+         {
+            strm->in_options_menu = false;
+            streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+            menu_st->selection_ptr = strm->options_saved_selection;
+         }
+         else
+         {
+            settings_t *settings = config_get_ptr();
+            strm->in_options_menu = false;
+            if (settings)
+               streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+            menu_st->selection_ptr = strm->options_saved_selection;
+         }
+         return 0;
+      }
+
+      /* Allow navigation */
+      if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN
+            || action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+         return generic_menu_entry_action(userdata, entry, i, action);
+
       return 0;
    }
 
@@ -7980,6 +8927,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
          if (strm->in_favorites)
             streamlined_populate_favorites_menu(strm);
+         else if (strm->in_playlist)
+            streamlined_populate_playlist_entries(strm);
          else if (strm->options_was_in_folder)
             streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
          else
@@ -8051,6 +9000,117 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                }
                menu_st->selection_ptr = strm->options_saved_selection;
                strm->rom_thumbnail_selection = (size_t)-1;
+            }
+            return 0;
+         }
+
+         /* Add to Playlist — show playlist selection */
+         if (entry->enum_idx == STREAMLINED_OPTIONS_ADD_TO_PLAYLIST)
+         {
+            const char *eff_core = streamlined_effective_core(strm);
+            strlcpy(strm->add_to_playlist_game_path, strm->options_game_path,
+                  sizeof(strm->add_to_playlist_game_path));
+            strlcpy(strm->add_to_playlist_core_path, eff_core ? eff_core : "",
+                  sizeof(strm->add_to_playlist_core_path));
+            strm->selecting_playlist = true;
+            strm->in_options_menu = false;
+            streamlined_populate_playlist_selection(strm);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         /* Remove from Playlist */
+         if (entry->enum_idx == STREAMLINED_OPTIONS_REMOVE_FROM_PLAYLIST)
+         {
+            streamlined_remove_from_playlist(strm->current_playlist_path,
+                  strm->options_game_path);
+            strm->in_options_menu = false;
+
+            /* Check if playlist is now empty */
+            {
+               playlist_config_t check_config;
+               playlist_t *check_pl;
+               memset(&check_config, 0, sizeof(check_config));
+               check_config.capacity = COLLECTION_SIZE;
+               strlcpy(check_config.path, strm->current_playlist_path, sizeof(check_config.path));
+               check_pl = playlist_init(&check_config);
+               if (!check_pl || playlist_size(check_pl) == 0)
+               {
+                  if (check_pl)
+                     playlist_free(check_pl);
+                  /* Playlist empty — go back */
+                  settings_t *settings = config_get_ptr();
+                  strm->in_playlist = false;
+                  strm->current_playlist_path[0] = '\0';
+                  if (strm->in_playlists)
+                  {
+                     streamlined_populate_playlists_menu(strm);
+                     menu_st->selection_ptr = strm->playlist_saved_selection;
+                  }
+                  else
+                  {
+                     if (settings)
+                        streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+                     menu_st->selection_ptr = strm->playlist_saved_selection;
+                  }
+               }
+               else
+               {
+                  size_t remaining = playlist_size(check_pl);
+                  playlist_free(check_pl);
+                  streamlined_populate_playlist_entries(strm);
+                  strm->rom_thumbnail_selection = (size_t)-1;
+                  if (strm->options_saved_selection >= remaining)
+                     menu_st->selection_ptr = remaining > 0 ? remaining - 1 : 0;
+                  else
+                     menu_st->selection_ptr = strm->options_saved_selection;
+               }
+            }
+            return 0;
+         }
+
+         /* Playlist manage: Create — enter naming mode */
+         if (entry->enum_idx == STREAMLINED_PLAYLIST_MANAGE_CREATE)
+         {
+            strm->in_playlist_naming = true;
+            strm->in_playlist_manage = false;
+            strm->playlist_name_buf[0] = '\0';
+            strm->playlist_name_len = 0;
+            strm->playlist_naming_done = false;
+            strm->playlist_name_focus_create = false;
+#if TARGET_OS_TV
+            strm->playlist_name_kb_ptr = NULL;
+            strm->playlist_name_kb_size = 0;
+            strm->playlist_name_kb_offset = 0;
+            {
+               char *prev_buf = strm->playlist_name_kb_ptr;
+               ios_keyboard_start(
+                     &strm->playlist_name_kb_ptr,
+                     &strm->playlist_name_kb_size,
+                     &strm->playlist_name_kb_offset,
+                     "Playlist Name",
+                     streamlined_playlist_name_keyboard_cb,
+                     strm);
+               free(prev_buf);
+            }
+#else
+            strm->playlist_name_kb_row = 0;
+            strm->playlist_name_kb_col = 0;
+#endif
+            return 0;
+         }
+
+         /* Playlist manage: Delete */
+         if (entry->enum_idx == STREAMLINED_PLAYLIST_MANAGE_DELETE)
+         {
+            const char *lpl_path = entry->label;
+            if (!string_is_empty(lpl_path))
+            {
+               streamlined_delete_playlist(lpl_path);
+               strm->in_playlist_manage = false;
+               strm->in_playlists = true;
+               streamlined_populate_playlists_menu(strm);
+               menu_st->selection_ptr = 0;
             }
             return 0;
          }
@@ -8314,6 +9374,61 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          }
       }
 
+      /* Back from playlist manage menu */
+      if (action == MENU_ACTION_CANCEL && strm->in_playlist_manage)
+      {
+         strm->in_playlist_manage = false;
+         strm->in_playlists = true;
+         streamlined_populate_playlists_menu(strm);
+         menu_st->selection_ptr = strm->playlist_manage_saved_selection;
+         return 0;
+      }
+
+      /* Back from browsing a specific playlist */
+      if (action == MENU_ACTION_CANCEL && strm->in_playlist)
+      {
+         settings_t *settings = config_get_ptr();
+         strm->in_playlist = false;
+         strm->current_playlist_path[0] = '\0';
+         strm->current_playlist_name[0] = '\0';
+         strm->selected_has_savestate = false;
+         strm->selected_is_file = false;
+         streamlined_reset_rom_thumbnail(strm);
+
+         if (settings && settings->uints.menu_streamlined_playlist_display_mode == 1)
+         {
+            /* Top-level mode: return to main menu */
+            strm->in_playlists = false;
+            const char *start_dir = settings->paths.directory_menu_content;
+            if (!string_is_empty(start_dir))
+               streamlined_populate_folder_menu(strm, start_dir, false);
+            menu_st->selection_ptr = strm->playlist_saved_selection;
+         }
+         else
+         {
+            /* Grouped mode: return to playlists list */
+            streamlined_populate_playlists_menu(strm);
+            menu_st->selection_ptr = strm->playlist_saved_selection;
+         }
+         return 0;
+      }
+
+      /* Back from playlists list — return to top level */
+      if (action == MENU_ACTION_CANCEL && strm->in_playlists)
+      {
+         settings_t *settings = config_get_ptr();
+         const char *start_dir = settings->paths.directory_menu_content;
+
+         strm->in_playlists = false;
+         strm->selected_has_savestate = false;
+         strm->selected_is_file = false;
+         streamlined_reset_rom_thumbnail(strm);
+         if (!string_is_empty(start_dir))
+            streamlined_populate_folder_menu(strm, start_dir, false);
+         menu_st->selection_ptr = strm->playlists_saved_selection;
+         return 0;
+      }
+
       /* Back from favorites — return to top level */
       if (action == MENU_ACTION_CANCEL && strm->in_favorites)
       {
@@ -8372,7 +9487,15 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       }
 
       /* Block back navigation at top level (nowhere to go) */
-      if (action == MENU_ACTION_CANCEL && !strm->in_folder && !strm->in_main_settings_submenu)
+      if (action == MENU_ACTION_CANCEL
+            && !strm->in_folder
+            && !strm->in_main_settings_submenu
+            && !strm->in_favorites
+            && !strm->in_playlists
+            && !strm->in_playlist
+            && !strm->in_playlist_manage
+            && !strm->in_playlist_naming
+            && !strm->selecting_playlist)
       {
          return 0;  /* Do nothing - can't go up from top level */
       }
@@ -8423,6 +9546,42 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             return 0;
          }
 
+         /* Playlists entry — enter playlists list (grouped mode) */
+         if (entry->enum_idx == STREAMLINED_PLAYLISTS_ENTRY)
+         {
+            strm->playlists_saved_selection = menu_st->selection_ptr;
+            strm->in_playlists = true;
+            strm->in_folder = false;
+            strm->folder_core_path[0] = '\0';
+            streamlined_populate_playlists_menu(strm);
+            streamlined_reset_rom_thumbnail(strm);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         /* Individual playlist entry — enter the playlist (top-level or from playlists list) */
+         if (entry->enum_idx == STREAMLINED_PLAYLIST_ITEM_ENTRY)
+         {
+            const char *lpl_path = entry->label;
+            const char *pl_name = entry->path;
+
+            /* Enter the playlist */
+            strm->playlist_saved_selection = menu_st->selection_ptr;
+            strlcpy(strm->current_playlist_path, lpl_path,
+                  sizeof(strm->current_playlist_path));
+            strlcpy(strm->current_playlist_name, pl_name,
+                  sizeof(strm->current_playlist_name));
+            strm->in_playlist = true;
+            strm->in_folder = false;
+            strm->folder_core_path[0] = '\0';
+            strm->selected_has_savestate = false;
+            strm->selected_is_file = false;
+            streamlined_populate_playlist_entries(strm);
+            streamlined_reset_rom_thumbnail(strm);
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
          /* For custom main menu entries, the full path is in entry->label
           * (entry->path contains the display name without path/extension) */
          const char *item_path = entry->label;
@@ -8464,6 +9623,35 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   streamlined_request_loading(strm, fav_core, item_path, false);
                   return 0;
                }
+               /* No core → show core selection screen */
+               strlcpy(strm->pending_content_path, item_path,
+                     sizeof(strm->pending_content_path));
+               strm->selecting_core = true;
+               streamlined_populate_core_selection(strm, item_path);
+               menu_st->selection_ptr = 0;
+               return 0;
+            }
+            else if (strm->in_playlist && path_is_valid(item_path))
+            {
+               /* Launch from playlist */
+               char pl_core[PATH_MAX_LENGTH];
+               playlist_config_t tmp_config;
+               playlist_t *tmp_pl;
+               memset(&tmp_config, 0, sizeof(tmp_config));
+               tmp_config.capacity = COLLECTION_SIZE;
+               strlcpy(tmp_config.path, strm->current_playlist_path, sizeof(tmp_config.path));
+               tmp_pl = playlist_init(&tmp_config);
+               if (tmp_pl && streamlined_resolve_content_core(item_path,
+                     pl_core, sizeof(pl_core),
+                     NULL, 0, tmp_pl))
+               {
+                  playlist_free(tmp_pl);
+                  streamlined_exit_playlist(strm);
+                  streamlined_request_loading(strm, pl_core, item_path, false);
+                  return 0;
+               }
+               if (tmp_pl)
+                  playlist_free(tmp_pl);
                /* No core → show core selection screen */
                strlcpy(strm->pending_content_path, item_path,
                      sizeof(strm->pending_content_path));
@@ -8582,6 +9770,75 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          }
       }
 
+      /* Y button on playlists list = Open manage menu (grouped mode only) */
+      if (action == MENU_ACTION_SEARCH && strm->in_playlists && !strm->in_playlist && entry)
+      {
+         strm->playlist_manage_saved_selection = menu_st->selection_ptr;
+
+         /* Store selected playlist info for potential deletion */
+         if (entry->enum_idx == STREAMLINED_PLAYLIST_ITEM_ENTRY)
+         {
+            strlcpy(strm->playlist_delete_path, entry->label,
+                  sizeof(strm->playlist_delete_path));
+            strlcpy(strm->playlist_delete_name, entry->path,
+                  sizeof(strm->playlist_delete_name));
+         }
+         else
+         {
+            strm->playlist_delete_path[0] = '\0';
+            strm->playlist_delete_name[0] = '\0';
+         }
+
+         strm->in_playlist_manage = true;
+         strm->in_playlists = false;
+         streamlined_populate_playlist_manage_menu(strm);
+         menu_st->selection_ptr = 0;
+         return 0;
+      }
+
+      /* Y button on playlist entries = Open GLO for selected game */
+      if (action == MENU_ACTION_SEARCH && strm->in_playlist
+            && strm->selected_is_file && entry)
+      {
+         char pl_folder[PATH_MAX_LENGTH];
+
+         strm->options_saved_selection = menu_st->selection_ptr;
+         strlcpy(strm->options_game_path, entry->label,
+               sizeof(strm->options_game_path));
+         strm->options_game_has_savestate = strm->selected_has_savestate;
+         strm->options_was_in_folder = false;
+
+         streamlined_get_content_folder_path(entry->label,
+               pl_folder, sizeof(pl_folder));
+         strlcpy(strm->options_folder_path, pl_folder,
+               sizeof(strm->options_folder_path));
+
+         /* Resolve core from the playlist */
+         {
+            playlist_config_t tmp_config;
+            playlist_t *tmp_pl;
+            memset(&tmp_config, 0, sizeof(tmp_config));
+            tmp_config.capacity = COLLECTION_SIZE;
+            strlcpy(tmp_config.path, strm->current_playlist_path, sizeof(tmp_config.path));
+            tmp_pl = playlist_init(&tmp_config);
+            if (tmp_pl)
+            {
+               streamlined_resolve_content_core(entry->label,
+                     strm->options_core_path, sizeof(strm->options_core_path),
+                     strm->options_game_core_path, sizeof(strm->options_game_core_path),
+                     tmp_pl);
+               playlist_free(tmp_pl);
+            }
+         }
+
+         strm->in_options_menu = true;
+         gfx_thumbnail_reset(&strm->rom_thumbnail);
+         strm->rom_thumbnail_path[0] = '\0';
+         streamlined_populate_options_menu(strm, false, false, strm->in_playlist);
+         menu_st->selection_ptr = 0;
+         return 0;
+      }
+
       /* Y button = Open Game List Options menu (Favorites) */
       if (action == MENU_ACTION_SEARCH && strm->in_favorites
             && strm->selected_is_file && entry)
@@ -8609,7 +9866,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_options_menu = true;
          gfx_thumbnail_reset(&strm->rom_thumbnail);
          strm->rom_thumbnail_path[0] = '\0';
-         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
          menu_st->selection_ptr = 0;
          return 0;
       }
@@ -8634,7 +9891,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          strm->in_options_menu = true;
          gfx_thumbnail_reset(&strm->rom_thumbnail);
          strm->rom_thumbnail_path[0] = '\0';
-         streamlined_populate_options_menu(strm, strm->in_favorites, false);
+         streamlined_populate_options_menu(strm, strm->in_favorites, false, strm->in_playlist);
          menu_st->selection_ptr = 0;
          return 0;
       }
