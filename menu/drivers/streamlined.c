@@ -81,6 +81,9 @@
 #include "../../verbosity.h"
 #include "../../defaults.h"
 #include "../../playlist.h"
+#include "../../database_info.h"
+#include <file/archive_file.h>
+#include <encodings/crc32.h>
 
 #if TARGET_OS_TV
 #include <CoreText/CoreText.h>
@@ -185,6 +188,7 @@ typedef struct
 #define STREAMLINED_GAME_SWITCHER_ENTRY    0xCB0A
 #define STREAMLINED_OPTIONS_REMOVE_FROM_SWITCHER 0xCB0B
 #define STREAMLINED_OPTIONS_DELETE_GAME     0xCB0C
+#define STREAMLINED_OPTIONS_RENAME_GAMES   0xCB0D
 
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
@@ -404,6 +408,20 @@ typedef struct
    bool delete_is_game;           /* in_delete_confirm context: true = game, false = autosave */
    bool delete_was_game;          /* Preserved past confirm for result-screen navigation */
    char delete_done_label[64];    /* "Game Deleted" or "Deleted Autosave" */
+
+   /* Rename games from database state */
+   bool rename_pending;           /* Waiting for rename screen to render before starting */
+   bool rename_active;            /* Currently processing files */
+   bool rename_done;              /* Processing complete, showing result */
+   uint64_t rename_done_start;    /* ticker_idx when rename completed */
+   struct string_list *rename_file_list;  /* Files to process */
+   size_t rename_index;           /* Current file being processed */
+   unsigned rename_count_renamed; /* Successfully renamed */
+   unsigned rename_count_skipped; /* Skipped (no match, already named, M3U) */
+   unsigned rename_count_failed;  /* Failed to rename */
+   unsigned rename_count_total;   /* Total files to process */
+   char rename_status[256];       /* Current status message for display */
+   char rename_db_dir[PATH_MAX_LENGTH]; /* Path to database directory */
 
    /* Loading screen state */
    bool loading_pending;          /* Waiting for loading screen to render */
@@ -1239,7 +1257,10 @@ static void streamlined_sync_menu_stack(streamlined_t *strm)
       || strm->in_random_preview
       || strm->in_game_switcher
       || strm->in_delete_confirm
-      || strm->delete_done;
+      || strm->delete_done
+      || strm->rename_pending
+      || strm->rename_active
+      || strm->rename_done;
 
    if (in_submenu && menu_stack->size == 1)
    {
@@ -3361,6 +3382,468 @@ static void streamlined_remove_from_all_playlists(const char *game_path)
 }
 
 /*
+ * Sanitize a database game name for use as a filename.
+ * Replaces characters that are invalid on common filesystems.
+ */
+static void streamlined_sanitize_filename(char *name, size_t name_size)
+{
+   size_t i;
+   if (!name)
+      return;
+   for (i = 0; name[i] != '\0' && i < name_size - 1; i++)
+   {
+      switch (name[i])
+      {
+         case '/':
+         case '\\':
+         case ':':
+         case '*':
+         case '?':
+         case '"':
+         case '<':
+         case '>':
+         case '|':
+            name[i] = '-';
+            break;
+         default:
+            break;
+      }
+   }
+}
+
+/*
+ * Update a game's path and label in all playlists (history, favorites, .lpl files).
+ * Similar structure to streamlined_remove_from_all_playlists but updates instead of deleting.
+ */
+static void streamlined_update_path_in_all_playlists(
+      const char *old_path, const char *new_path, const char *new_label)
+{
+   settings_t *settings;
+   size_t j, pl_size;
+
+   if (string_is_empty(old_path) || string_is_empty(new_path))
+      return;
+
+   /* Update in history */
+   if (g_defaults.content_history)
+   {
+      bool modified = false;
+      pl_size = playlist_size(g_defaults.content_history);
+      for (j = 0; j < pl_size; j++)
+      {
+         const struct playlist_entry *pl_entry = NULL;
+         playlist_get_index(g_defaults.content_history, j, &pl_entry);
+         if (pl_entry && !string_is_empty(pl_entry->path)
+               && string_is_equal(pl_entry->path, old_path))
+         {
+            struct playlist_entry update_entry = {0};
+            update_entry.path  = (char*)new_path;
+            update_entry.label = (char*)new_label;
+            playlist_update(g_defaults.content_history, j, &update_entry);
+            modified = true;
+         }
+      }
+      if (modified)
+         playlist_write_file(g_defaults.content_history);
+   }
+
+   /* Update in favorites */
+   if (g_defaults.content_favorites)
+   {
+      bool modified = false;
+      pl_size = playlist_size(g_defaults.content_favorites);
+      for (j = 0; j < pl_size; j++)
+      {
+         const struct playlist_entry *pl_entry = NULL;
+         playlist_get_index(g_defaults.content_favorites, j, &pl_entry);
+         if (pl_entry && !string_is_empty(pl_entry->path)
+               && string_is_equal(pl_entry->path, old_path))
+         {
+            struct playlist_entry update_entry = {0};
+            update_entry.path  = (char*)new_path;
+            update_entry.label = (char*)new_label;
+            playlist_update(g_defaults.content_favorites, j, &update_entry);
+            modified = true;
+         }
+      }
+      if (modified)
+         playlist_write_file(g_defaults.content_favorites);
+   }
+
+   /* Update in all .lpl playlist files */
+   settings = config_get_ptr();
+   if (settings && !string_is_empty(settings->paths.directory_playlist))
+   {
+      struct string_list *lpl_list = dir_list_new(
+            settings->paths.directory_playlist,
+            "lpl", false, false, false, false);
+      if (lpl_list)
+      {
+         size_t k;
+         for (k = 0; k < lpl_list->size; k++)
+         {
+            playlist_config_t pl_config;
+            playlist_t *pl;
+            bool modified = false;
+            memset(&pl_config, 0, sizeof(pl_config));
+            pl_config.capacity = COLLECTION_SIZE;
+            strlcpy(pl_config.path, lpl_list->elems[k].data,
+                  sizeof(pl_config.path));
+            pl = playlist_init(&pl_config);
+            if (pl)
+            {
+               size_t m, psz = playlist_size(pl);
+               for (m = 0; m < psz; m++)
+               {
+                  const struct playlist_entry *pl_entry = NULL;
+                  playlist_get_index(pl, m, &pl_entry);
+                  if (pl_entry && !string_is_empty(pl_entry->path)
+                        && string_is_equal(pl_entry->path, old_path))
+                  {
+                     struct playlist_entry update_entry = {0};
+                     update_entry.path  = (char*)new_path;
+                     update_entry.label = (char*)new_label;
+                     playlist_update(pl, m, &update_entry);
+                     modified = true;
+                  }
+               }
+               if (modified)
+                  playlist_write_file(pl);
+               playlist_free(pl);
+            }
+         }
+         string_list_free(lpl_list);
+      }
+   }
+}
+
+/*
+ * Process a single file for rename-from-database.
+ * Computes CRC32, queries the core's databases, renames if a match is found.
+ */
+static void streamlined_rename_one_file(streamlined_t *strm)
+{
+   const char *file_path;
+   char game_core_path[PATH_MAX_LENGTH];
+   const char *effective_core;
+   core_info_t *core_info = NULL;
+   struct string_list *db_list;
+   uint32_t crc;
+   char query[64];
+   size_t db_idx;
+   char game_name[PATH_MAX_LENGTH];
+   char folder_path[PATH_MAX_LENGTH];
+
+   if (!strm || !strm->rename_file_list
+       || strm->rename_index >= strm->rename_file_list->size)
+      return;
+
+   file_path = strm->rename_file_list->elems[strm->rename_index].data;
+   if (string_is_empty(file_path))
+   {
+      strm->rename_count_skipped++;
+      return;
+   }
+
+   /* Derive game name and folder path */
+   {
+      const char *basename = path_basename(file_path);
+      char *ext;
+      if (string_is_empty(basename))
+      {
+         strm->rename_count_skipped++;
+         return;
+      }
+      strlcpy(game_name, basename, sizeof(game_name));
+      ext = strrchr(game_name, '.');
+      if (ext)
+         *ext = '\0';
+   }
+   fill_pathname_parent_dir(folder_path, file_path, sizeof(folder_path));
+   streamlined_strip_trailing_slash(folder_path);
+
+   /* Resolve effective core: per-game override first, then folder core */
+   effective_core = NULL;
+   if (streamlined_read_game_core(strm->options_folder_path,
+         game_name, game_core_path, sizeof(game_core_path)))
+      effective_core = game_core_path;
+   else if (!string_is_empty(strm->options_core_path))
+      effective_core = strm->options_core_path;
+
+   if (string_is_empty(effective_core))
+   {
+      strm->rename_count_skipped++;
+      return;
+   }
+
+   /* Get core's databases */
+   if (!core_info_find(effective_core, &core_info) || !core_info)
+   {
+      strm->rename_count_skipped++;
+      return;
+   }
+
+   db_list = core_info->databases_list;
+   if (!db_list || db_list->size == 0)
+   {
+      strm->rename_count_skipped++;
+      return;
+   }
+
+   /* Compute CRC32 — try archive extraction first, fall back to raw file read */
+   crc = file_archive_get_file_crc32(file_path);
+   if (crc == 0)
+   {
+      /* file_archive_get_file_crc32 returns 0 for non-archive files (.nes, .sfc, etc.)
+       * Fall back to reading the file directly and computing CRC with encoding_crc32,
+       * matching the behavior of RetroArch's scanner (task_database.c) */
+      RFILE *crc_file = filestream_open(file_path,
+            RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+      if (crc_file)
+      {
+         uint32_t accumulator = 0;
+         uint8_t crc_buf[4096];
+         int64_t bytes_read;
+         while ((bytes_read = filestream_read(crc_file, crc_buf, sizeof(crc_buf))) > 0)
+            accumulator = encoding_crc32(accumulator, crc_buf, (size_t)bytes_read);
+         filestream_close(crc_file);
+         crc = accumulator;
+      }
+   }
+   if (crc == 0)
+   {
+      strm->rename_count_skipped++;
+      return;
+   }
+
+   /* Build query */
+   snprintf(query, sizeof(query), "{crc:b\"%08lX\"}", (unsigned long)crc);
+
+   /* Search the core's databases for a match */
+   for (db_idx = 0; db_idx < db_list->size; db_idx++)
+   {
+      char rdb_path[PATH_MAX_LENGTH];
+      database_info_list_t *db_info_list;
+      const char *db_name = db_list->elems[db_idx].data;
+
+      if (string_is_empty(db_name))
+         continue;
+
+      /* Build full .rdb path */
+      fill_pathname_join_special(rdb_path,
+            strm->rename_db_dir, db_name, sizeof(rdb_path));
+      strlcat(rdb_path, ".rdb", sizeof(rdb_path));
+
+      if (!path_is_valid(rdb_path))
+         continue;
+
+      db_info_list = database_info_list_new(rdb_path, query);
+      if (!db_info_list || db_info_list->count == 0)
+      {
+         if (db_info_list)
+            database_info_list_free(db_info_list);
+         continue;
+      }
+
+      /* Check for matching CRC32 */
+      {
+         size_t m;
+         for (m = 0; m < db_info_list->count; m++)
+         {
+            database_info_t *info = &db_info_list->list[m];
+            if (info->crc32 == crc && !string_is_empty(info->name))
+            {
+               /* Found a match — build new filename */
+               char new_name[PATH_MAX_LENGTH];
+               char new_path[PATH_MAX_LENGTH];
+               char display_name[256];
+               const char *old_ext;
+
+               strlcpy(new_name, info->name, sizeof(new_name));
+               streamlined_sanitize_filename(new_name, sizeof(new_name));
+
+               /* Preserve original extension */
+               old_ext = strrchr(path_basename(file_path), '.');
+               if (old_ext)
+                  strlcat(new_name, old_ext, sizeof(new_name));
+
+               /* Build full new path */
+               fill_pathname_join_special(new_path,
+                     folder_path, new_name, sizeof(new_path));
+
+               /* Skip if already correctly named */
+               if (string_is_equal(file_path, new_path))
+               {
+                  strm->rename_count_skipped++;
+                  database_info_list_free(db_info_list);
+                  return;
+               }
+
+               /* Skip if target already exists */
+               if (path_is_valid(new_path))
+               {
+                  strm->rename_count_skipped++;
+                  database_info_list_free(db_info_list);
+                  return;
+               }
+
+               /* Rename file on disk */
+               if (filestream_rename(file_path, new_path) != 0)
+               {
+                  strm->rename_count_failed++;
+                  database_info_list_free(db_info_list);
+                  return;
+               }
+
+               /* Build display name for playlist label */
+               strlcpy(display_name, info->name, sizeof(display_name));
+
+               /* Update all playlists */
+               streamlined_update_path_in_all_playlists(
+                     file_path, new_path, display_name);
+
+               /* Rename per-game core file if it exists */
+               {
+                  char old_core_file[PATH_MAX_LENGTH];
+                  char new_core_file[PATH_MAX_LENGTH];
+                  char old_game_name[PATH_MAX_LENGTH];
+                  char new_game_name[PATH_MAX_LENGTH];
+                  char *ext_ptr;
+
+                  /* Old game name (filename without extension) */
+                  strlcpy(old_game_name, game_name, sizeof(old_game_name));
+
+                  /* New game name (from new filename without extension) */
+                  strlcpy(new_game_name, new_name, sizeof(new_game_name));
+                  ext_ptr = strrchr(new_game_name, '.');
+                  if (ext_ptr)
+                     *ext_ptr = '\0';
+
+                  snprintf(old_core_file, sizeof(old_core_file),
+                        "%s/.core.%s.txt", strm->options_folder_path, old_game_name);
+                  snprintf(new_core_file, sizeof(new_core_file),
+                        "%s/.core.%s.txt", strm->options_folder_path, new_game_name);
+
+                  if (path_is_valid(old_core_file)
+                        && !string_is_equal(old_core_file, new_core_file))
+                     filestream_rename(old_core_file, new_core_file);
+               }
+
+               RARCH_LOG("[StreamlinedMenu] Renamed: %s -> %s (CRC: %08X)\n",
+                     path_basename(file_path), new_name, crc);
+               strm->rename_count_renamed++;
+               database_info_list_free(db_info_list);
+               return;
+            }
+         }
+      }
+
+      database_info_list_free(db_info_list);
+   }
+
+   /* No match found in any database */
+   strm->rename_count_skipped++;
+}
+
+/*
+ * Initialize the rename-from-database operation.
+ * Builds file list, filters out M3U/directories, sets up state.
+ */
+static void streamlined_start_rename_games(streamlined_t *strm)
+{
+   settings_t *settings;
+   struct string_list *raw_list;
+   size_t j, file_count;
+
+   if (!strm)
+      return;
+
+   settings = config_get_ptr();
+   if (!settings || string_is_empty(settings->paths.path_content_database))
+   {
+      /* No database directory configured — show error */
+      strlcpy(strm->rename_status, "No database directory configured",
+            sizeof(strm->rename_status));
+      strm->rename_done = true;
+      strm->rename_done_start = strm->ticker_idx;
+      return;
+   }
+
+   strlcpy(strm->rename_db_dir, settings->paths.path_content_database,
+         sizeof(strm->rename_db_dir));
+
+   /* List all files in the folder */
+   raw_list = dir_list_new(strm->options_folder_path,
+         NULL, true, settings->bools.show_hidden_files, true, false);
+
+   if (!raw_list || raw_list->size == 0)
+   {
+      if (raw_list)
+         string_list_free(raw_list);
+      strlcpy(strm->rename_status, "No games to rename",
+            sizeof(strm->rename_status));
+      strm->rename_done = true;
+      strm->rename_done_start = strm->ticker_idx;
+      return;
+   }
+
+   /* Build filtered file list (skip directories, M3U files, M3U game folders, dotfiles) */
+   strm->rename_file_list = string_list_new();
+   file_count = 0;
+
+   for (j = 0; j < raw_list->size; j++)
+   {
+      const char *path = raw_list->elems[j].data;
+      unsigned attr    = raw_list->elems[j].attr.i;
+      const char *name = path_basename(path);
+
+      if (!name || name[0] == '.')
+         continue;
+
+      /* Skip directories */
+      if (attr == RARCH_DIRECTORY)
+         continue;
+
+      /* Skip M3U files */
+      if (m3u_file_is_m3u(path))
+         continue;
+
+      {
+         union string_list_elem_attr elem_attr;
+         elem_attr.i = 0;
+         string_list_append(strm->rename_file_list, path, elem_attr);
+         file_count++;
+      }
+   }
+
+   string_list_free(raw_list);
+
+   if (file_count == 0)
+   {
+      string_list_free(strm->rename_file_list);
+      strm->rename_file_list = NULL;
+      strlcpy(strm->rename_status, "No games to rename",
+            sizeof(strm->rename_status));
+      strm->rename_done = true;
+      strm->rename_done_start = strm->ticker_idx;
+      return;
+   }
+
+   /* Initialize rename state */
+   strm->rename_index          = 0;
+   strm->rename_count_renamed  = 0;
+   strm->rename_count_skipped  = 0;
+   strm->rename_count_failed   = 0;
+   strm->rename_count_total    = (unsigned)file_count;
+   strm->rename_pending        = true;
+   strm->rename_active         = false;
+   strm->rename_done           = false;
+   strm->in_options_menu       = false;
+   snprintf(strm->rename_status, sizeof(strm->rename_status),
+         "Renaming games...");
+}
+
+/*
  * Populate the Game List Options menu.
  * Entries are conditional on whether the selected game has a save state.
  */
@@ -3421,6 +3904,14 @@ static void streamlined_populate_options_menu(streamlined_t *strm, bool in_favor
 
       menu_entries_append(list,
             "Random Game", "", STREAMLINED_OPTIONS_RANDOM_GAME,
+            MENU_SETTING_ACTION, 0, 0, NULL);
+   }
+
+   /* Rename Games from Database (only in folder context, not favorites/game switcher) */
+   if (!in_favorites && !in_game_switcher)
+   {
+      menu_entries_append(list,
+            "Rename Games from Database", "", STREAMLINED_OPTIONS_RENAME_GAMES,
             MENU_SETTING_ACTION, 0, 0, NULL);
    }
 
@@ -4979,6 +5470,11 @@ static void streamlined_free(void *data)
          string_list_free(strm->search_all_entries);
          strm->search_all_entries = NULL;
       }
+      if (strm->rename_file_list)
+      {
+         string_list_free(strm->rename_file_list);
+         strm->rename_file_list = NULL;
+      }
 #if TARGET_OS_TV
       if (strm->search_kb_buffer_ptr)
       {
@@ -5541,6 +6037,138 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       }
 
       strm->exiting_triggered = true;
+      return;
+   }
+
+   /* Rename pending screen: show "Renaming Games..." then start processing */
+   if (strm->rename_pending)
+   {
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      if (strm->font.font)
+      {
+         font_bind(&strm->font);
+         gfx_display_draw_text(strm->font.font,
+               "Renaming Games...",
+               (int)(video_width / 2),
+               (int)(video_height / 2 + strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET),
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+         font_flush(video_width, video_height, &strm->font);
+      }
+
+      /* Flip to active on next frame */
+      strm->rename_pending = false;
+      strm->rename_active  = true;
+      strm->ticker_idx++;
+      return;
+   }
+
+   /* Rename active: process one file per frame, show progress */
+   if (strm->rename_active)
+   {
+      if (strm->rename_index < strm->rename_count_total)
+      {
+         /* Update status text */
+         snprintf(strm->rename_status, sizeof(strm->rename_status),
+               "Renaming %u/%u...",
+               (unsigned)(strm->rename_index + 1), strm->rename_count_total);
+
+         /* Process one file */
+         streamlined_rename_one_file(strm);
+         strm->rename_index++;
+      }
+      else
+      {
+         /* Done — build result message */
+         snprintf(strm->rename_status, sizeof(strm->rename_status),
+               "Renamed %u game%s", strm->rename_count_renamed,
+               strm->rename_count_renamed == 1 ? "" : "s");
+         strm->rename_active = false;
+         strm->rename_done   = true;
+         strm->rename_done_start = strm->ticker_idx;
+
+         /* Free file list */
+         if (strm->rename_file_list)
+         {
+            string_list_free(strm->rename_file_list);
+            strm->rename_file_list = NULL;
+         }
+      }
+
+      /* Render progress overlay */
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      if (strm->font.font)
+      {
+         font_bind(&strm->font);
+         gfx_display_draw_text(strm->font.font,
+               strm->rename_status,
+               (int)(video_width / 2),
+               (int)(video_height / 2 + strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET),
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+         font_flush(video_width, video_height, &strm->font);
+      }
+
+      strm->ticker_idx++;
+      return;
+   }
+
+   /* Rename done screen — show result for notification_duration */
+   if (strm->rename_done)
+   {
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      if (strm->font.font)
+      {
+         font_bind(&strm->font);
+         gfx_display_draw_text(strm->font.font,
+               strm->rename_status,
+               (int)(video_width / 2),
+               (int)(video_height / 2 + strm->font_size * STREAMLINED_TEXT_BASELINE_OFFSET),
+               video_width, video_height,
+               streamlined_color_text,
+               TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+         font_flush(video_width, video_height, &strm->font);
+      }
+
+      strm->ticker_idx++;
+
+      /* After notification_duration seconds, return to folder */
+      {
+         settings_t *notif_settings = config_get_ptr();
+         unsigned notif_frames = notif_settings->uints.menu_streamlined_notification_duration * 60;
+         if (strm->ticker_idx - strm->rename_done_start > notif_frames)
+         {
+            strm->rename_done = false;
+
+            /* Repopulate the folder menu to reflect renamed files */
+            if (strm->options_was_in_folder)
+               streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+            else
+            {
+               settings_t *settings = config_get_ptr();
+               streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+            }
+            menu_state_get_ptr()->selection_ptr = strm->options_saved_selection;
+            strm->rom_thumbnail_selection = (size_t)-1;
+         }
+      }
       return;
    }
 
@@ -6836,6 +7464,29 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       return 0;
    }
 
+   /* Block input during rename pending/active states */
+   if (strm && (strm->rename_pending || strm->rename_active))
+      return 0;
+
+   /* Handle rename done screen — allow B/back to dismiss early */
+   if (strm && strm->rename_done)
+   {
+      if (action == MENU_ACTION_CANCEL)
+      {
+         strm->rename_done = false;
+         if (strm->options_was_in_folder)
+            streamlined_populate_folder_menu(strm, strm->options_folder_path, true);
+         else
+         {
+            settings_t *settings = config_get_ptr();
+            streamlined_populate_folder_menu(strm, settings->paths.directory_menu_content, false);
+         }
+         menu_st->selection_ptr = strm->options_saved_selection;
+         strm->rom_thumbnail_selection = (size_t)-1;
+      }
+      return 0;
+   }
+
    /* Block input during delete result screen */
    if (strm && strm->delete_done)
       return 0;
@@ -7439,6 +8090,12 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strm->in_options_menu = false;
             streamlined_request_loading(strm,
                   eff_core, strm->options_game_path, false);
+            return 0;
+         }
+
+         if (entry->enum_idx == STREAMLINED_OPTIONS_RENAME_GAMES)
+         {
+            streamlined_start_rename_games(strm);
             return 0;
          }
 
