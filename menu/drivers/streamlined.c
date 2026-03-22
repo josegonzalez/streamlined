@@ -99,11 +99,38 @@ static uint32_t streamlined_color_text_muted  = 0xAAAAAAFF;  /* Light gray (RGBA
 static uint32_t streamlined_color_text_accent = 0x2E8C87FF;  /* Teal (RGBA packed) */
 
 /* Layout constants - base sizes at 1.0x scale factor */
-#define STREAMLINED_BASE_FONT_SIZE     32    /* Base font size in pixels */
-#define STREAMLINED_MARGIN_RATIO       0.03f /* Screen edge margin as ratio of dimension */
-#define STREAMLINED_LINE_HEIGHT        1.8f  /* Line height multiplier for menu items */
+#define STREAMLINED_BASE_FONT_SIZE     32     /* Base font size in pixels */
+#define STREAMLINED_MARGIN_RATIO       0.03f  /* Screen edge margin as ratio of dimension */
+#define STREAMLINED_LINE_HEIGHT        1.8f   /* Line height multiplier for menu items */
 #define STREAMLINED_PILL_PADDING_RATIO 0.375f /* Horizontal padding as ratio of font size */
-#define STREAMLINED_MIN_FONT_SIZE      12    /* Minimum font size to ensure readability */
+#define STREAMLINED_PILL_HEIGHT_RATIO  1.5f   /* Pill height as ratio of font size */
+#define STREAMLINED_MIN_FONT_SIZE      12     /* Minimum font size to ensure readability */
+
+/* Font scale ratios relative to base font size */
+#define STREAMLINED_FONT_SMALL_RATIO   0.75f  /* Small font scale */
+#define STREAMLINED_FONT_TITLE_RATIO   1.1f   /* Title font scale */
+#define STREAMLINED_FONT_TINY_RATIO    2.5f   /* Tiny font scale (dot_radius * this) */
+#define STREAMLINED_GLYPH_WIDTH_RATIO  0.6f   /* Estimated glyph width ratio */
+
+/* Text layout */
+#define STREAMLINED_VALUE_WIDTH_PCT    45      /* Max value width as percentage of content area */
+#define STREAMLINED_TITLE_AREA_RATIO   1.4f    /* Title area height as ratio of title font size */
+#define STREAMLINED_TEXT_VCENTER       0.35f   /* Vertical centering offset for font baseline */
+#define STREAMLINED_TEXT_VCENTER_PILL  0.30f   /* Vertical centering offset inside pills */
+
+/* Save slot thumbnail/polaroid frame constants (base sizes before scaling) */
+#define STREAMLINED_THUMB_HEIGHT_RATIO 0.45f   /* Thumbnail height as ratio of screen height */
+#define STREAMLINED_THUMB_ASPECT_RATIO (4.0f / 3.0f) /* Thumbnail aspect ratio */
+#define STREAMLINED_FRAME_BORDER_BASE  5       /* Frame side/top border in base pixels */
+#define STREAMLINED_FRAME_CHIN_BASE    28      /* Frame bottom chin in base pixels */
+#define STREAMLINED_DOT_RADIUS_BASE    4       /* Dot indicator radius in base pixels */
+#define STREAMLINED_DOT_SPACING_BASE   16      /* Dot indicator spacing in base pixels */
+
+/* Footer area constants (base sizes before scaling) */
+#define STREAMLINED_FOOTER_HEIGHT_BASE 78.0f   /* Footer area height */
+#define STREAMLINED_FOOTER_MARGIN_BASE 40.0f   /* Footer edge margin */
+#define STREAMLINED_FOOTER_PILL_PAD    10.0f   /* Footer pill internal padding */
+#define STREAMLINED_FOOTER_GAP         8.0f    /* Gap between pill and label text */
 
 /* ======================================================================
  * CUSTOM QUICK MENU - Modify this to change quick menu items
@@ -435,13 +462,15 @@ static int streamlined_get_title_width(streamlined_t *strm, const char *text)
  */
 static bool streamlined_process_entry_type(const char *value, char *label, size_t label_size)
 {
-   char temp[256];
-
    if (string_is_equal(value, "(DIR)"))
    {
       /* Add leading slash to indicate directory */
-      snprintf(temp, sizeof(temp), "/%s", label);
-      strlcpy(label, temp, label_size);
+      size_t len = strlen(label);
+      if (len + 1 < label_size)
+      {
+         memmove(label + 1, label, len + 1);
+         label[0] = '/';
+      }
       return true;
    }
    return false;
@@ -553,13 +582,12 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
       unsigned video_width, unsigned video_height)
 {
    int i;
-   /* Larger thumbnail - 45% of screen height, maintain 4:3 aspect for frame */
-   int thumb_max_height = (int)(video_height * 0.45f);
-   int thumb_max_width  = (int)(thumb_max_height * 4.0f / 3.0f);
+   int thumb_max_height = (int)(video_height * STREAMLINED_THUMB_HEIGHT_RATIO);
+   int thumb_max_width  = (int)(thumb_max_height * STREAMLINED_THUMB_ASPECT_RATIO);
 
    /* Polaroid frame dimensions */
-   int frame_border     = (int)(5 * strm->scale_factor);   /* Side/top border */
-   int frame_bottom     = (int)(28 * strm->scale_factor);  /* Thicker bottom chin for dots */
+   int frame_border     = (int)(STREAMLINED_FRAME_BORDER_BASE * strm->scale_factor);
+   int frame_bottom     = (int)(STREAMLINED_FRAME_CHIN_BASE * strm->scale_factor);
    int frame_width      = thumb_max_width + frame_border * 2;
    int frame_height     = thumb_max_height + frame_border + frame_bottom;
 
@@ -570,12 +598,12 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
    int dots_start_x;
 
    /* Calculate dot dimensions first (needed for vertical centering) */
-   dot_radius  = (int)(4 * strm->scale_factor);
-   dot_spacing = (int)(16 * strm->scale_factor);
+   dot_radius  = (int)(STREAMLINED_DOT_RADIUS_BASE * strm->scale_factor);
+   dot_spacing = (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor);
 
    /* Position frame on right side, vertically centered with dots below */
    frame_x = video_width - strm->margin_x - frame_width;
-   frame_y = (video_height - frame_height - dot_radius * 2 - (int)(16 * strm->scale_factor)) / 2;
+   frame_y = (video_height - frame_height - dot_radius * 2 - (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor)) / 2;
 
    /* Thumbnail position inside frame */
    thumb_x = frame_x + frame_border;
@@ -614,10 +642,10 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
       /* Only show placeholder when we know the thumbnail is missing (not while loading) */
       const char *placeholder;
       char state_path[PATH_MAX_LENGTH];
-      settings_t *settings = config_get_ptr();
+      int preview_state_slot = strm->preview_slot - 1;
 
       /* Check if save state exists (without .png) to determine message */
-      if (runloop_get_savestate_path(state_path, sizeof(state_path), settings->ints.state_slot)
+      if (runloop_get_savestate_path(state_path, sizeof(state_path), preview_state_slot)
             && path_is_valid(state_path))
          placeholder = "No Screenshot";
       else
@@ -628,7 +656,7 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
          int text_width = streamlined_get_text_width(strm, placeholder, false);
          int text_x = thumb_x + (thumb_max_width - text_width) / 2;
          /* Center vertically: account for font baseline by adding ~1/3 of font size */
-         int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * 0.35f);
+         int text_y = thumb_y + thumb_max_height / 2 + (int)(strm->font_size * STREAMLINED_TEXT_VCENTER);
 
          streamlined_draw_text(strm, p_disp, video_width, video_height,
                text_x, text_y,
@@ -657,7 +685,7 @@ static void streamlined_draw_slot_selector(streamlined_t *strm,
          int text_width = streamlined_get_text_width_tiny(strm, "A");
          int text_x = dot_cx - text_width / 2;
          /* Center 'A' vertically: baseline + 0.35*font_size ≈ visual center */
-         int text_y = cy + (int)(strm->font_size_tiny * 0.35f);
+         int text_y = cy + (int)(strm->font_size_tiny * STREAMLINED_TEXT_VCENTER);
          streamlined_draw_text_tiny(strm, p_disp, video_width, video_height,
                text_x, text_y, "A",
                is_selected ? streamlined_color_text_accent : streamlined_color_text_dark);
@@ -741,8 +769,8 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    /* Calculate visible items: screen height minus title area and button legend area */
    {
-      int title_area = strm->margin_y + (int)(strm->font_size_title * 1.4f);
-      int bottom_area = (int)(78.0f * strm->scale_factor);
+      int title_area = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_RATIO);
+      int bottom_area = (int)(STREAMLINED_FOOTER_HEIGHT_BASE * strm->scale_factor);
       max_visible = (video_height - title_area - bottom_area) / item_height;
    }
    if (max_visible == 0)
@@ -826,8 +854,8 @@ static void streamlined_render_menu(streamlined_t *strm,
       unsigned x_offset = 0;
       font_data_t *title_font = strm->font_title.font
             ? strm->font_title.font : strm->font.font;
-
       gfx_animation_ctx_ticker_smooth_t ticker;
+
       ticker.idx           = strm->ticker_idx;
       ticker.src_str       = title_buf;
       ticker.spacer        = NULL;
@@ -859,7 +887,7 @@ static void streamlined_render_menu(streamlined_t *strm,
    if (strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu)
       y = strm->margin_y;
    else
-      y = strm->margin_y + (int)(strm->font_size_title * 1.4f);
+      y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_RATIO);
 
    for (i = 0; i < max_visible && (start_idx + i) < list_size; i++)
    {
@@ -870,9 +898,9 @@ static void streamlined_render_menu(streamlined_t *strm,
       bool is_selected = ((start_idx + i) == selection);
 
       /* Calculate consistent text position */
-      int pill_height = (int)(strm->font_size * 1.5f);
+      int pill_height = (int)(strm->font_size * STREAMLINED_PILL_HEIGHT_RATIO);
       int pill_y = y + (item_height - pill_height) / 2;
-      int text_y = pill_y + pill_height / 2 + (int)(strm->font_size * 0.30f);
+      int text_y = pill_y + pill_height / 2 + (int)(strm->font_size * STREAMLINED_TEXT_VCENTER_PILL);
 
       MENU_ENTRY_INITIALIZE(entry);
       entry.flags |= MENU_ENTRY_FLAG_RICH_LABEL_ENABLED
@@ -913,19 +941,25 @@ static void streamlined_render_menu(streamlined_t *strm,
          streamlined_process_entry_type(entry.value, display_label, sizeof(display_label));
 
       /* Check if value should be displayed */
-      bool show_value = !string_is_empty(entry.value)
-                     && !string_is_equal(entry.value, "...")
-                     && !streamlined_should_hide_value(entry.value);
+      {
+         bool show_value;
+         int max_value_width;
+         int value_gap;
+         int max_label_width;
+
+         show_value = !string_is_empty(entry.value)
+                        && !string_is_equal(entry.value, "...")
+                        && !streamlined_should_hide_value(entry.value);
+         max_value_width = (video_width - strm->margin_x * 2) * STREAMLINED_VALUE_WIDTH_PCT / 100;
+         value_gap = (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor);
+         max_label_width = show_value
+               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
+               : (video_width - strm->margin_x * 2);
 
       if (is_selected)
       {
          int pill_width;
          int text_width = streamlined_get_text_width(strm, display_label, false);
-         int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
-         int value_gap = (int)(16 * strm->scale_factor);
-         int max_label_width = show_value
-               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - strm->margin_x * 2);
 
          /*
           * Pill width calculation:
@@ -948,6 +982,7 @@ static void streamlined_render_menu(streamlined_t *strm,
             char label_ticker[256];
             unsigned x_offset = 0;
             uint64_t item_idx;
+            gfx_animation_ctx_ticker_smooth_t ticker;
 
             /* Reset ticker when selection changes so scrolling starts from left */
             if (selection != strm->item_ticker_selection)
@@ -957,7 +992,6 @@ static void streamlined_render_menu(streamlined_t *strm,
             }
             item_idx = strm->ticker_idx - strm->item_ticker_start;
 
-            gfx_animation_ctx_ticker_smooth_t ticker;
             ticker.idx           = item_idx;
             ticker.src_str       = display_label;
             ticker.spacer        = NULL;
@@ -997,11 +1031,6 @@ static void streamlined_render_menu(streamlined_t *strm,
       else
       {
          /* Non-selected: truncate long labels */
-         int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
-         int value_gap = (int)(16 * strm->scale_factor);
-         int max_label_width = show_value
-               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - strm->margin_x * 2);
          char truncated_label[256];
 
          streamlined_truncate_text(strm, display_label, truncated_label,
@@ -1014,7 +1043,6 @@ static void streamlined_render_menu(streamlined_t *strm,
          if (show_value)
          {
             char truncated_value[256];
-            int max_value_width = (video_width - strm->margin_x * 2) * 45 / 100;
             int value_width;
 
             streamlined_truncate_text(strm, entry.value, truncated_value,
@@ -1026,6 +1054,7 @@ static void streamlined_render_menu(streamlined_t *strm,
                   truncated_value, streamlined_color_text, false);
          }
       }
+      } /* end show_value scope */
 
       y += item_height;
    }
@@ -1037,15 +1066,15 @@ static void streamlined_render_menu(streamlined_t *strm,
    /* Footer - Back on left, OK on right, white pills with black letter + white label */
    {
       float scale            = strm->scale_factor;
-      float footer_height    = 78.0f * scale;
-      float footer_margin    = 40.0f * scale;
-      float pill_h           = strm->font_size_small + 8.0f * scale;
-      float pill_pad         = 10.0f * scale;
-      float pill_text_gap    = 8.0f * scale;
+      float footer_height    = STREAMLINED_FOOTER_HEIGHT_BASE * scale;
+      float footer_margin    = STREAMLINED_FOOTER_MARGIN_BASE * scale;
+      float pill_h           = strm->font_size_small + STREAMLINED_FOOTER_GAP * scale;
+      float pill_pad         = STREAMLINED_FOOTER_PILL_PAD * scale;
+      float pill_text_gap    = STREAMLINED_FOOTER_GAP * scale;
 
       float footer_center_y  = (float)video_height - (footer_height / 2.0f);
       float pill_y           = footer_center_y - (pill_h / 2.0f);
-      float text_y           = footer_center_y + (strm->font_size_small * 0.35f);
+      float text_y           = footer_center_y + (strm->font_size_small * STREAMLINED_TEXT_VCENTER);
 
       int back_key_w, ok_key_w;
       int back_pill_w, ok_pill_w;
@@ -1114,26 +1143,38 @@ static void streamlined_render_menu(streamlined_t *strm,
  * QUICK MENU CUSTOMIZATION
  * ====================================================================== */
 
-static void streamlined_populate_menu_items(const streamlined_quick_item_t *items)
+/*
+ * Get the current menu selection list and clear it.
+ * Returns the cleared file_list_t* or NULL on failure.
+ */
+static file_list_t *streamlined_get_and_clear_menu_list(void)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    menu_list_t *menu_list;
    file_list_t *list;
-   size_t i;
 
    if (!menu_st)
-      return;
+      return NULL;
 
    menu_list = menu_st->entries.list;
    if (!menu_list)
-      return;
+      return NULL;
 
    list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
-      return;
+      return NULL;
 
-   /* Clear and repopulate with custom items */
    menu_entries_clear(list);
+   return list;
+}
+
+static void streamlined_populate_menu_items(const streamlined_quick_item_t *items)
+{
+   file_list_t *list = streamlined_get_and_clear_menu_list();
+   size_t i;
+
+   if (!list)
+      return;
 
    for (i = 0; items[i].label != NULL; i++)
    {
@@ -1171,25 +1212,12 @@ static bool streamlined_is_disc_control_available(void)
 /* Populate quick menu, with dynamic Exit/Quit based on CLI launch */
 static void streamlined_populate_quick_menu(void)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_and_clear_menu_list();
    const streamlined_quick_item_t *item;
    bool from_cli = streamlined_is_launched_from_cli();
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (item = streamlined_quick_menu_items; item->label != NULL || item->action == STREAMLINED_EXIT_MARKER; item++)
    {
@@ -1223,25 +1251,12 @@ static void streamlined_populate_quick_menu(void)
 /* Populate settings submenu, conditionally including Disc Control */
 static void streamlined_populate_settings_submenu(void)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_and_clear_menu_list();
    const streamlined_quick_item_t *item;
    bool show_disc_control = streamlined_is_disc_control_available();
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (item = streamlined_settings_menu_items; item->label != NULL; item++)
    {
@@ -1295,24 +1310,11 @@ static void streamlined_populate_settings_submenu(void)
 /* Populate main menu settings submenu (Settings categories + main menu items) */
 static void streamlined_populate_main_settings_submenu(void)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_and_clear_menu_list();
    const streamlined_quick_item_t *item;
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear and repopulate with custom items */
-   menu_entries_clear(list);
 
    for (item = streamlined_main_settings_items; item->label != NULL; item++)
    {
@@ -1557,25 +1559,12 @@ static bool streamlined_save_folder_core(const char *folder_path, const char *co
  */
 static void streamlined_populate_core_selection(streamlined_t *strm, const char *content_path)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
-   menu_list_t *menu_list;
-   file_list_t *list;
+   file_list_t *list = streamlined_get_and_clear_menu_list();
    core_info_list_t *core_info_list = NULL;
    size_t i;
 
-   if (!menu_st)
-      return;
-
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
    if (!list)
       return;
-
-   /* Clear existing entries */
-   menu_entries_clear(list);
 
    /* Get list of all installed cores */
    core_info_get_list(&core_info_list);
@@ -1638,26 +1627,17 @@ static const char *streamlined_strip_sort_prefix(const char *name)
  * show_folder_slash: if true, prefix folder names with "/" */
 static void streamlined_populate_folder_menu(streamlined_t *strm, const char *directory, bool show_folder_slash)
 {
-   struct menu_state *menu_st = menu_state_get_ptr();
    settings_t *settings = config_get_ptr();
-   menu_list_t *menu_list;
    file_list_t *list;
    struct string_list *str_list;
    unsigned i;
 
-   if (!menu_st || !directory || directory[0] == '\0')
+   if (!directory || directory[0] == '\0')
       return;
 
-   menu_list = menu_st->entries.list;
-   if (!menu_list)
-      return;
-
-   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   list = streamlined_get_and_clear_menu_list();
    if (!list)
       return;
-
-   /* Clear existing entries */
-   menu_entries_clear(list);
 
    /* Scan directory for folders and files */
    str_list = dir_list_new(directory, NULL, true,
@@ -1751,6 +1731,31 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
  * MENU DRIVER INTERFACE
  * ====================================================================== */
 
+/* Free all loaded fonts and NULL their pointers */
+static void streamlined_free_fonts(streamlined_t *strm)
+{
+   if (strm->font.font)
+   {
+      font_driver_free(strm->font.font);
+      strm->font.font = NULL;
+   }
+   if (strm->font_small.font)
+   {
+      font_driver_free(strm->font_small.font);
+      strm->font_small.font = NULL;
+   }
+   if (strm->font_title.font)
+   {
+      font_driver_free(strm->font_title.font);
+      strm->font_title.font = NULL;
+   }
+   if (strm->font_tiny.font)
+   {
+      font_driver_free(strm->font_tiny.font);
+      strm->font_tiny.font = NULL;
+   }
+}
+
 /*
  * Try to load a font from the given path within the assets directory.
  * Returns the loaded font or NULL if not found.
@@ -1836,10 +1841,10 @@ static void streamlined_context_reset(void *data, bool is_threaded)
 
    strm->scale_factor = scale_factor;
    strm->font_size = STREAMLINED_BASE_FONT_SIZE * scale_factor;
-   strm->font_size_small = STREAMLINED_BASE_FONT_SIZE * scale_factor * 0.75f;
-   strm->font_size_title = STREAMLINED_BASE_FONT_SIZE * scale_factor * 1.1f;
+   strm->font_size_small = STREAMLINED_BASE_FONT_SIZE * scale_factor * STREAMLINED_FONT_SMALL_RATIO;
+   strm->font_size_title = STREAMLINED_BASE_FONT_SIZE * scale_factor * STREAMLINED_FONT_TITLE_RATIO;
    /* Tiny font sized to match dot indicators (dot_radius * 2 is diameter) */
-   strm->font_size_tiny = 4 * scale_factor * 2.5f;
+   strm->font_size_tiny = STREAMLINED_DOT_RADIUS_BASE * scale_factor * STREAMLINED_FONT_TINY_RATIO;
 
    /* Clamp font sizes to ensure readability */
    if (strm->font_size < STREAMLINED_MIN_FONT_SIZE)
@@ -1853,26 +1858,7 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    strm->pill_padding = (int)(strm->font_size * STREAMLINED_PILL_PADDING_RATIO);
 
    /* Free existing fonts before reloading */
-   if (strm->font.font)
-   {
-      font_driver_free(strm->font.font);
-      strm->font.font = NULL;
-   }
-   if (strm->font_small.font)
-   {
-      font_driver_free(strm->font_small.font);
-      strm->font_small.font = NULL;
-   }
-   if (strm->font_title.font)
-   {
-      font_driver_free(strm->font_title.font);
-      strm->font_title.font = NULL;
-   }
-   if (strm->font_tiny.font)
-   {
-      font_driver_free(strm->font_tiny.font);
-      strm->font_tiny.font = NULL;
-   }
+   streamlined_free_fonts(strm);
 
    fontpath[0] = '\0';
 
@@ -1905,11 +1891,11 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    }
 
    strm->font.line_height = (int)(strm->font_size * STREAMLINED_LINE_HEIGHT);
-   strm->font.glyph_width = (int)(strm->font_size * 0.6f);
+   strm->font.glyph_width = (int)(strm->font_size * STREAMLINED_GLYPH_WIDTH_RATIO);
    strm->font_small.line_height = (int)(strm->font_size_small * STREAMLINED_LINE_HEIGHT);
-   strm->font_small.glyph_width = (int)(strm->font_size_small * 0.6f);
+   strm->font_small.glyph_width = (int)(strm->font_size_small * STREAMLINED_GLYPH_WIDTH_RATIO);
    strm->font_title.line_height = (int)(strm->font_size_title * STREAMLINED_LINE_HEIGHT);
-   strm->font_title.glyph_width = (int)(strm->font_size_title * 0.6f);
+   strm->font_title.glyph_width = (int)(strm->font_size_title * STREAMLINED_GLYPH_WIDTH_RATIO);
 
    if (strm->font.line_height < 20)
       strm->font.line_height = 20;
@@ -1938,26 +1924,7 @@ static void streamlined_context_destroy(void *data)
 
    if (strm)
    {
-      if (strm->font.font)
-      {
-         font_driver_free(strm->font.font);
-         strm->font.font = NULL;
-      }
-      if (strm->font_small.font)
-      {
-         font_driver_free(strm->font_small.font);
-         strm->font_small.font = NULL;
-      }
-      if (strm->font_title.font)
-      {
-         font_driver_free(strm->font_title.font);
-         strm->font_title.font = NULL;
-      }
-      if (strm->font_tiny.font)
-      {
-         font_driver_free(strm->font_tiny.font);
-         strm->font_tiny.font = NULL;
-      }
+      streamlined_free_fonts(strm);
 
       /* Clean up save slot thumbnail */
       gfx_thumbnail_reset(&strm->savestate_thumbnail);
@@ -2180,6 +2147,58 @@ static int streamlined_environ(enum menu_environ_cb type, void *data, void *user
 }
 
 /*
+ * Save folder state and launch content with the given core.
+ * Common code for both direct launch (from .core.txt) and core selection.
+ */
+static void streamlined_launch_content(streamlined_t *strm,
+      struct menu_state *menu_st,
+      const char *core_path, const char *content_path)
+{
+   content_ctx_info_t content_info;
+
+   content_info.argc        = 0;
+   content_info.argv        = NULL;
+   content_info.args        = NULL;
+   content_info.environ_get = NULL;
+
+   /* Save folder state so we can return after quitting */
+   strm->folder_selection = menu_st->selection_ptr;
+   strlcpy(strm->last_launched_folder, strm->current_folder_path,
+         sizeof(strm->last_launched_folder));
+   strlcpy(strm->last_folder_core_path, strm->folder_core_path,
+         sizeof(strm->last_folder_core_path));
+   strm->return_to_folder = true;
+
+   strm->selecting_core = false;
+   strm->is_custom_main_menu = false;
+   strm->in_folder = false;
+
+   /* Close menu before loading content */
+   command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+
+   task_push_load_content_with_new_core_from_menu(
+         core_path, content_path,
+         &content_info,
+         CORE_TYPE_PLAIN, NULL, NULL);
+}
+
+/* Return to top-level folder menu and restore a saved selection */
+static void streamlined_return_to_top_menu(streamlined_t *strm,
+      struct menu_state *menu_st, size_t restore_selection)
+{
+   settings_t *settings = config_get_ptr();
+   const char *start_dir = settings->paths.directory_menu_content;
+
+   if (!string_is_empty(start_dir))
+   {
+      streamlined_populate_folder_menu(strm, start_dir, false);
+      strlcpy(strm->current_folder_path, start_dir,
+            sizeof(strm->current_folder_path));
+   }
+   menu_st->selection_ptr = restore_selection;
+}
+
+/*
  * Custom input handler for Cannoli menu navigation.
  *
  * Navigation state machine:
@@ -2216,8 +2235,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       if (strm->show_slot_selector)
       {
          settings_t *settings = config_get_ptr();
-         struct menu_state *menu_state = menu_state_get_ptr();
-         size_t selection = menu_state ? menu_state->selection_ptr : 0;
+         size_t selection = menu_st->selection_ptr;
 
          /*
           * Slot mapping: preview_slot 0 = Auto (state_slot -1)
@@ -2342,8 +2360,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
          if (!string_is_empty(selected_core) && path_is_valid(selected_core))
          {
-            content_ctx_info_t content_info;
-
             /* Save the selected core to .core.txt for this folder */
             streamlined_save_folder_core(strm->current_folder_path, selected_core);
 
@@ -2351,32 +2367,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             strlcpy(strm->folder_core_path, selected_core,
                   sizeof(strm->folder_core_path));
 
-            content_info.argc        = 0;
-            content_info.argv        = NULL;
-            content_info.args        = NULL;
-            content_info.environ_get = NULL;
-
-            /* Save folder state so we can return after quitting */
-            strm->folder_selection = menu_st->selection_ptr;
-            strlcpy(strm->last_launched_folder, strm->current_folder_path,
-                  sizeof(strm->last_launched_folder));
-            strlcpy(strm->last_folder_core_path, strm->folder_core_path,
-                  sizeof(strm->last_folder_core_path));
-            strm->return_to_folder = true;
-
-            strm->selecting_core = false;
-            strm->is_custom_main_menu = false;
-            strm->in_folder = false;
-
-            /* Close menu before loading content */
-            command_event(CMD_EVENT_MENU_TOGGLE, NULL);
-
-            task_push_load_content_with_new_core_from_menu(
-                  selected_core,
-                  strm->pending_content_path,
-                  &content_info,
-                  CORE_TYPE_PLAIN, NULL, NULL);
-
+            streamlined_launch_content(strm, menu_st,
+                  selected_core, strm->pending_content_path);
             strm->pending_content_path[0] = '\0';
             return 0;
          }
@@ -2398,38 +2390,17 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       /* Block back navigation when inside a folder */
       if (action == MENU_ACTION_CANCEL && strm->in_folder)
       {
-         /* Go back to top-level folder listing */
-         settings_t *settings = config_get_ptr();
-         const char *start_dir = settings->paths.directory_menu_content;
-
-         if (!string_is_empty(start_dir))
-         {
-            streamlined_populate_folder_menu(strm, start_dir, false);  /* Back to top - no slash */
-            strlcpy(strm->current_folder_path, start_dir,
-                  sizeof(strm->current_folder_path));
-            strm->in_folder = false;
-            /* Restore saved main menu selection */
-            menu_st->selection_ptr = strm->main_menu_selection;
-         }
+         strm->in_folder = false;
+         streamlined_return_to_top_menu(strm, menu_st, strm->main_menu_selection);
          return 0;
       }
 
       /* Back button in main settings submenu: return to main menu */
       if (action == MENU_ACTION_CANCEL && strm->in_main_settings_submenu)
       {
-         settings_t *settings = config_get_ptr();
-         const char *start_dir = settings->paths.directory_menu_content;
-
          strm->in_main_settings_submenu = false;
          strm->return_to_main_settings_submenu = false;
-         if (!string_is_empty(start_dir))
-         {
-            streamlined_populate_folder_menu(strm, start_dir, false);
-            strlcpy(strm->current_folder_path, start_dir,
-                  sizeof(strm->current_folder_path));
-         }
-         /* Restore saved main menu selection */
-         menu_st->selection_ptr = strm->saved_main_menu_selection;
+         streamlined_return_to_top_menu(strm, menu_st, strm->saved_main_menu_selection);
          return 0;
       }
 
@@ -2467,7 +2438,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
          /* For custom main menu entries, the full path is in entry->label
           * (entry->path contains the display name without path/extension) */
-         const char *item_path = entry->label;
+         {
+            const char *item_path = entry->label;
 
          if (!string_is_empty(item_path))
          {
@@ -2494,7 +2466,6 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             {
                /* Launch the selected file (ROM) */
                const char *core_path = NULL;
-               content_ctx_info_t content_info;
 
                /* Check if folder has a specific core assigned via .core.txt */
                if (!string_is_empty(strm->folder_core_path))
@@ -2514,37 +2485,15 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
                if (core_path && path_is_valid(core_path))
                {
-                  content_info.argc        = 0;
-                  content_info.argv        = NULL;
-                  content_info.args        = NULL;
-                  content_info.environ_get = NULL;
-
-                  /* Save folder state so we can return after quitting */
-                  strm->folder_selection = menu_st->selection_ptr;
-                  strlcpy(strm->last_launched_folder, strm->current_folder_path,
-                        sizeof(strm->last_launched_folder));
-                  strlcpy(strm->last_folder_core_path, strm->folder_core_path,
-                        sizeof(strm->last_folder_core_path));
-                  strm->return_to_folder = true;
-
-                  strm->is_custom_main_menu = false;
-                  strm->in_folder = false;
-
-                  /* Close menu before loading content */
-                  command_event(CMD_EVENT_MENU_TOGGLE, NULL);
-
-                  task_push_load_content_with_new_core_from_menu(
-                        core_path,           /* Core to use */
-                        item_path,           /* Content path */
-                        &content_info,
-                        CORE_TYPE_PLAIN, NULL, NULL);
-
+                  streamlined_launch_content(strm, menu_st,
+                        core_path, item_path);
                   return 0;
                }
                /* No compatible core found - do nothing for now */
                return 0;
             }
          }
+         } /* end item_path scope */
       }
 
       /* Block non-navigation actions (SCAN, SEARCH, INFO, etc.)
