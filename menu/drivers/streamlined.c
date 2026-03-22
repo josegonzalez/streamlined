@@ -29,12 +29,12 @@
  * - This provides intelligent scaling based on display size and viewing distance
  * - Respects user's menu_scale_factor preference from settings
  *
- * Navigation State Machine:
- * - is_quick_menu: true when viewing the custom quick menu (not RA settings)
- * - in_settings_submenu: true when in "Advanced" submenu
- * - return_to_settings_submenu: flag to return to submenu after backing out of RA menu
- * - Back button in main quick menu closes menu and resumes content
- * - Back button in Advanced submenu returns to main quick menu
+ * Navigation:
+ * - Uses a view stack (streamlined_view_stack_t) for hierarchical navigation
+ * - Push a view to navigate deeper, pop to go back
+ * - View types: MAIN_MENU, FOLDER, CORE_SELECT, QUICK_MENU, ADVANCED,
+ *   MAIN_SETTINGS, RA_SETTINGS
+ * - Resume state persists across content load/unload for folder return
  */
 
 #include <stdlib.h>
@@ -229,6 +229,47 @@ static const streamlined_quick_item_t streamlined_main_settings_items[] = {
  * DRIVER STATE
  * ====================================================================== */
 
+/* View types for the navigation stack */
+typedef enum
+{
+   STREAMLINED_VIEW_MAIN_MENU,      /* Top-level folder list */
+   STREAMLINED_VIEW_FOLDER,         /* Inside a folder (games list) */
+   STREAMLINED_VIEW_CORE_SELECT,    /* Core selection screen */
+   STREAMLINED_VIEW_QUICK_MENU,     /* In-game pause menu */
+   STREAMLINED_VIEW_ADVANCED,       /* Quick menu Advanced submenu */
+   STREAMLINED_VIEW_MAIN_SETTINGS,  /* Main menu Settings submenu */
+   STREAMLINED_VIEW_RA_SETTINGS     /* Delegated to RA generic handler */
+} streamlined_view_type_t;
+
+/* Per-view data stored in a tagged union */
+typedef struct
+{
+   streamlined_view_type_t type;
+   size_t saved_selection;
+   union {
+      struct { char folder_path[PATH_MAX_LENGTH]; } main_menu;
+      struct { char folder_path[PATH_MAX_LENGTH]; char core_path[PATH_MAX_LENGTH]; } folder;
+      struct { char content_path[PATH_MAX_LENGTH]; } core_select;
+   } data;
+} streamlined_view_t;
+
+#define STREAMLINED_VIEW_STACK_MAX 8
+
+typedef struct
+{
+   streamlined_view_t entries[STREAMLINED_VIEW_STACK_MAX];
+   int top;  /* Index of current top (-1 = empty) */
+} streamlined_view_stack_t;
+
+/* Resume state: persists across content load/unload to restore folder view */
+typedef struct
+{
+   bool active;
+   char folder_path[PATH_MAX_LENGTH];
+   char core_path[PATH_MAX_LENGTH];
+   size_t selection;
+} streamlined_resume_t;
+
 typedef struct
 {
    /* Font */
@@ -249,11 +290,9 @@ typedef struct
    int pill_padding;
    float scale_factor;
 
-   /* State */
-   bool is_quick_menu;
-   bool in_settings_submenu;
-   bool return_to_settings_submenu;  /* Track if we should return to Advanced submenu */
-   size_t saved_quick_menu_selection; /* Remember position in main quick menu */
+   /* Navigation state */
+   streamlined_view_stack_t view_stack;
+   streamlined_resume_t resume;
 
    /* Save slot selector */
    gfx_thumbnail_t savestate_thumbnail;
@@ -267,32 +306,72 @@ typedef struct
    uint64_t item_ticker_start;    /* ticker_idx when current item was selected */
    size_t item_ticker_selection;  /* Track which item is being ticker-scrolled */
 
-   /* Custom main menu (launcher mode) */
-   bool is_custom_main_menu;      /* True when displaying custom launcher menu */
-   bool in_folder;                /* True when inside a folder (blocks going up) */
-   char current_folder_path[PATH_MAX_LENGTH]; /* Path of current folder */
-   char folder_core_path[PATH_MAX_LENGTH];    /* Core path for current folder (from core.txt) */
-   size_t main_menu_selection;    /* Remember selection in main menu when entering folder */
-   size_t folder_selection;       /* Remember selection in folder when launching game */
-   char last_launched_folder[PATH_MAX_LENGTH]; /* Folder from which game was launched */
-   char last_folder_core_path[PATH_MAX_LENGTH]; /* Core path for last launched folder */
-   bool return_to_folder;         /* Flag to return to folder after game exit */
-
-   /* Core selection mode */
-   bool selecting_core;           /* True when showing core selection list */
-   char pending_content_path[PATH_MAX_LENGTH]; /* Content path waiting for core selection */
-
-   /* Main menu settings submenu */
-   bool in_main_settings_submenu; /* True when in Settings submenu from main menu */
-   bool return_to_main_settings_submenu; /* Flag to return to settings submenu after backing out */
-   size_t saved_main_menu_selection; /* Remember position in main menu when entering settings */
-   size_t saved_settings_selection; /* Remember position in settings submenu */
-
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
 #define STREAMLINED_NUM_SLOTS 9
 #define STREAMLINED_AUTO_SLOT_INDEX 0  /* First dot is the auto slot (state_slot -1) */
+
+/* View stack operations */
+static streamlined_view_t *streamlined_view_current(
+      streamlined_view_stack_t *stack)
+{
+   if (stack->top < 0)
+      return NULL;
+   return &stack->entries[stack->top];
+}
+
+static streamlined_view_t *streamlined_view_push(
+      streamlined_view_stack_t *stack, streamlined_view_type_t type)
+{
+   if (stack->top >= STREAMLINED_VIEW_STACK_MAX - 1)
+      return NULL;
+   stack->top++;
+   memset(&stack->entries[stack->top], 0, sizeof(streamlined_view_t));
+   stack->entries[stack->top].type = type;
+   return &stack->entries[stack->top];
+}
+
+static streamlined_view_t *streamlined_view_pop(
+      streamlined_view_stack_t *stack)
+{
+   if (stack->top <= 0)
+      return NULL;  /* Don't pop the root view */
+   stack->top--;
+   return &stack->entries[stack->top];
+}
+
+/*
+ * Push/pop a navigation marker on the RA menu stack.
+ * On tvOS, cocoa_common.m's menuIsAtTop checks menu_stack size to decide
+ * whether the Menu button should background the app. Since the streamlined
+ * driver manages its own view stack, the RA stack stays at size 1.
+ * Pushing a marker makes size > 1, preventing the system from backgrounding.
+ */
+static void streamlined_push_nav_marker(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   if (menu_st && menu_st->entries.list)
+   {
+      file_list_t *stack = MENU_LIST_GET(menu_st->entries.list, 0);
+      if (stack)
+         file_list_append(stack,
+               msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU),
+               msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU),
+               MENU_ENUM_LABEL_MAIN_MENU, 0, 0);
+   }
+}
+
+static void streamlined_pop_nav_marker(void)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   if (menu_st && menu_st->entries.list)
+   {
+      file_list_t *stack = MENU_LIST_GET(menu_st->entries.list, 0);
+      if (stack && stack->size > 1)
+         file_list_pop(stack, NULL);
+   }
+}
 
 /* ======================================================================
  * DRAWING FUNCTIONS
@@ -713,6 +792,8 @@ static void streamlined_render_menu(streamlined_t *strm,
    size_t list_size, selection, i, start_idx, max_visible;
    int y, item_height;
    char title_buf[256];
+   streamlined_view_t *view;
+   streamlined_view_type_t vtype;
 
    if (!strm->font.font || !p_disp || !menu_st)
       return;
@@ -731,6 +812,9 @@ static void streamlined_render_menu(streamlined_t *strm,
    if (item_height <= 0)
       item_height = 20;
 
+   view = streamlined_view_current(&strm->view_stack);
+   vtype = view ? view->type : STREAMLINED_VIEW_RA_SETTINGS;
+
    /*
     * Detect if on Save (index 1) or Load (index 2) in main quick menu.
     * Show the slot selector UI when these entries are selected.
@@ -739,7 +823,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       bool was_showing = strm->show_slot_selector;
       strm->show_slot_selector = false;
 
-      if (strm->is_quick_menu && !strm->in_settings_submenu)
+      if (vtype == STREAMLINED_VIEW_QUICK_MENU)
       {
          if (selection == 1 || selection == 2)
             strm->show_slot_selector = true;
@@ -776,72 +860,69 @@ static void streamlined_render_menu(streamlined_t *strm,
    if (max_visible == 0)
       max_visible = 1;
 
-   /* Get title - show game name for quick menu, "Settings" for submenu */
+   /* Get title based on current view */
    title_buf[0] = '\0';
-   if (strm->selecting_core)
+   switch (vtype)
    {
-      strlcpy(title_buf, "Select Core", sizeof(title_buf));
-   }
-   else if (strm->in_settings_submenu)
-   {
-      strlcpy(title_buf, "Advanced", sizeof(title_buf));
-   }
-   else if (strm->in_main_settings_submenu)
-   {
-      strlcpy(title_buf, "Settings", sizeof(title_buf));
-   }
-   else if (strm->is_custom_main_menu && strm->in_folder)
-   {
-      /* Show folder/platform name as title */
-      const char *folder_name = path_basename(strm->current_folder_path);
-      if (!string_is_empty(folder_name))
+      case STREAMLINED_VIEW_CORE_SELECT:
+         strlcpy(title_buf, "Select Core", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_ADVANCED:
+         strlcpy(title_buf, "Advanced", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_MAIN_SETTINGS:
+         strlcpy(title_buf, "Settings", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_FOLDER:
       {
-         /* Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
-         const char *clean_name = streamlined_strip_sort_prefix(folder_name);
-         strlcpy(title_buf, clean_name, sizeof(title_buf));
-      }
-   }
-   else if (strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu)
-   {
-      strlcpy(title_buf, "RetroArch", sizeof(title_buf));
-   }
-   else if (strm->is_quick_menu)
-   {
-      /* Custom quick menu - show game name */
-      const char *content_path = path_get(RARCH_PATH_CONTENT);
-      if (!string_is_empty(content_path))
-      {
-         const char *game_name = path_basename(content_path);
-         if (!string_is_empty(game_name))
+         const char *folder_name = path_basename(view->data.folder.folder_path);
+         if (!string_is_empty(folder_name))
          {
-            /* Copy and remove extension */
-            char *ext;
-            strlcpy(title_buf, game_name, sizeof(title_buf));
-            ext = strrchr(title_buf, '.');
-            if (ext)
-               *ext = '\0';
+            const char *clean_name = streamlined_strip_sort_prefix(folder_name);
+            strlcpy(title_buf, clean_name, sizeof(title_buf));
          }
+         break;
       }
-      if (title_buf[0] == '\0')
-         strlcpy(title_buf, "Quick Menu", sizeof(title_buf));
-   }
-   else
-   {
-      menu_entries_get_title(title_buf, sizeof(title_buf));
-
-      /* Strip "Select File: " prefix (localized) from file browser titles */
+      case STREAMLINED_VIEW_MAIN_MENU:
+         strlcpy(title_buf, "RetroArch", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_QUICK_MENU:
       {
-         const char *select_file = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SELECT_FILE);
-         size_t prefix_len = strlen(select_file);
-
-         /* Check for "Select File: " pattern (translated string + ": ") */
-         if (strncmp(title_buf, select_file, prefix_len) == 0
-               && title_buf[prefix_len] == ':'
-               && title_buf[prefix_len + 1] == ' ')
+         const char *content_path = path_get(RARCH_PATH_CONTENT);
+         if (!string_is_empty(content_path))
          {
-            memmove(title_buf, title_buf + prefix_len + 2,
-                  strlen(title_buf + prefix_len + 2) + 1);
+            const char *game_name = path_basename(content_path);
+            if (!string_is_empty(game_name))
+            {
+               char *ext;
+               strlcpy(title_buf, game_name, sizeof(title_buf));
+               ext = strrchr(title_buf, '.');
+               if (ext)
+                  *ext = '\0';
+            }
          }
+         if (title_buf[0] == '\0')
+            strlcpy(title_buf, "Quick Menu", sizeof(title_buf));
+         break;
+      }
+      default:
+      {
+         menu_entries_get_title(title_buf, sizeof(title_buf));
+
+         /* Strip "Select File: " prefix (localized) from file browser titles */
+         {
+            const char *select_file = msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SELECT_FILE);
+            size_t prefix_len = strlen(select_file);
+
+            if (strncmp(title_buf, select_file, prefix_len) == 0
+                  && title_buf[prefix_len] == ':'
+                  && title_buf[prefix_len + 1] == ' ')
+            {
+               memmove(title_buf, title_buf + prefix_len + 2,
+                     strlen(title_buf + prefix_len + 2) + 1);
+            }
+         }
+         break;
       }
    }
 
@@ -910,15 +991,19 @@ static void streamlined_render_menu(streamlined_t *strm,
        * For custom main menu, use label (display name) since path contains full file path
        * For core selection, use path (display name) since label contains core path
        * For main settings submenu, use path (our custom label) */
-      if (strm->is_quick_menu || strm->in_settings_submenu || strm->selecting_core
-            || strm->in_main_settings_submenu)
+      if (vtype == STREAMLINED_VIEW_QUICK_MENU
+            || vtype == STREAMLINED_VIEW_ADVANCED
+            || vtype == STREAMLINED_VIEW_CORE_SELECT
+            || vtype == STREAMLINED_VIEW_MAIN_SETTINGS)
       {
          entry_label = entry.path;
          /* Core Options has empty path - use rich_label instead */
          if (string_is_empty(entry_label) && !string_is_empty(entry.rich_label))
             entry_label = entry.rich_label;
       }
-      else if (strm->is_custom_main_menu && !string_is_empty(entry.label))
+      else if ((vtype == STREAMLINED_VIEW_MAIN_MENU
+            || vtype == STREAMLINED_VIEW_FOLDER)
+            && !string_is_empty(entry.label))
          entry_label = entry.label;
       else if (!string_is_empty(entry.rich_label))
          entry_label = entry.rich_label;
@@ -936,7 +1021,7 @@ static void streamlined_render_menu(streamlined_t *strm,
 
       /* Process entry type - adds slash prefix for directories
        * Skip for top-level custom main menu (already handled in populate) */
-      if (!(strm->is_custom_main_menu && !strm->in_folder && !strm->in_main_settings_submenu))
+      if (vtype != STREAMLINED_VIEW_MAIN_MENU)
          streamlined_process_entry_type(entry.value, display_label, sizeof(display_label));
 
       /* Check if value should be displayed */
@@ -1788,6 +1873,7 @@ static void *streamlined_init(void **userdata, bool video_is_threaded)
    }
 
    *userdata = strm;
+   strm->view_stack.top = -1;
 
    p_disp->framebuf_width = 0;
    p_disp->framebuf_height = 0;
@@ -2006,125 +2092,150 @@ static void streamlined_populate_entries(void *data,
    const char *main_menu_label = msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU);
    bool is_content_settings = false;
    bool is_main_menu = false;
+   streamlined_view_t *view;
 
    if (!strm)
       return;
 
    /* Check what menu we're in */
-   if (label)
+   if (!label)
+      return;
+
+   if (content_settings_label && string_is_equal(label, content_settings_label))
+      is_content_settings = true;
+   else if (main_menu_label && string_is_equal(label, main_menu_label))
+      is_main_menu = true;
+
+   /* Also check enum_idx from the menu stack */
+   if (!is_content_settings && !is_main_menu)
    {
-      if (content_settings_label && string_is_equal(label, content_settings_label))
-         is_content_settings = true;
-      else if (main_menu_label && string_is_equal(label, main_menu_label))
-         is_main_menu = true;
-
-      /* Also check enum_idx from the menu stack */
-      if (!is_content_settings && !is_main_menu)
+      struct menu_state *menu_st = menu_state_get_ptr();
+      if (menu_st && menu_st->entries.list)
       {
-         struct menu_state *menu_st = menu_state_get_ptr();
-         if (menu_st && menu_st->entries.list)
-         {
-            enum msg_hash_enums enum_idx = MSG_UNKNOWN;
-            menu_entries_get_last_stack(NULL, NULL, NULL, &enum_idx, NULL);
-            if (enum_idx == MENU_ENUM_LABEL_CONTENT_SETTINGS)
-               is_content_settings = true;
-            else if (enum_idx == MENU_ENUM_LABEL_MAIN_MENU)
-               is_main_menu = true;
-         }
+         enum msg_hash_enums enum_idx = MSG_UNKNOWN;
+         menu_entries_get_last_stack(NULL, NULL, NULL, &enum_idx, NULL);
+         if (enum_idx == MENU_ENUM_LABEL_CONTENT_SETTINGS)
+            is_content_settings = true;
+         else if (enum_idx == MENU_ENUM_LABEL_MAIN_MENU)
+            is_main_menu = true;
       }
+   }
 
-      /* Handle main menu - show folders from start directory */
-      if (is_main_menu)
+   /* Handle main menu - show folders from start directory */
+   if (is_main_menu)
+   {
+      settings_t *settings = config_get_ptr();
+      const char *start_dir = settings->paths.directory_menu_content;
+      struct menu_state *menu_st_local = menu_state_get_ptr();
+
+      if (!string_is_empty(start_dir))
       {
-         settings_t *settings = config_get_ptr();
-         const char *start_dir = settings->paths.directory_menu_content;
-         struct menu_state *menu_st_local = menu_state_get_ptr();
+         view = streamlined_view_current(&strm->view_stack);
 
-         if (!string_is_empty(start_dir))
+         /* Pop RA_SETTINGS if returning from an RA settings screen */
+         if (view && view->type == STREAMLINED_VIEW_RA_SETTINGS)
          {
-            /* Check if returning to main settings submenu */
-            if (strm->return_to_main_settings_submenu)
-            {
-               streamlined_populate_main_settings_submenu();
-               strm->is_custom_main_menu = true;
-               strm->in_main_settings_submenu = true;
-               strm->return_to_main_settings_submenu = false;
-               strm->in_folder = false;
-               /* Restore selection in settings submenu */
-               if (menu_st_local)
-                  menu_st_local->selection_ptr = strm->saved_settings_selection;
-            }
-            /* Check if returning from a game - restore folder state */
-            else if (strm->return_to_folder && !string_is_empty(strm->last_launched_folder))
-            {
-               streamlined_populate_folder_menu(strm, strm->last_launched_folder, true);
-               strlcpy(strm->current_folder_path, strm->last_launched_folder,
-                     sizeof(strm->current_folder_path));
-               /* Restore the folder's core path */
-               strlcpy(strm->folder_core_path, strm->last_folder_core_path,
-                     sizeof(strm->folder_core_path));
-               strm->is_custom_main_menu = true;
-               strm->in_folder = true;
-               strm->return_to_folder = false;
-               /* Restore selection to the game that was played */
-               if (menu_st_local)
-                  menu_st_local->selection_ptr = strm->folder_selection;
-            }
-            else
-            {
-               streamlined_populate_folder_menu(strm, start_dir, false);  /* Top level - no slash */
-               strlcpy(strm->current_folder_path, start_dir,
-                     sizeof(strm->current_folder_path));
-               strm->is_custom_main_menu = true;
-               strm->in_folder = false;
-            }
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
          }
-         strm->is_quick_menu = false;
-         strm->in_settings_submenu = false;
-         return;
-      }
 
-      if (is_content_settings)
-      {
-         /* Check if we should return to the Advanced settings submenu */
-         if (strm->return_to_settings_submenu)
+         if (strm->resume.active)
          {
-            streamlined_populate_settings_submenu();
-            strm->in_settings_submenu = true;
-            strm->return_to_settings_submenu = false;
+            /* Returning from game - rebuild stack with folder state */
+            streamlined_view_t *v;
+            strm->view_stack.top = -1;
+            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
+            if (v)
+               strlcpy(v->data.main_menu.folder_path, start_dir,
+                     sizeof(v->data.main_menu.folder_path));
+            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
+            if (v)
+            {
+               strlcpy(v->data.folder.folder_path, strm->resume.folder_path,
+                     sizeof(v->data.folder.folder_path));
+               strlcpy(v->data.folder.core_path, strm->resume.core_path,
+                     sizeof(v->data.folder.core_path));
+            }
+            streamlined_populate_folder_menu(strm, strm->resume.folder_path, true);
+            if (menu_st_local)
+               menu_st_local->selection_ptr = strm->resume.selection;
+            strm->resume.active = false;
+         }
+         else if (view && view->type == STREAMLINED_VIEW_MAIN_SETTINGS)
+         {
+            /* Returning to main settings submenu - re-push nav marker */
+            streamlined_push_nav_marker();
+            streamlined_populate_main_settings_submenu();
+            if (menu_st_local)
+               menu_st_local->selection_ptr = view->saved_selection;
+         }
+         else if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+         {
+            /* Already at main menu - just ensure list is populated */
+            streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+         }
+         else if (view && view->type == STREAMLINED_VIEW_FOLDER)
+         {
+            /* Already in a folder - just ensure list is populated */
+            streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
          }
          else
          {
-            streamlined_populate_quick_menu();
-            strm->in_settings_submenu = false;
+            /* Fresh main menu - reset stack */
+            streamlined_view_t *v;
+            strm->view_stack.top = -1;
+            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
+            if (v)
+               strlcpy(v->data.main_menu.folder_path, start_dir,
+                     sizeof(v->data.main_menu.folder_path));
+            streamlined_populate_folder_menu(strm, start_dir, false);
          }
-         strm->is_quick_menu = true;
-         strm->is_custom_main_menu = false;
+      }
+      return;
+   }
 
-         /*
-          * Reset thumbnail state when entering quick menu so it reloads.
-          * This ensures the thumbnail is refreshed (e.g., if a new screenshot
-          * was taken since last viewing).
-          */
-         gfx_thumbnail_reset(&strm->savestate_thumbnail);
-         strm->savestate_thumbnail_path[0] = '\0';
-         strm->last_selection = (size_t)-1;  /* Force reload on next render */
+   if (is_content_settings)
+   {
+      struct menu_state *menu_st_local = menu_state_get_ptr();
+      view = streamlined_view_current(&strm->view_stack);
+
+      /* Pop RA_SETTINGS if returning from an RA settings screen */
+      if (view && view->type == STREAMLINED_VIEW_RA_SETTINGS)
+      {
+         streamlined_view_pop(&strm->view_stack);
+         view = streamlined_view_current(&strm->view_stack);
+      }
+
+      if (!view || (view->type != STREAMLINED_VIEW_QUICK_MENU
+                  && view->type != STREAMLINED_VIEW_ADVANCED))
+      {
+         /* Fresh entry into quick menu - reset stack */
+         strm->view_stack.top = -1;
+         streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_QUICK_MENU);
+         view = streamlined_view_current(&strm->view_stack);
+      }
+
+      if (view && view->type == STREAMLINED_VIEW_ADVANCED)
+      {
+         streamlined_populate_settings_submenu();
+         if (menu_st_local)
+            menu_st_local->selection_ptr = view->saved_selection;
       }
       else
       {
-         /* Don't reset return_to_settings_submenu here - we need it when coming back */
-         strm->is_quick_menu = false;
-         strm->in_settings_submenu = false;
-         strm->is_custom_main_menu = false;
+         streamlined_populate_quick_menu();
       }
+
+      /*
+       * Reset thumbnail state when entering quick menu so it reloads.
+       * This ensures the thumbnail is refreshed (e.g., if a new screenshot
+       * was taken since last viewing).
+       */
+      gfx_thumbnail_reset(&strm->savestate_thumbnail);
+      strm->savestate_thumbnail_path[0] = '\0';
+      strm->last_selection = (size_t)-1;  /* Force reload on next render */
    }
-   else
-   {
-      /* Don't reset return_to_settings_submenu here - we need it when coming back */
-      strm->is_quick_menu = false;
-      strm->in_settings_submenu = false;
-      strm->is_custom_main_menu = false;
-   }
+   /* else: in an RA settings screen - don't modify the stack */
 }
 
 static void streamlined_navigation_set(void *data, bool scroll) { }
@@ -2154,23 +2265,41 @@ static void streamlined_launch_content(streamlined_t *strm,
       const char *core_path, const char *content_path)
 {
    content_ctx_info_t content_info;
+   streamlined_view_t *folder_view = NULL;
+   int idx;
 
    content_info.argc        = 0;
    content_info.argv        = NULL;
    content_info.args        = NULL;
    content_info.environ_get = NULL;
 
-   /* Save folder state so we can return after quitting */
-   strm->folder_selection = menu_st->selection_ptr;
-   strlcpy(strm->last_launched_folder, strm->current_folder_path,
-         sizeof(strm->last_launched_folder));
-   strlcpy(strm->last_folder_core_path, strm->folder_core_path,
-         sizeof(strm->last_folder_core_path));
-   strm->return_to_folder = true;
+   /* Find the nearest FOLDER view on the stack to save resume state */
+   for (idx = strm->view_stack.top; idx >= 0; idx--)
+   {
+      if (strm->view_stack.entries[idx].type == STREAMLINED_VIEW_FOLDER)
+      {
+         folder_view = &strm->view_stack.entries[idx];
+         break;
+      }
+   }
 
-   strm->selecting_core = false;
-   strm->is_custom_main_menu = false;
-   strm->in_folder = false;
+   if (folder_view)
+   {
+      strm->resume.active = true;
+      strlcpy(strm->resume.folder_path, folder_view->data.folder.folder_path,
+            sizeof(strm->resume.folder_path));
+      strlcpy(strm->resume.core_path, core_path,
+            sizeof(strm->resume.core_path));
+      /* If launching from folder directly, use current selection.
+       * If launching via core selection, use the folder's saved selection. */
+      if (streamlined_view_current(&strm->view_stack) == folder_view)
+         strm->resume.selection = menu_st->selection_ptr;
+      else
+         strm->resume.selection = folder_view->saved_selection;
+   }
+
+   /* Clear the view stack */
+   strm->view_stack.top = -1;
 
    /* Close menu before loading content */
    command_event(CMD_EVENT_MENU_TOGGLE, NULL);
@@ -2181,327 +2310,370 @@ static void streamlined_launch_content(streamlined_t *strm,
          CORE_TYPE_PLAIN, NULL, NULL);
 }
 
-/* Return to top-level folder menu and restore a saved selection */
-static void streamlined_return_to_top_menu(streamlined_t *strm,
-      struct menu_state *menu_st, size_t restore_selection)
-{
-   settings_t *settings = config_get_ptr();
-   const char *start_dir = settings->paths.directory_menu_content;
-
-   if (!string_is_empty(start_dir))
-   {
-      streamlined_populate_folder_menu(strm, start_dir, false);
-      strlcpy(strm->current_folder_path, start_dir,
-            sizeof(strm->current_folder_path));
-   }
-   menu_st->selection_ptr = restore_selection;
-}
-
 /*
- * Custom input handler for Cannoli menu navigation.
- *
- * Navigation state machine:
- *
- *   [Game Running] ---(menu button)---> [Main Quick Menu]
- *         ^                                    |
- *         |                                    v
- *         +----(B: back)----+          [Advanced]
- *                           |                  |
- *                           |                  v
- *                           +--------  [RA Settings Screen]
- *                                             |
- *                                      (B: back to Advanced)
- *
- * Key behaviors:
- * - B in main quick menu: closes menu and resumes game
- * - B in Advanced submenu: returns to main quick menu
- * - B in RA settings (entered from Advanced): returns to Advanced
- * - A on "Advanced": enters the custom settings submenu
- * - A on any other item: executes the associated RetroArch action
+ * Custom input handler for streamlined menu navigation.
+ * Uses the view stack to determine behavior based on the current view type.
  */
 static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
       size_t i, enum menu_action action)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
    streamlined_t *strm = NULL;
+   streamlined_view_t *view;
 
    if (menu_st)
       strm = (streamlined_t*)menu_st->userdata;
 
-   if (strm && strm->is_quick_menu)
+   if (!strm)
+      return generic_menu_entry_action(userdata, entry, i, action);
+
+   view = streamlined_view_current(&strm->view_stack);
+   if (!view)
+      return generic_menu_entry_action(userdata, entry, i, action);
+
+   switch (view->type)
    {
-      /* Handle input for save slot selection when on Save/Load entry */
-      if (strm->show_slot_selector)
+      case STREAMLINED_VIEW_QUICK_MENU:
       {
-         settings_t *settings = config_get_ptr();
-         size_t selection = menu_st->selection_ptr;
-
-         /*
-          * Slot mapping: preview_slot 0 = Auto (state_slot -1)
-          *               preview_slot 1-8 = state_slot 0-7
-          * So: state_slot = preview_slot - 1
-          */
-         if (action == MENU_ACTION_LEFT)
+         /* Handle input for save slot selection when on Save/Load entry */
+         if (strm->show_slot_selector)
          {
-            strm->preview_slot--;
-            if (strm->preview_slot < 0)
-               strm->preview_slot = STREAMLINED_NUM_SLOTS - 1;
-            settings->ints.state_slot = strm->preview_slot - 1;
-            streamlined_load_slot_thumbnail(strm, strm->preview_slot);
-            return 0;  /* Consume input */
+            settings_t *settings = config_get_ptr();
+            size_t selection = menu_st->selection_ptr;
+
+            if (action == MENU_ACTION_LEFT)
+            {
+               strm->preview_slot--;
+               if (strm->preview_slot < 0)
+                  strm->preview_slot = STREAMLINED_NUM_SLOTS - 1;
+               settings->ints.state_slot = strm->preview_slot - 1;
+               streamlined_load_slot_thumbnail(strm, strm->preview_slot);
+               return 0;
+            }
+
+            if (action == MENU_ACTION_RIGHT)
+            {
+               strm->preview_slot++;
+               if (strm->preview_slot >= STREAMLINED_NUM_SLOTS)
+                  strm->preview_slot = 0;
+               settings->ints.state_slot = strm->preview_slot - 1;
+               streamlined_load_slot_thumbnail(strm, strm->preview_slot);
+               return 0;
+            }
+
+            if (action == MENU_ACTION_OK || action == MENU_ACTION_START)
+            {
+               if (selection == 1)
+                  command_event(CMD_EVENT_SAVE_STATE, NULL);
+               else if (selection == 2)
+                  command_event(CMD_EVENT_LOAD_STATE, NULL);
+               command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+               return 0;
+            }
          }
 
-         if (action == MENU_ACTION_RIGHT)
+         /* Back button: close menu and resume game */
+         if (action == MENU_ACTION_CANCEL)
          {
-            strm->preview_slot++;
-            if (strm->preview_slot >= STREAMLINED_NUM_SLOTS)
-               strm->preview_slot = 0;
-            settings->ints.state_slot = strm->preview_slot - 1;
-            streamlined_load_slot_thumbnail(strm, strm->preview_slot);
-            return 0;  /* Consume input */
-         }
-
-         /* A or Start button executes save/load action and closes menu */
-         if (action == MENU_ACTION_OK || action == MENU_ACTION_START)
-         {
-            /* selection 1 = Save, selection 2 = Load */
-            if (selection == 1)
-               command_event(CMD_EVENT_SAVE_STATE, NULL);
-            else if (selection == 2)
-               command_event(CMD_EVENT_LOAD_STATE, NULL);
             command_event(CMD_EVENT_MENU_TOGGLE, NULL);
             return 0;
          }
-      }
 
-      /* Back button in Advanced submenu: return to main quick menu */
-      if (action == MENU_ACTION_CANCEL && strm->in_settings_submenu)
-      {
-         strm->in_settings_submenu = false;
-         strm->return_to_settings_submenu = false;
-         streamlined_populate_quick_menu();
-         menu_st->selection_ptr = strm->saved_quick_menu_selection;
-         return 0;
-      }
-
-      /* Back button in main quick menu: close menu entirely and resume game */
-      if (action == MENU_ACTION_CANCEL && !strm->in_settings_submenu)
-      {
-         command_event(CMD_EVENT_MENU_TOGGLE, NULL);
-         return 0;
-      }
-
-      /* Select "Advanced" entry: enter the settings submenu */
-      if (action == MENU_ACTION_OK && entry && !strm->in_settings_submenu)
-      {
-         const char *entry_label = NULL;
-
-         if (!string_is_empty(entry->rich_label))
-            entry_label = entry->rich_label;
-         else if (!string_is_empty(entry->path))
-            entry_label = entry->path;
-
-         if (entry_label && string_is_equal(entry_label, "Advanced"))
+         /* OK: check for special entries */
+         if (action == MENU_ACTION_OK && entry)
          {
-            strm->saved_quick_menu_selection = menu_st->selection_ptr;
-            strm->in_settings_submenu = true;
-            strm->return_to_settings_submenu = false;
-            streamlined_populate_settings_submenu();
-            menu_st->selection_ptr = 0;
-            return 0;
-         }
+            const char *entry_label = NULL;
 
-         /* Handle "Quit" - if not CLI, close content and go to main menu */
-         if (entry_label && string_is_equal(entry_label, "Quit"))
-         {
-            if (!streamlined_is_launched_from_cli())
+            if (!string_is_empty(entry->rich_label))
+               entry_label = entry->rich_label;
+            else if (!string_is_empty(entry->path))
+               entry_label = entry->path;
+
+            /* Select "Advanced": push ADVANCED view */
+            if (entry_label && string_is_equal(entry_label, "Advanced"))
             {
-               /* Reset strm state */
-               strm->is_quick_menu = false;
-               strm->in_settings_submenu = false;
-               strm->return_to_settings_submenu = false;
-
-               /* Unload core and flush to main menu */
-               command_event(CMD_EVENT_UNLOAD_CORE, NULL);
-               menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
-               return 0;
-            }
-            /* If CLI, let the default handler quit RetroArch */
-         }
-      }
-
-      /*
-       * When entering an RA settings screen from Advanced submenu,
-       * set flag to return to Advanced (not main menu) when backing out.
-       */
-      if (action == MENU_ACTION_OK && strm->in_settings_submenu)
-      {
-         strm->return_to_settings_submenu = true;
-      }
-   }
-
-   /* Handle core selection mode */
-   if (strm && strm->selecting_core)
-   {
-      /* Cancel core selection - go back to folder */
-      if (action == MENU_ACTION_CANCEL)
-      {
-         strm->selecting_core = false;
-         strm->pending_content_path[0] = '\0';
-         streamlined_populate_folder_menu(strm, strm->current_folder_path, true);
-         return 0;
-      }
-
-      /* Core selected - save to .core.txt and launch content */
-      if (action == MENU_ACTION_OK && entry)
-      {
-         const char *selected_core = entry->label;  /* Core path is in label */
-
-         if (!string_is_empty(selected_core) && path_is_valid(selected_core))
-         {
-            /* Save the selected core to .core.txt for this folder */
-            streamlined_save_folder_core(strm->current_folder_path, selected_core);
-
-            /* Update the folder's core path */
-            strlcpy(strm->folder_core_path, selected_core,
-                  sizeof(strm->folder_core_path));
-
-            streamlined_launch_content(strm, menu_st,
-                  selected_core, strm->pending_content_path);
-            strm->pending_content_path[0] = '\0';
-            return 0;
-         }
-      }
-
-      /* Allow navigation (up/down) - pass to generic handler */
-      if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN ||
-          action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
-      {
-         return generic_menu_entry_action(userdata, entry, i, action);
-      }
-
-      return 0;  /* Block other actions during core selection */
-   }
-
-   /* Handle custom main menu (launcher mode) navigation */
-   if (strm && strm->is_custom_main_menu)
-   {
-      /* Block back navigation when inside a folder */
-      if (action == MENU_ACTION_CANCEL && strm->in_folder)
-      {
-         strm->in_folder = false;
-         streamlined_return_to_top_menu(strm, menu_st, strm->main_menu_selection);
-         return 0;
-      }
-
-      /* Back button in main settings submenu: return to main menu */
-      if (action == MENU_ACTION_CANCEL && strm->in_main_settings_submenu)
-      {
-         strm->in_main_settings_submenu = false;
-         strm->return_to_main_settings_submenu = false;
-         streamlined_return_to_top_menu(strm, menu_st, strm->saved_main_menu_selection);
-         return 0;
-      }
-
-      /* Block back navigation at top level (nowhere to go) */
-      if (action == MENU_ACTION_CANCEL && !strm->in_folder && !strm->in_main_settings_submenu)
-      {
-         return 0;  /* Do nothing - can't go up from top level */
-      }
-
-      /* Handle folder/file/settings selection */
-      if (action == MENU_ACTION_OK && entry)
-      {
-         /* Check for Settings entry - show custom settings submenu */
-         if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS && !strm->in_main_settings_submenu)
-         {
-            strm->saved_main_menu_selection = menu_st->selection_ptr;
-            strm->in_main_settings_submenu = true;
-            streamlined_populate_main_settings_submenu();
-            menu_st->selection_ptr = 0;
-            return 0;
-         }
-
-         /* Handle selection within main settings submenu */
-         if (strm->in_main_settings_submenu)
-         {
-            /* Save selection so we can return to same position */
-            strm->saved_settings_selection = menu_st->selection_ptr;
-            /* Set flag to return to settings submenu when backing out */
-            strm->return_to_main_settings_submenu = true;
-            /* Let generic handler process the RA menu item */
-            strm->is_custom_main_menu = false;
-            strm->in_main_settings_submenu = false;
-            return generic_menu_entry_action(userdata, entry, i, action);
-         }
-
-         /* For custom main menu entries, the full path is in entry->label
-          * (entry->path contains the display name without path/extension) */
-         {
-            const char *item_path = entry->label;
-
-         if (!string_is_empty(item_path))
-         {
-            if (path_is_directory(item_path))
-            {
-               /* Save current selection before entering folder */
-               strm->main_menu_selection = menu_st->selection_ptr;
-
-               /* Enter the selected folder */
-               streamlined_populate_folder_menu(strm, item_path, true);  /* Inside folder - show slash */
-               strlcpy(strm->current_folder_path, item_path,
-                     sizeof(strm->current_folder_path));
-
-               /* Try to read folder's core.txt */
-               if (!streamlined_read_folder_core(item_path, strm->folder_core_path,
-                     sizeof(strm->folder_core_path)))
-                  strm->folder_core_path[0] = '\0';  /* No core.txt found */
-
-               strm->in_folder = true;
+               view->saved_selection = menu_st->selection_ptr;
+               streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_ADVANCED);
+               streamlined_populate_settings_submenu();
                menu_st->selection_ptr = 0;
                return 0;
             }
-            else if (path_is_valid(item_path))
+
+            /* Handle "Quit" - if not CLI, close content and go to main menu */
+            if (entry_label && string_is_equal(entry_label, "Quit"))
             {
-               /* Launch the selected file (ROM) */
-               const char *core_path = NULL;
-
-               /* Check if folder has a specific core assigned via .core.txt */
-               if (!string_is_empty(strm->folder_core_path))
+               if (!streamlined_is_launched_from_cli())
                {
-                  core_path = strm->folder_core_path;
-               }
-               else
-               {
-                  /* No .core.txt - show core selection screen */
-                  strlcpy(strm->pending_content_path, item_path,
-                        sizeof(strm->pending_content_path));
-                  strm->selecting_core = true;
-                  streamlined_populate_core_selection(strm, item_path);
-                  menu_st->selection_ptr = 0;
+                  strm->view_stack.top = -1;
+                  command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+                  menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
                   return 0;
                }
+            }
+         }
+         break;
+      }
 
-               if (core_path && path_is_valid(core_path))
+      case STREAMLINED_VIEW_ADVANCED:
+      {
+         /* Back: return to quick menu */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            streamlined_populate_quick_menu();
+            if (view)
+               menu_st->selection_ptr = view->saved_selection;
+            return 0;
+         }
+
+         /* OK: entering an RA settings screen */
+         if (action == MENU_ACTION_OK)
+         {
+            view->saved_selection = menu_st->selection_ptr;
+            streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_RA_SETTINGS);
+         }
+         break;
+      }
+
+      case STREAMLINED_VIEW_CORE_SELECT:
+      {
+         /* Cancel: go back to parent view */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view && view->type == STREAMLINED_VIEW_FOLDER)
+               streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
+            else if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+               streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+            if (view)
+               menu_st->selection_ptr = view->saved_selection;
+            return 0;
+         }
+
+         /* Core selected: save and launch */
+         if (action == MENU_ACTION_OK && entry)
+         {
+            const char *selected_core = entry->label;
+            if (!string_is_empty(selected_core) && path_is_valid(selected_core))
+            {
+               /* Find the parent FOLDER view to save core */
+               streamlined_view_t *parent = (strm->view_stack.top > 0)
+                  ? &strm->view_stack.entries[strm->view_stack.top - 1] : NULL;
+
+               if (parent && parent->type == STREAMLINED_VIEW_FOLDER)
                {
-                  streamlined_launch_content(strm, menu_st,
-                        core_path, item_path);
-                  return 0;
+                  streamlined_save_folder_core(parent->data.folder.folder_path, selected_core);
+                  strlcpy(parent->data.folder.core_path, selected_core,
+                        sizeof(parent->data.folder.core_path));
                }
-               /* No compatible core found - do nothing for now */
+
+               streamlined_launch_content(strm, menu_st,
+                     selected_core, view->data.core_select.content_path);
                return 0;
             }
          }
-         } /* end item_path scope */
+
+         /* Allow navigation (up/down) */
+         if (action == MENU_ACTION_UP || action == MENU_ACTION_DOWN ||
+             action == MENU_ACTION_SCROLL_UP || action == MENU_ACTION_SCROLL_DOWN)
+         {
+            return generic_menu_entry_action(userdata, entry, i, action);
+         }
+
+         return 0;  /* Block other actions */
       }
 
-      /* Block non-navigation actions (SCAN, SEARCH, INFO, etc.)
-       * from reaching the generic handler - custom menu entries
-       * lack the path setup that those handlers expect */
-      if (   action == MENU_ACTION_SCAN
-          || action == MENU_ACTION_SEARCH
-          || action == MENU_ACTION_INFO)
-         return 0;
+      case STREAMLINED_VIEW_MAIN_MENU:
+      {
+         /* Cancel at top level: reset selection so next Menu press can background */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            menu_st->selection_ptr = 0;
+            return 0;
+         }
+
+         if (action == MENU_ACTION_OK && entry)
+         {
+            /* Settings entry */
+            if (entry->enum_idx == MENU_ENUM_LABEL_SETTINGS)
+            {
+               view->saved_selection = menu_st->selection_ptr;
+               streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_SETTINGS);
+               streamlined_push_nav_marker();
+               streamlined_populate_main_settings_submenu();
+               menu_st->selection_ptr = 0;
+               return 0;
+            }
+
+            /* Folder/file selection */
+            {
+               const char *item_path = entry->label;
+               if (!string_is_empty(item_path))
+               {
+                  if (path_is_directory(item_path))
+                  {
+                     streamlined_view_t *v;
+                     view->saved_selection = menu_st->selection_ptr;
+                     v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
+                     if (v)
+                     {
+                        strlcpy(v->data.folder.folder_path, item_path,
+                              sizeof(v->data.folder.folder_path));
+                        if (!streamlined_read_folder_core(item_path, v->data.folder.core_path,
+                              sizeof(v->data.folder.core_path)))
+                           v->data.folder.core_path[0] = '\0';
+                     }
+                     streamlined_push_nav_marker();
+                     streamlined_populate_folder_menu(strm, item_path, true);
+                     menu_st->selection_ptr = 0;
+                     return 0;
+                  }
+                  else if (path_is_valid(item_path))
+                  {
+                     /* No core at top level - show core selection */
+                     streamlined_view_t *v;
+                     view->saved_selection = menu_st->selection_ptr;
+                     v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
+                     if (v)
+                        strlcpy(v->data.core_select.content_path, item_path,
+                              sizeof(v->data.core_select.content_path));
+                     streamlined_push_nav_marker();
+                     streamlined_populate_core_selection(strm, item_path);
+                     menu_st->selection_ptr = 0;
+                     return 0;
+                  }
+               }
+            }
+         }
+
+         /* Block non-navigation actions */
+         if (action == MENU_ACTION_SCAN
+               || action == MENU_ACTION_SEARCH
+               || action == MENU_ACTION_INFO)
+            return 0;
+
+         break;
+      }
+
+      case STREAMLINED_VIEW_FOLDER:
+      {
+         /* Cancel: pop to parent view */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view)
+            {
+               if (view->type == STREAMLINED_VIEW_FOLDER)
+                  streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
+               else if (view->type == STREAMLINED_VIEW_MAIN_MENU)
+               {
+                  streamlined_pop_nav_marker();
+                  streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+               }
+               menu_st->selection_ptr = view->saved_selection;
+            }
+            return 0;
+         }
+
+         if (action == MENU_ACTION_OK && entry)
+         {
+            const char *item_path = entry->label;
+            if (!string_is_empty(item_path))
+            {
+               if (path_is_directory(item_path))
+               {
+                  /* Enter subfolder - push new FOLDER view */
+                  streamlined_view_t *v;
+                  view->saved_selection = menu_st->selection_ptr;
+                  v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FOLDER);
+                  if (v)
+                  {
+                     strlcpy(v->data.folder.folder_path, item_path,
+                           sizeof(v->data.folder.folder_path));
+                     if (!streamlined_read_folder_core(item_path, v->data.folder.core_path,
+                           sizeof(v->data.folder.core_path)))
+                        v->data.folder.core_path[0] = '\0';
+                  }
+                  streamlined_populate_folder_menu(strm, item_path, true);
+                  menu_st->selection_ptr = 0;
+                  return 0;
+               }
+               else if (path_is_valid(item_path))
+               {
+                  /* Launch file */
+                  if (!string_is_empty(view->data.folder.core_path))
+                  {
+                     if (path_is_valid(view->data.folder.core_path))
+                     {
+                        streamlined_launch_content(strm, menu_st,
+                              view->data.folder.core_path, item_path);
+                        return 0;
+                     }
+                     return 0;
+                  }
+                  else
+                  {
+                     /* No core - show core selection */
+                     streamlined_view_t *v;
+                     view->saved_selection = menu_st->selection_ptr;
+                     v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
+                     if (v)
+                        strlcpy(v->data.core_select.content_path, item_path,
+                              sizeof(v->data.core_select.content_path));
+                     streamlined_populate_core_selection(strm, item_path);
+                     menu_st->selection_ptr = 0;
+                     return 0;
+                  }
+               }
+            }
+         }
+
+         /* Block non-navigation actions */
+         if (action == MENU_ACTION_SCAN
+               || action == MENU_ACTION_SEARCH
+               || action == MENU_ACTION_INFO)
+            return 0;
+
+         break;
+      }
+
+      case STREAMLINED_VIEW_MAIN_SETTINGS:
+      {
+         /* Back: return to main menu */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+            {
+               streamlined_pop_nav_marker();
+               streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+            }
+            if (view)
+               menu_st->selection_ptr = view->saved_selection;
+            return 0;
+         }
+
+         /* OK: entering RA settings */
+         if (action == MENU_ACTION_OK)
+         {
+            view->saved_selection = menu_st->selection_ptr;
+            streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_RA_SETTINGS);
+            streamlined_pop_nav_marker();  /* Remove marker before RA pushes its entries */
+            return generic_menu_entry_action(userdata, entry, i, action);
+         }
+         break;
+      }
+
+      case STREAMLINED_VIEW_RA_SETTINGS:
+         /* All input handled by generic handler */
+         return generic_menu_entry_action(userdata, entry, i, action);
+
+      default:
+         break;
    }
 
    /* Delegate all other input to RetroArch's generic menu handler */
