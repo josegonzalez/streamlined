@@ -7,7 +7,7 @@ The Streamlined Menu is a simple, clean way to browse your game collection and p
 When you open RetroArch with the Streamlined Menu, you see a list of your game folders. Each folder usually holds games for one system (like "Game Boy" or "Super Nintendo"). At the bottom of the list, you will also see:
 
 - **Settings** - Opens system settings
-- **Quit** - Closes RetroArch
+- **Quit** - Closes RetroArch (not shown on Apple TV)
 
 Use **Up** and **Down** to move through the list. The item you have selected is highlighted with a white pill shape.
 

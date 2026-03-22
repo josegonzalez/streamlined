@@ -1802,12 +1802,14 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
             MENU_SETTING_ACTION,
             0, 0, NULL);
 
+#if !TARGET_OS_TV
       menu_entries_append(list,
             "Quit",
             msg_hash_to_str(MENU_ENUM_LABEL_QUIT_RETROARCH),
             MENU_ENUM_LABEL_QUIT_RETROARCH,
             MENU_SETTING_ACTION,
             0, 0, NULL);
+#endif
    }
 }
 
