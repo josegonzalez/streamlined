@@ -146,6 +146,26 @@ function _reload(path) {
       _reload(path);
     });
     
+    $(".button-edit").click(function(event) {
+      var path = $(this).parent().parent().data("path");
+      var name = $(this).parent().parent().data("name");
+      $("#edit-filename").text(name);
+      $("#edit-content").val("Loading...");
+      $("#edit-content").data("path", path);
+      $("#edit-modal").modal("show");
+      $.ajax({
+        url: 'read',
+        type: 'GET',
+        data: {path: path},
+        dataType: 'text'
+      }).done(function(content) {
+        $("#edit-content").val(content);
+      }).fail(function(jqXHR, textStatus, errorThrown) {
+        $("#edit-modal").modal("hide");
+        _showError("Failed reading \"" + path + "\"", textStatus, errorThrown);
+      });
+    });
+
     $(".button-move").click(function(event) {
       var path = $(this).parent().parent().data("path");
       if (path[path.length - 1] == "/") {
@@ -306,7 +326,25 @@ $(document).ready(function() {
       });
     }
   });
-  
+
+  $("#edit-save").click(function(event) {
+    $("#edit-modal").modal("hide");
+    var path = $("#edit-content").data("path");
+    var content = $("#edit-content").val();
+    $.ajax({
+      url: 'write?path=' + encodeURIComponent(path),
+      type: 'POST',
+      data: content,
+      contentType: 'application/octet-stream',
+      processData: false,
+      dataType: 'json'
+    }).fail(function(jqXHR, textStatus, errorThrown) {
+      _showError("Failed saving \"" + path + "\"", textStatus, errorThrown);
+    }).always(function() {
+      _reload(_path);
+    });
+  });
+
   $("#reload").click(function(event) {
     _reload(_path);
   });

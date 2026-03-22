@@ -136,7 +136,25 @@
         </div>
       </div>
     </div>
-    
+
+    <div class="modal fade" id="edit-modal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal">&times;</button>
+            <h4 class="modal-title">Edit File: <span id="edit-filename"></span></h4>
+          </div>
+          <div class="modal-body">
+            <textarea id="edit-content" spellcheck="false"></textarea>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="edit-save">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script type="text/x-tmpl" id="template-listing">
       <tr class="row-file">
         <td class="column-icon">
@@ -156,6 +174,15 @@
             <p>{%=formatFileSize(o.size)%}</p>
           {% } %}
         </td>
+        {% if (o.size != null) { %}
+        <td class="column-edit">
+          <button type="button" class="btn btn-default btn-xs button-edit">
+            <span class="glyphicon glyphicon-pencil"></span>
+          </button>
+        </td>
+        {% } else { %}
+        <td class="column-edit"></td>
+        {% } %}
         <td class="column-move">
           <button type="button" class="btn btn-default btn-xs button-move">
             <span class="glyphicon glyphicon glyphicon-share-alt"></span>
