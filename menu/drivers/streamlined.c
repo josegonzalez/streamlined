@@ -1525,10 +1525,6 @@ static void streamlined_render_game_switcher(streamlined_t *strm,
 
    streamlined_sync_menu_stack(strm);
 
-   /* Image-centric view only */
-   if (settings && settings->uints.menu_streamlined_game_switcher_view == 1)
-      return;
-
    /* Check for empty history */
    {
       playlist_t *history = g_defaults.content_history;
@@ -5836,8 +5832,18 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
 #endif
    }
    else if (strm->in_game_switcher && !strm->game_switcher_in_glo)
-      streamlined_render_game_switcher(strm, p_disp, userdata,
-            video_width, video_height);
+   {
+      settings_t *gs_settings = config_get_ptr();
+      unsigned gs_view = gs_settings
+            ? gs_settings->uints.menu_streamlined_game_switcher_view : 0;
+
+      if (gs_view == 0)
+         streamlined_render_game_switcher(strm, p_disp, userdata,
+               video_width, video_height);
+      else
+         streamlined_render_menu(strm, p_disp, userdata,
+               video_width, video_height);
+   }
    else if (strm->in_random_preview)
       streamlined_render_random_preview(strm, p_disp, userdata,
             video_width, video_height);
