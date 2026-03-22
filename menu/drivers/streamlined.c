@@ -1903,6 +1903,9 @@ static void streamlined_populate_core_selection(streamlined_t *strm, const char 
       return;
    }
 
+   /* Sort cores alphabetically by display name */
+   core_info_qsort(core_info_list, CORE_INFO_LIST_SORT_DISPLAY_NAME);
+
    /* Add each installed core to the list */
    for (i = 0; i < core_info_list->count; i++)
    {
