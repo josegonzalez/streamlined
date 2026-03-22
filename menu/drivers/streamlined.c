@@ -270,6 +270,15 @@ typedef struct
    int top;  /* Index of current top (-1 = empty) */
 } streamlined_view_stack_t;
 
+/* Interstitial screen types */
+typedef enum
+{
+   STREAMLINED_INTERSTITIAL_NONE,
+   STREAMLINED_INTERSTITIAL_LOADING,
+   STREAMLINED_INTERSTITIAL_EXITING,
+   STREAMLINED_INTERSTITIAL_SAVING_AND_EXITING
+} streamlined_interstitial_t;
+
 /* Auto savestate cache: tracks whether the selected game has an auto save */
 typedef struct
 {
@@ -324,6 +333,14 @@ typedef struct
    uint64_t ticker_idx;           /* Incremented each frame for ticker animation */
    uint64_t item_ticker_start;    /* ticker_idx when current item was selected */
    size_t item_ticker_selection;  /* Track which item is being ticker-scrolled */
+
+   /* Interstitial screen state */
+   streamlined_interstitial_t interstitial;
+   bool interstitial_triggered;
+   /* Deferred loading parameters */
+   char loading_core_path[PATH_MAX_LENGTH];
+   char loading_content_path[PATH_MAX_LENGTH];
+   bool loading_is_resume;
 
 } streamlined_t;
 
@@ -401,6 +418,10 @@ static const char *streamlined_strip_sort_prefix(const char *name);
 static bool streamlined_get_auto_savestate_path(
       const char *content_path, const char *core_path,
       char *out_path, size_t out_size);
+static void streamlined_launch_content(streamlined_t *strm,
+      struct menu_state *menu_st,
+      const char *core_path, const char *content_path,
+      bool load_auto_savestate);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -2284,12 +2305,95 @@ static void streamlined_context_destroy(void *data)
    gfx_display_deinit_white_texture();
 }
 
+/*
+ * Execute the deferred action after the interstitial has rendered one frame.
+ * Called from streamlined_render on the frame after the interstitial was drawn.
+ */
+static void streamlined_execute_deferred_action(streamlined_t *strm)
+{
+   streamlined_interstitial_t action = strm->interstitial;
+
+   strm->interstitial           = STREAMLINED_INTERSTITIAL_NONE;
+   strm->interstitial_triggered = false;
+
+   switch (action)
+   {
+      case STREAMLINED_INTERSTITIAL_LOADING:
+      {
+         struct menu_state *menu_st = menu_state_get_ptr();
+         streamlined_launch_content(strm, menu_st,
+               strm->loading_core_path,
+               strm->loading_content_path,
+               strm->loading_is_resume);
+         strm->loading_core_path[0]    = '\0';
+         strm->loading_content_path[0] = '\0';
+         break;
+      }
+
+      case STREAMLINED_INTERSTITIAL_EXITING:
+      {
+         settings_t *settings = config_get_ptr();
+         if (streamlined_is_launched_from_cli())
+         {
+            /* CLI: quit app (auto_save on skips UNLOAD_CORE save,
+             * auto_save off uses CMD_EVENT_QUIT directly) */
+            if (settings->bools.savestate_auto_save)
+               command_event(CMD_EVENT_CLOSE_CONTENT, NULL);
+            else
+               command_event(CMD_EVENT_QUIT, NULL);
+         }
+         else
+         {
+            strm->view_stack.top = -1;
+            if (settings->bools.savestate_auto_save)
+            {
+               bool orig = settings->bools.savestate_auto_save;
+               settings->bools.savestate_auto_save = false;
+               command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+               settings->bools.savestate_auto_save = orig;
+            }
+            else
+               command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+            menu_entries_flush_stack(
+                  msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
+         }
+         break;
+      }
+
+      case STREAMLINED_INTERSTITIAL_SAVING_AND_EXITING:
+      {
+         if (streamlined_is_launched_from_cli())
+         {
+            command_event(CMD_EVENT_QUIT, NULL);
+         }
+         else
+         {
+            strm->view_stack.top = -1;
+            command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+            menu_entries_flush_stack(
+                  msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
+         }
+         break;
+      }
+
+      default:
+         break;
+   }
+}
+
 static void streamlined_render(void *data, unsigned width, unsigned height, bool is_idle)
 {
    streamlined_t *strm = (streamlined_t*)data;
 
    if (!strm)
       return;
+
+   /* Execute deferred action on the frame after interstitial was drawn */
+   if (strm->interstitial_triggered)
+   {
+      streamlined_execute_deferred_action(strm);
+      return;
+   }
 
    if (strm->width != width || strm->height != height)
    {
@@ -2335,6 +2439,53 @@ static void streamlined_frame(void *data, video_frame_info_t *video_info)
       font_bind(&strm->font_title);
    if (strm->font_tiny.font)
       font_bind(&strm->font_tiny);
+
+   /* Interstitial screen: black background + centered text */
+   if (strm->interstitial != STREAMLINED_INTERSTITIAL_NONE)
+   {
+      const char *text;
+      font_data_t *ifont;
+      float isize;
+
+      switch (strm->interstitial)
+      {
+         case STREAMLINED_INTERSTITIAL_LOADING:
+            text = "Loading";
+            break;
+         case STREAMLINED_INTERSTITIAL_EXITING:
+            text = "Exiting";
+            break;
+         case STREAMLINED_INTERSTITIAL_SAVING_AND_EXITING:
+            text = "Saving and Exiting";
+            break;
+         default:
+            text = "";
+            break;
+      }
+
+      gfx_display_draw_quad(p_disp, userdata,
+            video_width, video_height,
+            0, 0, video_width, video_height,
+            video_width, video_height,
+            streamlined_color_black, NULL);
+
+      ifont = strm->font_title.font ? strm->font_title.font : strm->font.font;
+      isize = strm->font_title.font ? strm->font_size_title : strm->font_size;
+      gfx_display_draw_text(ifont, text,
+            (int)(video_width / 2),
+            (int)(video_height / 2 + isize * STREAMLINED_TEXT_VCENTER),
+            video_width, video_height,
+            streamlined_color_text,
+            TEXT_ALIGN_CENTER, 1.0f, false, 0, false);
+
+      if (strm->font.font)
+         font_flush(video_width, video_height, &strm->font);
+      if (strm->font_title.font)
+         font_flush(video_width, video_height, &strm->font_title);
+
+      strm->interstitial_triggered = true;
+      return;
+   }
 
    streamlined_draw_bg(strm, p_disp, userdata, video_width, video_height);
    streamlined_render_menu(strm, p_disp, userdata, video_width, video_height);
@@ -2522,6 +2673,26 @@ static int streamlined_environ(enum menu_environ_cb type, void *data, void *user
 }
 
 /*
+ * Request a deferred content load with an interstitial screen.
+ * Saves the parameters and sets interstitial to LOADING so that
+ * streamlined_frame draws the "Loading" screen for one frame,
+ * then streamlined_render executes the actual load on the next frame.
+ */
+static void streamlined_request_loading(
+      streamlined_t *strm,
+      const char *core_path, const char *content_path,
+      bool is_resume)
+{
+   strlcpy(strm->loading_core_path, core_path,
+         sizeof(strm->loading_core_path));
+   strlcpy(strm->loading_content_path, content_path,
+         sizeof(strm->loading_content_path));
+   strm->loading_is_resume      = is_resume;
+   strm->interstitial           = STREAMLINED_INTERSTITIAL_LOADING;
+   strm->interstitial_triggered = false;
+}
+
+/*
  * Save folder state and launch content with the given core.
  * Common code for both direct launch (from .core.txt) and core selection.
  */
@@ -2608,6 +2779,10 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
    if (!strm)
       return generic_menu_entry_action(userdata, entry, i, action);
 
+   /* Block all input while interstitial screen is showing */
+   if (strm->interstitial != STREAMLINED_INTERSTITIAL_NONE)
+      return 0;
+
    view = streamlined_view_current(&strm->view_stack);
    if (!view)
       return generic_menu_entry_action(userdata, entry, i, action);
@@ -2680,49 +2855,20 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                return 0;
             }
 
-            /* Handle "Quit" */
+            /* Handle "Quit" - show "Exiting" interstitial, defer action */
             if (entry_label && string_is_equal(entry_label, "Quit"))
             {
-               settings_t *settings = config_get_ptr();
-               if (settings->bools.savestate_auto_save)
-               {
-                  /* Auto-save on: unload core WITHOUT auto-saving */
-                  if (!streamlined_is_launched_from_cli())
-                  {
-                     bool orig = settings->bools.savestate_auto_save;
-                     strm->view_stack.top = -1;
-                     settings->bools.savestate_auto_save = false;
-                     command_event(CMD_EVENT_UNLOAD_CORE, NULL);
-                     settings->bools.savestate_auto_save = orig;
-                     menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
-                     return 0;
-                  }
-                  /* CLI: CMD_EVENT_CLOSE_CONTENT → should_quit_on_close() →
-                   * CMD_EVENT_QUIT (skips UNLOAD_CORE, so no auto-save) */
-                  command_event(CMD_EVENT_CLOSE_CONTENT, NULL);
-                  return 0;
-               }
-               /* Auto-save off: original behavior */
-               if (!streamlined_is_launched_from_cli())
-               {
-                  strm->view_stack.top = -1;
-                  command_event(CMD_EVENT_UNLOAD_CORE, NULL);
-                  menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
-                  return 0;
-               }
+               strm->interstitial           = STREAMLINED_INTERSTITIAL_EXITING;
+               strm->interstitial_triggered = false;
+               return 0;
             }
 
-            /* Handle "Save and Quit" - save state then close content */
+            /* Handle "Save and Quit" - show "Saving and Exiting" interstitial */
             if (entry_label && string_is_equal(entry_label, "Save and Quit"))
             {
-               if (!streamlined_is_launched_from_cli())
-               {
-                  strm->view_stack.top = -1;
-                  command_event(CMD_EVENT_UNLOAD_CORE, NULL);
-                  menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
-                  return 0;
-               }
-               /* CLI: fall through to generic_menu_entry_action (QUIT_RETROARCH) */
+               strm->interstitial           = STREAMLINED_INTERSTITIAL_SAVING_AND_EXITING;
+               strm->interstitial_triggered = false;
+               return 0;
             }
          }
          break;
@@ -2783,7 +2929,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         sizeof(parent->data.folder.core_path));
                }
 
-               streamlined_launch_content(strm, menu_st,
+               streamlined_request_loading(strm,
                      selected_core, view->data.core_select.content_path,
                      false);
                return 0;
@@ -2925,7 +3071,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      {
                      {
                         settings_t *settings = config_get_ptr();
-                        streamlined_launch_content(strm, menu_st,
+                        streamlined_request_loading(strm,
                               view->data.folder.core_path, item_path,
                               strm->auto_save_cache.has_auto_save
                                     && settings->bools.savestate_auto_load);
@@ -2962,7 +3108,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                if (!string_is_empty(item_path) && path_is_valid(item_path)
                      && !path_is_directory(item_path))
                {
-                  streamlined_launch_content(strm, menu_st,
+                  streamlined_request_loading(strm,
                         view->data.folder.core_path, item_path, true);
                   return 0;
                }
