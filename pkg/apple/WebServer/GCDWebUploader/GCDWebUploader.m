@@ -47,6 +47,9 @@
 #import "GCDWebServerErrorResponse.h"
 #import "GCDWebServerFileResponse.h"
 
+#import <zlib.h>
+#import <libkern/OSByteOrder.h>
+
 NS_ASSUME_NONNULL_BEGIN
 
 @interface GCDWebUploader (Methods)
@@ -58,6 +61,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable GCDWebServerResponse*)createDirectory:(GCDWebServerURLEncodedFormRequest*)request;
 - (nullable GCDWebServerResponse*)readFile:(GCDWebServerRequest*)request;
 - (nullable GCDWebServerResponse*)writeFile:(GCDWebServerDataRequest*)request;
+- (nullable GCDWebServerResponse*)downloadZip:(GCDWebServerRequest*)request;
 @end
 
 NS_ASSUME_NONNULL_END
@@ -159,6 +163,14 @@ NS_ASSUME_NONNULL_END
                    return [server downloadFile:request];
                  }];
 
+    // Folder ZIP download
+    [self addHandlerForMethod:@"GET"
+                         path:@"/download-zip"
+                 requestClass:[GCDWebServerRequest class]
+                 processBlock:^GCDWebServerResponse*(GCDWebServerRequest* request) {
+                   return [server downloadZip:request];
+                 }];
+
     // File upload
     [self addHandlerForMethod:@"POST"
                          path:@"/upload"
@@ -211,6 +223,28 @@ NS_ASSUME_NONNULL_END
 }
 
 @end
+
+#define ZIP_CHUNK_SIZE 32768
+
+static void _zipWriteUInt16(NSFileHandle* fh, uint16_t value) {
+  value = OSSwapHostToLittleInt16(value);
+  [fh writeData:[NSData dataWithBytes:&value length:2]];
+}
+
+static void _zipWriteUInt32(NSFileHandle* fh, uint32_t value) {
+  value = OSSwapHostToLittleInt32(value);
+  [fh writeData:[NSData dataWithBytes:&value length:4]];
+}
+
+static uint32_t _zipDosDateTimeFromDate(NSDate* date) {
+  NSCalendar* calendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+  NSDateComponents* c = [calendar components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay |
+                                              NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
+                                    fromDate:date];
+  uint16_t dosDate = (uint16_t)(((c.year - 1980) << 9) | (c.month << 5) | c.day);
+  uint16_t dosTime = (uint16_t)((c.hour << 11) | (c.minute << 5) | (c.second / 2));
+  return ((uint32_t)dosDate << 16) | dosTime;
+}
 
 @implementation GCDWebUploader (Methods)
 
@@ -492,6 +526,280 @@ NS_ASSUME_NONNULL_END
     });
   }
   return [GCDWebServerDataResponse responseWithJSONObject:@{}];
+}
+
+- (void)_cleanupOldZipTempFiles {
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* tmpDir = NSTemporaryDirectory();
+  NSArray* contents = [fm contentsOfDirectoryAtPath:tmpDir error:NULL];
+  NSDate* cutoff = [NSDate dateWithTimeIntervalSinceNow:-300];
+  for (NSString* item in contents) {
+    if ([item hasPrefix:@"GCDWebUploader_zip_"]) {
+      NSString* fullPath = [tmpDir stringByAppendingPathComponent:item];
+      NSDictionary* attrs = [fm attributesOfItemAtPath:fullPath error:NULL];
+      NSDate* created = [attrs objectForKey:NSFileCreationDate];
+      if (created && [created compare:cutoff] == NSOrderedAscending) {
+        [fm removeItemAtPath:fullPath error:NULL];
+      }
+    }
+  }
+}
+
+- (nullable NSString*)_createZipFromDirectory:(NSString*)directoryPath
+                                    folderName:(NSString*)folderName
+                                        error:(NSError**)error {
+  NSFileManager* fm = [NSFileManager defaultManager];
+  NSString* tempPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"GCDWebUploader_zip_%@.zip", [[NSUUID UUID] UUIDString]]];
+
+  if (![fm createFileAtPath:tempPath contents:nil attributes:nil]) {
+    if (error) {
+      *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{NSLocalizedDescriptionKey: @"Failed to create temp file"}];
+    }
+    return nil;
+  }
+
+  NSFileHandle* zipFile = [NSFileHandle fileHandleForWritingAtPath:tempPath];
+  if (!zipFile) {
+    if (error) {
+      *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO userInfo:@{NSLocalizedDescriptionKey: @"Failed to open temp file"}];
+    }
+    return nil;
+  }
+
+  NSMutableArray* entries = [NSMutableArray array];
+  NSDirectoryEnumerator* enumerator = [fm enumeratorAtPath:directoryPath];
+  NSString* relativeName;
+
+  @try {
+    while ((relativeName = [enumerator nextObject]) != nil) {
+      NSString* itemName = [relativeName lastPathComponent];
+
+      if (!_allowHiddenItems && [itemName hasPrefix:@"."]) {
+        NSDictionary* attrs = [enumerator fileAttributes];
+        if ([[attrs objectForKey:NSFileType] isEqualToString:NSFileTypeDirectory]) {
+          [enumerator skipDescendants];
+        }
+        continue;
+      }
+
+      NSString* fullPath = [directoryPath stringByAppendingPathComponent:relativeName];
+      NSDictionary* attrs = [fm attributesOfItemAtPath:fullPath error:NULL];
+      if (!attrs) continue;
+
+      NSString* fileType = [attrs objectForKey:NSFileType];
+      NSString* zipEntryName = [folderName stringByAppendingPathComponent:relativeName];
+      NSDate* modDate = [attrs objectForKey:NSFileModificationDate] ?: [NSDate date];
+      uint32_t dosDateTime = _zipDosDateTimeFromDate(modDate);
+
+      if ([fileType isEqualToString:NSFileTypeDirectory]) {
+        NSString* dirEntryName = [zipEntryName stringByAppendingString:@"/"];
+        NSData* nameData = [dirEntryName dataUsingEncoding:NSUTF8StringEncoding];
+        uint32_t localHeaderOffset = (uint32_t)[zipFile offsetInFile];
+
+        // Local file header for directory
+        _zipWriteUInt32(zipFile, 0x04034b50);  // signature
+        _zipWriteUInt16(zipFile, 20);           // version needed
+        _zipWriteUInt16(zipFile, 0x0800);       // flags (bit 11: UTF-8)
+        _zipWriteUInt16(zipFile, 0);            // compression: stored
+        _zipWriteUInt32(zipFile, dosDateTime);  // mod date/time
+        _zipWriteUInt32(zipFile, 0);            // CRC-32
+        _zipWriteUInt32(zipFile, 0);            // compressed size
+        _zipWriteUInt32(zipFile, 0);            // uncompressed size
+        _zipWriteUInt16(zipFile, (uint16_t)[nameData length]);  // name length
+        _zipWriteUInt16(zipFile, 0);            // extra field length
+        [zipFile writeData:nameData];
+
+        [entries addObject:@{
+          @"name": nameData,
+          @"crc32": @(0),
+          @"compressedSize": @(0),
+          @"uncompressedSize": @(0),
+          @"localHeaderOffset": @(localHeaderOffset),
+          @"dosDateTime": @(dosDateTime),
+          @"compressionMethod": @(0),
+          @"externalAttributes": @(0x10),  // directory flag
+        }];
+
+      } else if ([fileType isEqualToString:NSFileTypeRegular]) {
+        if (![self _checkFileExtension:itemName]) continue;
+
+        NSData* nameData = [zipEntryName dataUsingEncoding:NSUTF8StringEncoding];
+        uint64_t fileSize = [[attrs objectForKey:NSFileSize] unsignedLongLongValue];
+        uint32_t localHeaderOffset = (uint32_t)[zipFile offsetInFile];
+
+        // Local file header with data descriptor flag (bit 3) + UTF-8 flag (bit 11)
+        _zipWriteUInt32(zipFile, 0x04034b50);  // signature
+        _zipWriteUInt16(zipFile, 20);           // version needed
+        _zipWriteUInt16(zipFile, 0x0808);       // flags (bit 3: data descriptor, bit 11: UTF-8)
+        _zipWriteUInt16(zipFile, 8);            // compression: deflate
+        _zipWriteUInt32(zipFile, dosDateTime);  // mod date/time
+        _zipWriteUInt32(zipFile, 0);            // CRC-32 (in data descriptor)
+        _zipWriteUInt32(zipFile, 0);            // compressed size (in data descriptor)
+        _zipWriteUInt32(zipFile, 0);            // uncompressed size (in data descriptor)
+        _zipWriteUInt16(zipFile, (uint16_t)[nameData length]);  // name length
+        _zipWriteUInt16(zipFile, 0);            // extra field length
+        [zipFile writeData:nameData];
+
+        // Compress file data
+        uint32_t fileCrc32 = (uint32_t)crc32(0L, Z_NULL, 0);
+        uint32_t compressedSize = 0;
+
+        NSFileHandle* sourceFile = [NSFileHandle fileHandleForReadingAtPath:fullPath];
+        if (!sourceFile) continue;
+
+        z_stream stream;
+        memset(&stream, 0, sizeof(stream));
+        if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+          [sourceFile closeFile];
+          continue;
+        }
+
+        uint8_t outBuffer[ZIP_CHUNK_SIZE];
+        uint64_t bytesRemaining = fileSize;
+
+        while (bytesRemaining > 0) {
+          NSUInteger readSize = (NSUInteger)MIN((uint64_t)ZIP_CHUNK_SIZE, bytesRemaining);
+          NSData* chunk = [sourceFile readDataOfLength:readSize];
+          if ([chunk length] == 0) break;
+
+          fileCrc32 = (uint32_t)crc32(fileCrc32, [chunk bytes], (uInt)[chunk length]);
+          bytesRemaining -= [chunk length];
+
+          stream.next_in = (Bytef*)[chunk bytes];
+          stream.avail_in = (uInt)[chunk length];
+
+          do {
+            stream.next_out = outBuffer;
+            stream.avail_out = ZIP_CHUNK_SIZE;
+            deflate(&stream, Z_NO_FLUSH);
+            NSUInteger have = ZIP_CHUNK_SIZE - stream.avail_out;
+            if (have > 0) {
+              [zipFile writeData:[NSData dataWithBytes:outBuffer length:have]];
+              compressedSize += (uint32_t)have;
+            }
+          } while (stream.avail_out == 0);
+        }
+
+        // Flush remaining compressed data
+        do {
+          stream.next_out = outBuffer;
+          stream.avail_out = ZIP_CHUNK_SIZE;
+          deflate(&stream, Z_FINISH);
+          NSUInteger have = ZIP_CHUNK_SIZE - stream.avail_out;
+          if (have > 0) {
+            [zipFile writeData:[NSData dataWithBytes:outBuffer length:have]];
+            compressedSize += (uint32_t)have;
+          }
+        } while (stream.avail_out == 0);
+
+        deflateEnd(&stream);
+        [sourceFile closeFile];
+
+        // Data descriptor
+        _zipWriteUInt32(zipFile, 0x08074b50);  // signature
+        _zipWriteUInt32(zipFile, fileCrc32);
+        _zipWriteUInt32(zipFile, compressedSize);
+        _zipWriteUInt32(zipFile, (uint32_t)fileSize);
+
+        [entries addObject:@{
+          @"name": nameData,
+          @"crc32": @(fileCrc32),
+          @"compressedSize": @(compressedSize),
+          @"uncompressedSize": @((uint32_t)fileSize),
+          @"localHeaderOffset": @(localHeaderOffset),
+          @"dosDateTime": @(dosDateTime),
+          @"compressionMethod": @(8),
+          @"externalAttributes": @(0),
+        }];
+      }
+    }
+
+    // Central directory
+    uint32_t centralDirOffset = (uint32_t)[zipFile offsetInFile];
+    uint32_t centralDirSize = 0;
+
+    for (NSDictionary* entry in entries) {
+      NSData* nameData = entry[@"name"];
+      uint32_t entryStart = (uint32_t)[zipFile offsetInFile];
+
+      _zipWriteUInt32(zipFile, 0x02014b50);  // signature
+      _zipWriteUInt16(zipFile, 20);           // version made by
+      _zipWriteUInt16(zipFile, 20);           // version needed
+      uint16_t flags = ([entry[@"compressionMethod"] unsignedShortValue] == 8) ? 0x0808 : 0x0800;
+      _zipWriteUInt16(zipFile, flags);
+      _zipWriteUInt16(zipFile, [entry[@"compressionMethod"] unsignedShortValue]);
+      _zipWriteUInt32(zipFile, [entry[@"dosDateTime"] unsignedIntValue]);
+      _zipWriteUInt32(zipFile, [entry[@"crc32"] unsignedIntValue]);
+      _zipWriteUInt32(zipFile, [entry[@"compressedSize"] unsignedIntValue]);
+      _zipWriteUInt32(zipFile, [entry[@"uncompressedSize"] unsignedIntValue]);
+      _zipWriteUInt16(zipFile, (uint16_t)[nameData length]);
+      _zipWriteUInt16(zipFile, 0);   // extra field length
+      _zipWriteUInt16(zipFile, 0);   // comment length
+      _zipWriteUInt16(zipFile, 0);   // disk number start
+      _zipWriteUInt16(zipFile, 0);   // internal file attributes
+      _zipWriteUInt32(zipFile, [entry[@"externalAttributes"] unsignedIntValue]);
+      _zipWriteUInt32(zipFile, [entry[@"localHeaderOffset"] unsignedIntValue]);
+      [zipFile writeData:nameData];
+
+      centralDirSize += (uint32_t)([zipFile offsetInFile] - entryStart);
+    }
+
+    // End of central directory
+    _zipWriteUInt32(zipFile, 0x06054b50);  // signature
+    _zipWriteUInt16(zipFile, 0);           // disk number
+    _zipWriteUInt16(zipFile, 0);           // disk with central dir
+    _zipWriteUInt16(zipFile, (uint16_t)[entries count]);
+    _zipWriteUInt16(zipFile, (uint16_t)[entries count]);
+    _zipWriteUInt32(zipFile, centralDirSize);
+    _zipWriteUInt32(zipFile, centralDirOffset);
+    _zipWriteUInt16(zipFile, 0);           // comment length
+
+    [zipFile closeFile];
+  } @catch (NSException* exception) {
+    [zipFile closeFile];
+    [fm removeItemAtPath:tempPath error:NULL];
+    if (error) {
+      *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EIO
+                               userInfo:@{NSLocalizedDescriptionKey: [exception reason] ?: @"Unknown error creating ZIP"}];
+    }
+    return nil;
+  }
+
+  return tempPath;
+}
+
+- (GCDWebServerResponse*)downloadZip:(GCDWebServerRequest*)request {
+  [self _cleanupOldZipTempFiles];
+
+  NSString* relativePath = [[request query] objectForKey:@"path"];
+  NSString* absolutePath = [_uploadDirectory stringByAppendingPathComponent:GCDWebServerNormalizePath(relativePath)];
+  BOOL isDirectory = NO;
+  if (!absolutePath || ![[NSFileManager defaultManager] fileExistsAtPath:absolutePath isDirectory:&isDirectory]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_NotFound message:@"\"%@\" does not exist", relativePath];
+  }
+  if (!isDirectory) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_BadRequest message:@"\"%@\" is not a directory", relativePath];
+  }
+
+  NSString* directoryName = [absolutePath lastPathComponent];
+  if (!_allowHiddenItems && [directoryName hasPrefix:@"."]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_Forbidden message:@"Downloading directory \"%@\" is not allowed", directoryName];
+  }
+
+  NSError* error = nil;
+  NSString* zipPath = [self _createZipFromDirectory:absolutePath folderName:directoryName error:&error];
+  if (!zipPath) {
+    return [GCDWebServerErrorResponse responseWithServerError:kGCDWebServerHTTPStatusCode_InternalServerError underlyingError:error message:@"Failed creating ZIP for \"%@\"", relativePath];
+  }
+
+  GCDWebServerFileResponse* response = [GCDWebServerFileResponse responseWithFile:zipPath isAttachment:YES];
+  NSString* zipFileName = [directoryName stringByAppendingPathExtension:@"zip"];
+  NSString* disposition = [NSString stringWithFormat:@"attachment; filename=\"%@\"; filename*=UTF-8''%@",
+                           zipFileName, GCDWebServerEscapeURLString(zipFileName)];
+  [response setValue:disposition forAdditionalHeader:@"Content-Disposition"];
+
+  return response;
 }
 
 @end

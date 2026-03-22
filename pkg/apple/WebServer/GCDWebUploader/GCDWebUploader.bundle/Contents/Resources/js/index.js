@@ -145,7 +145,14 @@ function _reload(path) {
       var path = $(this).parent().parent().data("path");
       _reload(path);
     });
-    
+
+    $(".button-download-zip").click(function(event) {
+      var path = $(this).parent().parent().data("path");
+      setTimeout(function() {
+        window.location = "download-zip?path=" + encodeURIComponent(path);
+      }, 0);
+    });
+
     $(".button-edit").click(function(event) {
       var path = $(this).parent().parent().data("path");
       var name = $(this).parent().parent().data("name");

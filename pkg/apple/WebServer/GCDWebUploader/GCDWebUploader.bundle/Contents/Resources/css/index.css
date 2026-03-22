@@ -47,6 +47,11 @@
   text-align: center;
 }
 
+.column-download-zip {
+  width: 40px;
+  text-align: center;
+}
+
 .column-move {
   width: 40px;
   text-align: center;
