@@ -38,6 +38,7 @@ While playing a game, open the menu to see the Quick Menu. The title at the top 
 - **Advanced** - Opens more detailed settings for the game
 - **Reset** - Restarts the game from the beginning
 - **Quit** - Stops the game and goes back to the main screen
+- **Save and Quit** - Saves your progress and then stops the game (only shown when auto-save is turned on in settings)
 
 Pressing **B** (Back) also resumes your game, just like selecting Resume.
 

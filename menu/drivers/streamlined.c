@@ -159,6 +159,9 @@ typedef struct
 /* Marker for conditional exit entry - shows "Exit" or "Quit" based on CLI launch */
 #define STREAMLINED_EXIT_MARKER 0xCAFF
 
+/* Marker for "Save and Quit" entry - only shown when savestate_auto_save is on */
+#define STREAMLINED_SAVE_AND_QUIT_MARKER 0xCB00
+
 /* Main custom quick menu
  * NOTE: Exit/Quit handled dynamically - see streamlined_populate_quick_menu() */
 static const streamlined_quick_item_t streamlined_quick_menu_items[] = {
@@ -167,7 +170,8 @@ static const streamlined_quick_item_t streamlined_quick_menu_items[] = {
    { "Load",          MENU_ENUM_LABEL_LOAD_STATE },
    { "Advanced",      STREAMLINED_SETTINGS_SUBMENU_MARKER },  /* Opens combined settings submenu */
    { "Reset",         MENU_ENUM_LABEL_RESTART_CONTENT },
-   { NULL,            STREAMLINED_EXIT_MARKER },  /* Dynamic: "Exit" or "Quit" based on CLI */
+   { NULL,            STREAMLINED_EXIT_MARKER },           /* Dynamic: "Exit" or "Quit" based on CLI */
+   { NULL,            STREAMLINED_SAVE_AND_QUIT_MARKER },  /* Dynamic: "Save and Quit" (auto_save only) */
    { NULL, 0 }
 };
 
@@ -1407,17 +1411,23 @@ static bool streamlined_is_disc_control_available(void)
    return disk_control_enabled(&sys_info->disk_control);
 }
 
-/* Populate quick menu, with dynamic Exit/Quit based on CLI launch */
+/* Populate quick menu, with dynamic Exit/Quit and conditional Save and Quit */
 static void streamlined_populate_quick_menu(void)
 {
    file_list_t *list = streamlined_get_and_clear_menu_list();
    const streamlined_quick_item_t *item;
    bool from_cli = streamlined_is_launched_from_cli();
+   settings_t *settings = config_get_ptr();
+   bool auto_save = settings->bools.savestate_auto_save;
 
    if (!list)
       return;
 
-   for (item = streamlined_quick_menu_items; item->label != NULL || item->action == STREAMLINED_EXIT_MARKER; item++)
+   for (item = streamlined_quick_menu_items;
+        item->label != NULL
+           || item->action == STREAMLINED_EXIT_MARKER
+           || item->action == STREAMLINED_SAVE_AND_QUIT_MARKER;
+        item++)
    {
       const char *label;
       const char *action_label;
@@ -1427,6 +1437,15 @@ static void streamlined_populate_quick_menu(void)
       if (item->action == STREAMLINED_EXIT_MARKER)
       {
          label = "Quit";
+         action = from_cli ? MENU_ENUM_LABEL_QUIT_RETROARCH : MENU_ENUM_LABEL_CLOSE_CONTENT;
+         action_label = msg_hash_to_str(action);
+      }
+      /* Handle "Save and Quit" - only shown when savestate_auto_save is on */
+      else if (item->action == STREAMLINED_SAVE_AND_QUIT_MARKER)
+      {
+         if (!auto_save)
+            continue;
+         label = "Save and Quit";
          action = from_cli ? MENU_ENUM_LABEL_QUIT_RETROARCH : MENU_ENUM_LABEL_CLOSE_CONTENT;
          action_label = msg_hash_to_str(action);
       }
@@ -2661,8 +2680,40 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                return 0;
             }
 
-            /* Handle "Quit" - if not CLI, close content and go to main menu */
+            /* Handle "Quit" */
             if (entry_label && string_is_equal(entry_label, "Quit"))
+            {
+               settings_t *settings = config_get_ptr();
+               if (settings->bools.savestate_auto_save)
+               {
+                  /* Auto-save on: unload core WITHOUT auto-saving */
+                  if (!streamlined_is_launched_from_cli())
+                  {
+                     bool orig = settings->bools.savestate_auto_save;
+                     strm->view_stack.top = -1;
+                     settings->bools.savestate_auto_save = false;
+                     command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+                     settings->bools.savestate_auto_save = orig;
+                     menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
+                     return 0;
+                  }
+                  /* CLI: CMD_EVENT_CLOSE_CONTENT → should_quit_on_close() →
+                   * CMD_EVENT_QUIT (skips UNLOAD_CORE, so no auto-save) */
+                  command_event(CMD_EVENT_CLOSE_CONTENT, NULL);
+                  return 0;
+               }
+               /* Auto-save off: original behavior */
+               if (!streamlined_is_launched_from_cli())
+               {
+                  strm->view_stack.top = -1;
+                  command_event(CMD_EVENT_UNLOAD_CORE, NULL);
+                  menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
+                  return 0;
+               }
+            }
+
+            /* Handle "Save and Quit" - save state then close content */
+            if (entry_label && string_is_equal(entry_label, "Save and Quit"))
             {
                if (!streamlined_is_launched_from_cli())
                {
@@ -2671,6 +2722,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   menu_entries_flush_stack(msg_hash_to_str(MENU_ENUM_LABEL_MAIN_MENU), 0);
                   return 0;
                }
+               /* CLI: fall through to generic_menu_entry_action (QUIT_RETROARCH) */
             }
          }
          break;
