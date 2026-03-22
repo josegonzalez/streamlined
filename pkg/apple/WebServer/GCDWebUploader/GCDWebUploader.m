@@ -56,6 +56,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable GCDWebServerResponse*)moveItem:(GCDWebServerURLEncodedFormRequest*)request;
 - (nullable GCDWebServerResponse*)deleteItem:(GCDWebServerURLEncodedFormRequest*)request;
 - (nullable GCDWebServerResponse*)createDirectory:(GCDWebServerURLEncodedFormRequest*)request;
+- (nullable GCDWebServerResponse*)readFile:(GCDWebServerRequest*)request;
+- (nullable GCDWebServerResponse*)writeFile:(GCDWebServerDataRequest*)request;
 @end
 
 NS_ASSUME_NONNULL_END
@@ -187,6 +189,22 @@ NS_ASSUME_NONNULL_END
                  requestClass:[GCDWebServerURLEncodedFormRequest class]
                  processBlock:^GCDWebServerResponse*(GCDWebServerRequest* request) {
                    return [server createDirectory:(GCDWebServerURLEncodedFormRequest*)request];
+                 }];
+
+    // File reading (for edit)
+    [self addHandlerForMethod:@"GET"
+                         path:@"/read"
+                 requestClass:[GCDWebServerRequest class]
+                 processBlock:^GCDWebServerResponse*(GCDWebServerRequest* request) {
+                   return [server readFile:request];
+                 }];
+
+    // File writing (for edit)
+    [self addHandlerForMethod:@"POST"
+                         path:@"/write"
+                 requestClass:[GCDWebServerDataRequest class]
+                 processBlock:^GCDWebServerResponse*(GCDWebServerRequest* request) {
+                   return [server writeFile:(GCDWebServerDataRequest*)request];
                  }];
   }
   return self;
@@ -385,6 +403,71 @@ NS_ASSUME_NONNULL_END
   return [GCDWebServerDataResponse responseWithJSONObject:@{}];
 }
 
+- (GCDWebServerResponse*)readFile:(GCDWebServerRequest*)request {
+  NSString* relativePath = [[request query] objectForKey:@"path"];
+  NSString* absolutePath = [_uploadDirectory stringByAppendingPathComponent:GCDWebServerNormalizePath(relativePath)];
+  BOOL isDirectory = NO;
+  if (![[NSFileManager defaultManager] fileExistsAtPath:absolutePath isDirectory:&isDirectory]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_NotFound message:@"\"%@\" does not exist", relativePath];
+  }
+  if (isDirectory) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_BadRequest message:@"\"%@\" is a directory", relativePath];
+  }
+
+  NSString* fileName = [absolutePath lastPathComponent];
+  if (([fileName hasPrefix:@"."] && !_allowHiddenItems) || ![self _checkFileExtension:fileName]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_Forbidden message:@"Reading file name \"%@\" is not allowed", fileName];
+  }
+
+  NSData* data = [[NSFileManager defaultManager] contentsAtPath:absolutePath];
+  if (data == nil) {
+    return [GCDWebServerErrorResponse responseWithServerError:kGCDWebServerHTTPStatusCode_InternalServerError message:@"Failed reading \"%@\"", relativePath];
+  }
+
+  NSString* content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  if (content == nil) {
+    content = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+  }
+  if (content == nil) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_BadRequest message:@"\"%@\" is not a text file", relativePath];
+  }
+
+  return [GCDWebServerDataResponse responseWithText:content];
+}
+
+- (GCDWebServerResponse*)writeFile:(GCDWebServerDataRequest*)request {
+  NSString* relativePath = [[request query] objectForKey:@"path"];
+  NSString* absolutePath = [_uploadDirectory stringByAppendingPathComponent:GCDWebServerNormalizePath(relativePath)];
+  BOOL isDirectory = NO;
+  if (![[NSFileManager defaultManager] fileExistsAtPath:absolutePath isDirectory:&isDirectory]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_NotFound message:@"\"%@\" does not exist", relativePath];
+  }
+  if (isDirectory) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_BadRequest message:@"\"%@\" is a directory", relativePath];
+  }
+
+  NSString* fileName = [absolutePath lastPathComponent];
+  if (([fileName hasPrefix:@"."] && !_allowHiddenItems) || ![self _checkFileExtension:fileName]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_Forbidden message:@"Editing file name \"%@\" is not allowed", fileName];
+  }
+
+  if (![self shouldEditFileAtPath:absolutePath]) {
+    return [GCDWebServerErrorResponse responseWithClientError:kGCDWebServerHTTPStatusCode_Forbidden message:@"Editing \"%@\" is not permitted", relativePath];
+  }
+
+  NSError* error = nil;
+  if (![request.data writeToFile:absolutePath options:NSDataWritingAtomic error:&error]) {
+    return [GCDWebServerErrorResponse responseWithServerError:kGCDWebServerHTTPStatusCode_InternalServerError underlyingError:error message:@"Failed writing \"%@\"", relativePath];
+  }
+
+  if ([self.delegate respondsToSelector:@selector(webUploader:didEditFileAtPath:)]) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self.delegate webUploader:self didEditFileAtPath:absolutePath];
+    });
+  }
+  return [GCDWebServerDataResponse responseWithJSONObject:@{}];
+}
+
 - (GCDWebServerResponse*)createDirectory:(GCDWebServerURLEncodedFormRequest*)request {
   NSString* relativePath = [request.arguments objectForKey:@"path"];
   NSString* absolutePath = [self _uniquePathForPath:[_uploadDirectory stringByAppendingPathComponent:GCDWebServerNormalizePath(relativePath)]];
@@ -428,6 +511,10 @@ NS_ASSUME_NONNULL_END
 }
 
 - (BOOL)shouldCreateDirectoryAtPath:(NSString*)path {
+  return YES;
+}
+
+- (BOOL)shouldEditFileAtPath:(NSString*)path {
   return YES;
 }
 

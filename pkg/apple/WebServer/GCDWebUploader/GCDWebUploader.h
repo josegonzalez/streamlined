@@ -64,6 +64,11 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (void)webUploader:(GCDWebUploader*)uploader didCreateDirectoryAtPath:(NSString*)path;
 
+/**
+ *  This method is called whenever a file has been edited.
+ */
+- (void)webUploader:(GCDWebUploader*)uploader didEditFileAtPath:(NSString*)path;
+
 @end
 
 /**
@@ -195,6 +200,13 @@ NS_ASSUME_NONNULL_BEGIN
  *  The default implementation returns YES.
  */
 - (BOOL)shouldCreateDirectoryAtPath:(NSString*)path;
+
+/**
+ *  This method is called to check if a file is allowed to be edited.
+ *
+ *  The default implementation returns YES.
+ */
+- (BOOL)shouldEditFileAtPath:(NSString*)path;
 
 @end
 
