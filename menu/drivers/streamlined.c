@@ -75,6 +75,10 @@
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
 
+#if TARGET_OS_TV
+#include <CoreText/CoreText.h>
+#endif
+
 /* ======================================================================
  * CONFIGURATION
  * ====================================================================== */
@@ -2037,6 +2041,34 @@ static void streamlined_free_fonts(streamlined_t *strm)
    }
 }
 
+#if TARGET_OS_TV
+/*
+ * Resolve the tvOS system font file path at runtime.
+ * Uses CTFontCreateUIFontForLanguage to get the system font, then
+ * extracts its on-disk path. This avoids hardcoding a path that may
+ * change across tvOS versions.
+ */
+static bool streamlined_get_system_font_path(char *out, size_t out_size)
+{
+   CTFontRef font;
+   CFURLRef  url;
+   Boolean   ok;
+
+   font = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, 0, NULL);
+   if (!font)
+      return false;
+
+   url = (CFURLRef)CTFontCopyAttribute(font, kCTFontURLAttribute);
+   CFRelease(font);
+   if (!url)
+      return false;
+
+   ok = CFURLGetFileSystemRepresentation(url, true, (UInt8 *)out, (CFIndex)out_size);
+   CFRelease(url);
+   return (bool)ok;
+}
+#endif
+
 /*
  * Try to load a font from the given path within the assets directory.
  * Returns the loaded font or NULL if not found.
@@ -2146,13 +2178,26 @@ static void streamlined_context_reset(void *data, bool is_threaded)
 
    /*
     * Font loading priority:
-    * 1. Streamlined font (assets/streamlined/font.ttf) for custom styling
-    * 2. XMB font (assets/xmb/monochrome/font.ttf) commonly available
-    * 3. Ozone font (assets/ozone/regular.ttf) as final fallback
+    * tvOS: System font via CoreText (native look, path-independent across OS versions)
+    * Fallback: asset fonts (streamlined → xmb → ozone)
     */
-   strm->font.font = streamlined_try_load_font(p_disp,
-         settings->paths.directory_assets, "streamlined/font.ttf",
-         strm->font_size, is_threaded, fontpath, sizeof(fontpath));
+#if TARGET_OS_TV
+   {
+      char sys_fontpath[PATH_MAX_LENGTH];
+      if (streamlined_get_system_font_path(sys_fontpath, sizeof(sys_fontpath)))
+      {
+         strm->font.font = gfx_display_font_file(p_disp, sys_fontpath,
+               strm->font_size, is_threaded);
+         if (strm->font.font)
+            strlcpy(fontpath, sys_fontpath, sizeof(fontpath));
+      }
+   }
+#endif
+
+   if (!strm->font.font)
+      strm->font.font = streamlined_try_load_font(p_disp,
+            settings->paths.directory_assets, "streamlined/font.ttf",
+            strm->font_size, is_threaded, fontpath, sizeof(fontpath));
 
    if (!strm->font.font)
       strm->font.font = streamlined_try_load_font(p_disp,
