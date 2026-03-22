@@ -69,6 +69,7 @@
 #include "../../paths.h"
 #include "../../disk_control_interface.h"
 #include "../../tasks/task_content.h"
+#include "../../content.h"
 #include "../../core_info.h"
 #include <file/file_path.h>
 #include <lists/dir_list.h>
@@ -261,6 +262,13 @@ typedef struct
    int top;  /* Index of current top (-1 = empty) */
 } streamlined_view_stack_t;
 
+/* Auto savestate cache: tracks whether the selected game has an auto save */
+typedef struct
+{
+   bool has_auto_save;   /* Does the selected entry have an auto savestate? */
+   size_t selection;     /* Selection index when cache was last computed */
+} streamlined_auto_save_cache_t;
+
 /* Resume state: persists across content load/unload to restore folder view */
 typedef struct
 {
@@ -300,6 +308,9 @@ typedef struct
    int preview_slot;              /* Currently previewed slot (0-7) */
    bool show_slot_selector;       /* True when on Save/Load State entry */
    size_t last_selection;         /* Track selection changes */
+
+   /* Auto savestate detection */
+   streamlined_auto_save_cache_t auto_save_cache;
 
    /* Ticker for text scrolling (uses RetroArch's built-in animation system) */
    uint64_t ticker_idx;           /* Incremented each frame for ticker animation */
@@ -379,6 +390,9 @@ static void streamlined_pop_nav_marker(void)
 
 /* Forward declarations */
 static const char *streamlined_strip_sort_prefix(const char *name);
+static bool streamlined_get_auto_savestate_path(
+      const char *content_path, const char *core_path,
+      char *out_path, size_t out_size);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -851,6 +865,43 @@ static void streamlined_render_menu(streamlined_t *strm,
       strm->last_selection = selection;
    }
 
+   /* Detect auto savestate for current selection in FOLDER views */
+   if (vtype == STREAMLINED_VIEW_FOLDER && view)
+   {
+      if (selection != strm->auto_save_cache.selection)
+      {
+         strm->auto_save_cache.selection = selection;
+         strm->auto_save_cache.has_auto_save = false;
+
+         if (!string_is_empty(view->data.folder.core_path))
+         {
+            menu_entry_t check_entry;
+            MENU_ENTRY_INITIALIZE(check_entry);
+            check_entry.flags |= MENU_ENTRY_FLAG_LABEL_ENABLED;
+            menu_entry_get(&check_entry, 0, (unsigned)selection, NULL, true);
+
+            if (!string_is_empty(check_entry.label)
+                  && path_is_valid(check_entry.label)
+                  && !path_is_directory(check_entry.label))
+            {
+               char auto_state_path[PATH_MAX_LENGTH];
+               if (streamlined_get_auto_savestate_path(
+                        check_entry.label,
+                        view->data.folder.core_path,
+                        auto_state_path,
+                        sizeof(auto_state_path)))
+                  strm->auto_save_cache.has_auto_save =
+                        path_is_valid(auto_state_path);
+            }
+         }
+      }
+   }
+   else
+   {
+      strm->auto_save_cache.selection = (size_t)-1;
+      strm->auto_save_cache.has_auto_save = false;
+   }
+
    /* Calculate visible items: screen height minus title area and button legend area */
    {
       int title_area = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_RATIO);
@@ -1163,11 +1214,34 @@ static void streamlined_render_menu(streamlined_t *strm,
       int back_key_w, ok_key_w;
       int back_pill_w, ok_pill_w;
       const char *back_key   = "B";
-      const char *ok_key     = "A";
+      const char *ok_key;
       const char *back_str   = msg_hash_to_str(
             MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_BACK);
-      const char *ok_str     = msg_hash_to_str(
-            MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
+      const char *ok_str;
+
+      /* Determine right-side hint(s) based on auto save state:
+       * - auto_load ON + auto save: (X) Resume only (A also resumes via runloop)
+       * - auto_load OFF + auto save: (X) Resume AND (A) OK
+       * - no auto save: (A) OK only */
+      {
+         bool show_resume = strm->auto_save_cache.has_auto_save
+               && vtype == STREAMLINED_VIEW_FOLDER;
+         settings_t *footer_settings = show_resume ? config_get_ptr() : NULL;
+         bool auto_load_on = footer_settings
+               && footer_settings->bools.savestate_auto_load;
+
+         if (show_resume && auto_load_on)
+         {
+            ok_key = "X";
+            ok_str = "Resume";
+         }
+         else
+         {
+            ok_key = "A";
+            ok_str = msg_hash_to_str(
+                  MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
+         }
+      }
 
       back_key_w  = font_driver_get_message_width(
             strm->font_small.font, back_key, strlen(back_key), 1.0f);
@@ -1195,13 +1269,16 @@ static void streamlined_render_menu(streamlined_t *strm,
             streamlined_color_text,
             TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
-      /* Right side: [A pill] [gap] OK [margin] */
+      /* Right side hint(s) */
       {
+         bool show_resume_hint = strm->auto_save_cache.has_auto_save
+               && vtype == STREAMLINED_VIEW_FOLDER;
          int ok_label_w = font_driver_get_message_width(
                strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
          float ok_pill_x = (float)video_width - footer_margin
                - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
+         /* Draw the primary right-side hint: either (X) Resume or (A) OK */
          streamlined_draw_rounded_pill(strm, p_disp, userdata,
                (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
                video_width, video_height, streamlined_color_selection);
@@ -1219,6 +1296,39 @@ static void streamlined_render_menu(streamlined_t *strm,
                video_width, video_height,
                streamlined_color_text,
                TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+         /* When auto_load is OFF and auto save exists, draw (X) Resume
+          * to the left of (A) OK */
+         if (show_resume_hint && !string_is_equal(ok_key, "X"))
+         {
+            const char *resume_key = "X";
+            const char *resume_str = "Resume";
+            int resume_key_w = font_driver_get_message_width(
+                  strm->font_small.font, resume_key, strlen(resume_key), 1.0f);
+            int resume_label_w = font_driver_get_message_width(
+                  strm->font_small.font, resume_str, strlen(resume_str), 1.0f);
+            int resume_pill_w = resume_key_w + (int)(pill_pad * 2.0f);
+            float resume_pill_x = ok_pill_x - pill_text_gap
+                  - (float)resume_label_w - pill_text_gap - (float)resume_pill_w;
+
+            streamlined_draw_rounded_pill(strm, p_disp, userdata,
+                  (int)resume_pill_x, (int)pill_y, resume_pill_w, (int)pill_h,
+                  video_width, video_height, streamlined_color_selection);
+            gfx_display_draw_text(strm->font_small.font,
+                  resume_key,
+                  (int)(resume_pill_x + pill_pad),
+                  (int)text_y,
+                  video_width, video_height,
+                  streamlined_color_text_dark,
+                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+            gfx_display_draw_text(strm->font_small.font,
+                  resume_str,
+                  (int)(resume_pill_x + (float)resume_pill_w + pill_text_gap),
+                  (int)text_y,
+                  video_width, video_height,
+                  streamlined_color_text,
+                  TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         }
       }
    }
 }
@@ -1638,6 +1748,91 @@ static bool streamlined_save_folder_core(const char *folder_path, const char *co
 }
 
 /*
+ * Compute the auto savestate path for a content file and core path.
+ * Mirrors the logic in runloop_path_set_redirect() for savestate directory
+ * resolution, but works before content is loaded by using core_info
+ * instead of the loaded core's system info.
+ *
+ * Respects: savestates_in_content_dir, sort_savestates_enable,
+ *           sort_savestates_by_content_enable, directory_savestate
+ *
+ * Returns true if path was computed successfully.
+ */
+static bool streamlined_get_auto_savestate_path(
+      const char *content_path, const char *core_path,
+      char *out_path, size_t out_size)
+{
+   settings_t *settings           = config_get_ptr();
+   bool savestates_in_content_dir = settings->bools.savestates_in_content_dir;
+   bool sort_savestates           = settings->bools.sort_savestates_enable;
+   bool sort_savestates_by_content = settings->bools.sort_savestates_by_content_enable;
+   char savestate_dir[DIR_MAX_LENGTH];
+   char content_no_ext[PATH_MAX_LENGTH];
+
+   if (string_is_empty(content_path))
+      return false;
+
+   /* Strip extension from content path (mirroring runtime_content_path_basename) */
+   strlcpy(content_no_ext, content_path, sizeof(content_no_ext));
+   path_remove_extension(content_no_ext);
+
+   /* Start with configured savestate directory */
+   {
+      const char *configured_dir = dir_get_ptr(RARCH_DIR_SAVESTATE);
+      if (!string_is_empty(configured_dir))
+         strlcpy(savestate_dir, configured_dir, sizeof(savestate_dir));
+      else
+         savestate_dir[0] = '\0';
+   }
+
+   /* If savestates_in_content_dir or directory is empty, use content's directory */
+   if (string_is_empty(savestate_dir) || savestates_in_content_dir)
+      fill_pathname_basedir(savestate_dir, content_path, sizeof(savestate_dir));
+
+   /* Per-content-directory sorting: append content's parent dir name */
+   if (sort_savestates_by_content && !string_is_empty(content_no_ext))
+   {
+      char content_dir_name[DIR_MAX_LENGTH];
+      content_dir_name[0] = '\0';
+      fill_pathname_parent_dir_name(content_dir_name, content_no_ext,
+            sizeof(content_dir_name));
+      if (!string_is_empty(content_dir_name))
+         fill_pathname_join_special(savestate_dir, savestate_dir,
+               content_dir_name, sizeof(savestate_dir));
+   }
+
+   /* Per-core sorting: append core's library name */
+   if (sort_savestates && !string_is_empty(core_path))
+   {
+      core_info_t *core_info = NULL;
+      if (core_info_find(core_path, &core_info)
+            && core_info && !string_is_empty(core_info->core_name))
+         fill_pathname_join(savestate_dir, savestate_dir,
+               core_info->core_name, sizeof(savestate_dir));
+   }
+
+   /* Build the savestate path */
+   if (path_is_directory(savestate_dir))
+   {
+      /* Redirect into the computed directory */
+      strlcpy(out_path, savestate_dir, out_size);
+      fill_pathname_dir(out_path, content_no_ext,
+            ".state", out_size);
+   }
+   else
+   {
+      /* Use content's directory with extension replaced */
+      fill_pathname(out_path, content_no_ext,
+            ".state", out_size);
+   }
+
+   /* Append .auto for the auto save slot */
+   strlcat(out_path, ".auto", out_size);
+
+   return true;
+}
+
+/*
  * Populate the menu with a list of all installed cores.
  * Used when the user needs to select which core to use for a folder.
  */
@@ -1996,6 +2191,10 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    strm->show_slot_selector = false;
    strm->last_selection = 0;
 
+   /* Initialize auto savestate cache */
+   strm->auto_save_cache.has_auto_save = false;
+   strm->auto_save_cache.selection = (size_t)-1;
+
    /* Initialize ticker for text scrolling */
    strm->ticker_idx = 0;
    strm->item_ticker_start = 0;
@@ -2264,7 +2463,8 @@ static int streamlined_environ(enum menu_environ_cb type, void *data, void *user
  */
 static void streamlined_launch_content(streamlined_t *strm,
       struct menu_state *menu_st,
-      const char *core_path, const char *content_path)
+      const char *core_path, const char *content_path,
+      bool load_auto_savestate)
 {
    content_ctx_info_t content_info;
    streamlined_view_t *folder_view = NULL;
@@ -2310,6 +2510,21 @@ static void streamlined_launch_content(streamlined_t *strm,
          core_path, content_path,
          &content_info,
          CORE_TYPE_PLAIN, NULL, NULL);
+
+   /* If requested and savestate_auto_load is off, explicitly load the auto
+    * savestate. When savestate_auto_load is on, the runloop already handles
+    * this via command_event_load_auto_state(). */
+   if (load_auto_savestate)
+   {
+      settings_t *settings = config_get_ptr();
+      if (!settings->bools.savestate_auto_load)
+      {
+         char auto_path[PATH_MAX_LENGTH];
+         if (streamlined_get_auto_savestate_path(content_path, core_path,
+               auto_path, sizeof(auto_path)))
+            content_load_state(auto_path, false, true);
+      }
+   }
 }
 
 /*
@@ -2472,7 +2687,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                }
 
                streamlined_launch_content(strm, menu_st,
-                     selected_core, view->data.core_select.content_path);
+                     selected_core, view->data.core_select.content_path,
+                     false);
                return 0;
             }
          }
@@ -2610,8 +2826,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   {
                      if (path_is_valid(view->data.folder.core_path))
                      {
+                     {
+                        settings_t *settings = config_get_ptr();
                         streamlined_launch_content(strm, menu_st,
-                              view->data.folder.core_path, item_path);
+                              view->data.folder.core_path, item_path,
+                              strm->auto_save_cache.has_auto_save
+                                    && settings->bools.savestate_auto_load);
+                     }
                         return 0;
                      }
                      return 0;
@@ -2633,9 +2854,27 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             }
          }
 
+         /* X button (MENU_ACTION_SCAN): launch with auto savestate (Resume) */
+         if (action == MENU_ACTION_SCAN && entry)
+         {
+            if (strm->auto_save_cache.has_auto_save
+                  && !string_is_empty(view->data.folder.core_path)
+                  && path_is_valid(view->data.folder.core_path))
+            {
+               const char *item_path = entry->label;
+               if (!string_is_empty(item_path) && path_is_valid(item_path)
+                     && !path_is_directory(item_path))
+               {
+                  streamlined_launch_content(strm, menu_st,
+                        view->data.folder.core_path, item_path, true);
+                  return 0;
+               }
+            }
+            return 0;
+         }
+
          /* Block non-navigation actions */
-         if (action == MENU_ACTION_SCAN
-               || action == MENU_ACTION_SEARCH
+         if (action == MENU_ACTION_SEARCH
                || action == MENU_ACTION_INFO)
             return 0;
 
