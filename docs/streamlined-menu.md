@@ -68,11 +68,15 @@ Selecting **Advanced** from the Quick Menu opens a list of detailed settings you
 - Core Options (settings specific to the emulator)
 - And more
 
+As you move through the list, a short description of the highlighted setting appears at the bottom of the screen, between the **B** and **A** button hints. If the description is long, it splits into two lines.
+
 Press **B** to go back to the Quick Menu.
 
 ## Settings (Main Menu)
 
 Selecting **Settings** from the main screen opens a list of system-wide settings. These let you change things like video output, audio, input, network, and other RetroArch options.
+
+As you move through the list, a short description of the highlighted setting appears at the bottom of the screen, between the **B** and **A** button hints. If the description is long, it splits into two lines.
 
 Press **B** to go back to the main screen.
 

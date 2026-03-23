@@ -651,6 +651,125 @@ static void streamlined_truncate_text(streamlined_t *strm, const char *text,
    }
 }
 
+/*
+ * Split sublabel text into up to two balanced lines for footer display.
+ * If the text fits within max_width, line1 gets the full text and line2 is empty.
+ * If not, splits at a word boundary near the middle for balanced legibility.
+ * Lines that still exceed max_width are truncated with ellipsis.
+ */
+static void streamlined_sublabel_wrap(
+      streamlined_t *strm,
+      const char *text,
+      int max_width,
+      char *line1, size_t line1_size,
+      char *line2, size_t line2_size)
+{
+   int full_width;
+   size_t len, half_len;
+   size_t split_pos;
+   int left_dist, right_dist;
+   size_t left_space, right_space;
+   bool found_left, found_right;
+
+   line1[0] = '\0';
+   line2[0] = '\0';
+
+   if (!text || !text[0] || !strm->font_small.font)
+      return;
+
+   full_width = font_driver_get_message_width(
+         strm->font_small.font, text, strlen(text), 1.0f);
+
+   /* Fits on one line */
+   if (full_width <= max_width)
+   {
+      strlcpy(line1, text, line1_size);
+      return;
+   }
+
+   /* Find a space near the middle of the string */
+   len = strlen(text);
+   half_len = len / 2;
+
+   found_left  = false;
+   found_right = false;
+   left_space  = 0;
+   right_space = 0;
+
+   /* Search left from middle */
+   {
+      size_t j = half_len;
+      while (j > 0)
+      {
+         if (text[j] == ' ')
+         {
+            left_space = j;
+            found_left = true;
+            break;
+         }
+         j--;
+      }
+   }
+
+   /* Search right from middle */
+   {
+      size_t j = half_len + 1;
+      while (j < len)
+      {
+         if (text[j] == ' ')
+         {
+            right_space = j;
+            found_right = true;
+            break;
+         }
+         j++;
+      }
+   }
+
+   /* Pick the closer space to the middle */
+   if (found_left && found_right)
+   {
+      left_dist  = (int)(half_len - left_space);
+      right_dist = (int)(right_space - half_len);
+      split_pos  = (left_dist <= right_dist) ? left_space : right_space;
+   }
+   else if (found_left)
+      split_pos = left_space;
+   else if (found_right)
+      split_pos = right_space;
+   else
+   {
+      /* No space found at all - single line, truncated */
+      streamlined_truncate_text(strm, text, line1, line1_size, max_width, true);
+      return;
+   }
+
+   /* Split into two lines at the space */
+   if (split_pos < line1_size)
+   {
+      memcpy(line1, text, split_pos);
+      line1[split_pos] = '\0';
+   }
+   else
+      strlcpy(line1, text, line1_size);
+
+   strlcpy(line2, text + split_pos + 1, line2_size);
+
+   /* Truncate either line if it exceeds max_width */
+   {
+      int w1 = font_driver_get_message_width(
+            strm->font_small.font, line1, strlen(line1), 1.0f);
+      if (w1 > max_width)
+         streamlined_truncate_text(strm, line1, line1, line1_size, max_width, true);
+   }
+   {
+      int w2 = font_driver_get_message_width(
+            strm->font_small.font, line2, strlen(line2), 1.0f);
+      if (w2 > max_width)
+         streamlined_truncate_text(strm, line2, line2, line2_size, max_width, true);
+   }
+}
+
 /* ======================================================================
  * SAVE SLOT SELECTOR
  * ====================================================================== */
@@ -1242,6 +1361,8 @@ static void streamlined_render_menu(streamlined_t *strm,
 
       int back_key_w, ok_key_w;
       int back_pill_w, ok_pill_w;
+      float ok_pill_x        = 0;
+      float left_end         = 0;
       const char *back_key   = "B";
       const char *ok_key;
       const char *back_str   = msg_hash_to_str(
@@ -1298,13 +1419,21 @@ static void streamlined_render_menu(streamlined_t *strm,
             streamlined_color_text,
             TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
+      /* Compute where the left hint group ends (for sublabel centering) */
+      {
+         int back_label_w = font_driver_get_message_width(
+               strm->font_small.font, back_str, strlen(back_str), 1.0f);
+         left_end = footer_margin + (float)back_pill_w
+               + pill_text_gap + (float)back_label_w;
+      }
+
       /* Right side hint(s) */
       {
          bool show_resume_hint = strm->auto_save_cache.has_auto_save
                && vtype == STREAMLINED_VIEW_FOLDER;
          int ok_label_w = font_driver_get_message_width(
                strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
-         float ok_pill_x = (float)video_width - footer_margin
+         ok_pill_x = (float)video_width - footer_margin
                - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
          /* Draw the primary right-side hint: either (X) Resume or (A) OK */
@@ -1357,6 +1486,87 @@ static void streamlined_render_menu(streamlined_t *strm,
                   video_width, video_height,
                   streamlined_color_text,
                   TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+         }
+      }
+
+      /* Sublabel hint for settings views - centered between button hints */
+      if (vtype == STREAMLINED_VIEW_MAIN_SETTINGS
+            || vtype == STREAMLINED_VIEW_ADVANCED
+            || vtype == STREAMLINED_VIEW_RA_SETTINGS)
+      {
+         menu_entry_t sublabel_entry;
+         MENU_ENTRY_INITIALIZE(sublabel_entry);
+         sublabel_entry.flags |= MENU_ENTRY_FLAG_SUBLABEL_ENABLED;
+         menu_entry_get(&sublabel_entry, 0, (unsigned)selection, NULL, true);
+
+         if (sublabel_entry.sublabel[0] != '\0')
+         {
+            int sublabel_avail = (int)(ok_pill_x - left_end
+                  - pill_text_gap * 2.0f);
+
+            if (sublabel_avail > (int)(strm->font_size_small * 3))
+            {
+               char sl_line1[512];
+               char sl_line2[512];
+               int sl_w1;
+               float center_x;
+
+               sl_line1[0] = '\0';
+               sl_line2[0] = '\0';
+
+               streamlined_sublabel_wrap(strm, sublabel_entry.sublabel,
+                     sublabel_avail,
+                     sl_line1, sizeof(sl_line1),
+                     sl_line2, sizeof(sl_line2));
+
+               center_x = left_end + (ok_pill_x - left_end) / 2.0f;
+
+               if (sl_line2[0] != '\0')
+               {
+                  /* Two lines: center the pair vertically in footer */
+                  float line_spacing = strm->font_size_small * 1.2f;
+                  float sl_y1 = footer_center_y - (line_spacing / 2.0f)
+                        + (strm->font_size_small * STREAMLINED_TEXT_VCENTER);
+                  float sl_y2 = sl_y1 + line_spacing;
+                  int sl_w2;
+
+                  sl_w1 = font_driver_get_message_width(
+                        strm->font_small.font,
+                        sl_line1, strlen(sl_line1), 1.0f);
+                  gfx_display_draw_text(strm->font_small.font,
+                        sl_line1,
+                        (int)(center_x - (float)sl_w1 / 2.0f),
+                        (int)sl_y1,
+                        video_width, video_height,
+                        streamlined_color_text_muted,
+                        TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+
+                  sl_w2 = font_driver_get_message_width(
+                        strm->font_small.font,
+                        sl_line2, strlen(sl_line2), 1.0f);
+                  gfx_display_draw_text(strm->font_small.font,
+                        sl_line2,
+                        (int)(center_x - (float)sl_w2 / 2.0f),
+                        (int)sl_y2,
+                        video_width, video_height,
+                        streamlined_color_text_muted,
+                        TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+               }
+               else
+               {
+                  /* Single line: same baseline as button hints */
+                  sl_w1 = font_driver_get_message_width(
+                        strm->font_small.font,
+                        sl_line1, strlen(sl_line1), 1.0f);
+                  gfx_display_draw_text(strm->font_small.font,
+                        sl_line1,
+                        (int)(center_x - (float)sl_w1 / 2.0f),
+                        (int)text_y,
+                        video_width, video_height,
+                        streamlined_color_text_muted,
+                        TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
+               }
+            }
          }
       }
    }
