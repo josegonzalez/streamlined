@@ -26,7 +26,7 @@ Highlight a game and press **A** to start it.
 - If the folder already knows which core (emulator) to use, the game starts right away.
 - If the folder does not have a core set up yet, you will see a list of all the cores you have installed. Pick one, and the game will start. The menu remembers your choice, so next time it will use the same core automatically.
 
-If a game has saved progress from a previous session (an auto save), you will see **X Resume** at the bottom of the screen. Pressing **X** will start the game and pick up right where you left off. If you have auto-load savestates turned on in RetroArch's settings, pressing **A** will also resume automatically. If auto-load is turned off, you will see both **X Resume** and **A OK** — press **X** to resume or **A** to start fresh.
+If a game has saved progress from a previous session (an auto save), you will see **X Resume** at the bottom of the screen. Pressing **X** will start the game and pick up right where you left off. If you have auto-load savestates turned on in RetroArch's settings, pressing **A** will also resume automatically. If auto-load is turned off, you will see both **X Resume** and **A Play** — press **X** to resume or **A** to start fresh.
 
 ## The Quick Menu (Pause Menu)
 
@@ -87,12 +87,12 @@ Here is a quick summary of the controls:
 | Button | What it does |
 |---|---|
 | **Up / Down** | Move through the list |
-| **A / OK** | Select the highlighted item |
+| **A / OK** | Select the highlighted item (shows "Play" when a game is highlighted) |
 | **X / Resume** | Resume a game from where you left off (when available) |
 | **B / Back** | Go back to the previous screen |
 | **Left / Right** | Switch save slots (when on Save or Load) |
 
-At the bottom of every screen, you will see a reminder showing **B** for Back on the left and **A** for OK on the right.
+At the bottom of every screen, you will see a reminder showing **B** for Back on the left and **A** for OK (or "Play" when a game is highlighted) on the right.
 
 ## Returning to Your Game
 

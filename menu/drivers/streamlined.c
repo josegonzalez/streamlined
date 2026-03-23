@@ -1380,8 +1380,8 @@ static void streamlined_render_menu(streamlined_t *strm,
 
       /* Determine right-side hint(s) based on auto save state:
        * - auto_load ON + auto save: (X) Resume only (A also resumes via runloop)
-       * - auto_load OFF + auto save: (X) Resume AND (A) OK
-       * - no auto save: (A) OK only */
+       * - auto_load OFF + auto save: (X) Resume AND (A) Play
+       * - no auto save: (A) Play for game files, (A) OK otherwise */
       {
          bool show_resume = strm->auto_save_cache.has_auto_save
                && vtype == STREAMLINED_VIEW_FOLDER;
@@ -1397,8 +1397,14 @@ static void streamlined_render_menu(streamlined_t *strm,
          else
          {
             ok_key = "A";
-            ok_str = msg_hash_to_str(
-                  MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
+            if ((vtype == STREAMLINED_VIEW_MAIN_MENU
+                  || vtype == STREAMLINED_VIEW_FOLDER)
+                  && selection < list_size
+                  && list->list[selection].type == FILE_TYPE_PLAIN)
+               ok_str = "Play";
+            else
+               ok_str = msg_hash_to_str(
+                     MENU_ENUM_LABEL_VALUE_BASIC_MENU_CONTROLS_OK);
          }
       }
 
@@ -1445,7 +1451,7 @@ static void streamlined_render_menu(streamlined_t *strm,
          ok_pill_x = (float)video_width - footer_margin
                - (float)ok_label_w - pill_text_gap - (float)ok_pill_w;
 
-         /* Draw the primary right-side hint: either (X) Resume or (A) OK */
+         /* Draw the primary right-side hint: either (X) Resume or (A) Play/OK */
          streamlined_draw_rounded_pill(strm, p_disp, userdata,
                (int)ok_pill_x, (int)pill_y, ok_pill_w, (int)pill_h,
                video_width, video_height, streamlined_color_selection);
@@ -1465,7 +1471,7 @@ static void streamlined_render_menu(streamlined_t *strm,
                TEXT_ALIGN_LEFT, 1.0f, false, 0, false);
 
          /* When auto_load is OFF and auto save exists, draw (X) Resume
-          * to the left of (A) OK */
+          * to the left of (A) Play */
          if (show_resume_hint && !string_is_equal(ok_key, "X"))
          {
             const char *resume_key = "X";
