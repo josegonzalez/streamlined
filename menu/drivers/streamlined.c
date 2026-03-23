@@ -74,6 +74,7 @@
 #include <file/file_path.h>
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
+#include <formats/m3u_file.h>
 
 #if TARGET_OS_TV
 #include <CoreText/CoreText.h>
@@ -427,6 +428,11 @@ static bool streamlined_read_game_core(
 static bool streamlined_resolve_core_for_content(
       const char *content_path, const char *folder_core_path,
       char *core_path_out, size_t core_path_size);
+static bool streamlined_detect_m3u_folder(
+      const char *dir_path, char *m3u_path_out, size_t out_size);
+static bool streamlined_resolve_m3u_content(
+      const char *content_path, const char *core_path,
+      char *resolved_out, size_t resolved_size);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -1042,8 +1048,17 @@ static void streamlined_render_menu(streamlined_t *strm,
                         resolved_core, sizeof(resolved_core)))
             {
                char auto_state_path[PATH_MAX_LENGTH];
+               char actual_content[PATH_MAX_LENGTH];
+
+               /* Resolve m3u to actual content path for savestate lookup */
+               if (!streamlined_resolve_m3u_content(
+                        check_entry.label, resolved_core,
+                        actual_content, sizeof(actual_content)))
+                  strlcpy(actual_content, check_entry.label,
+                        sizeof(actual_content));
+
                if (streamlined_get_auto_savestate_path(
-                        check_entry.label,
+                        actual_content,
                         resolved_core,
                         auto_state_path,
                         sizeof(auto_state_path)))
@@ -2062,6 +2077,114 @@ static bool streamlined_resolve_core_for_content(
 }
 
 /*
+ * Detect if a directory is an "m3u folder" — a folder containing a .m3u
+ * playlist file whose basename matches the folder name. These folders
+ * represent multi-disc games and should be launched directly rather than
+ * browsed into.
+ *
+ * Checks for both the raw folder name and the sort-prefix-stripped name
+ * (e.g., folder "3) Final Fantasy VII" matches "Final Fantasy VII.m3u").
+ *
+ * Returns true if a matching m3u file is found, filling m3u_path_out.
+ */
+static bool streamlined_detect_m3u_folder(
+      const char *dir_path, char *m3u_path_out, size_t out_size)
+{
+   const char *name;
+   const char *stripped;
+   char m3u_filename[256];
+
+   if (string_is_empty(dir_path))
+      return false;
+
+   name = path_basename(dir_path);
+   if (string_is_empty(name))
+      return false;
+
+   /* Try raw folder name: <dir_path>/<name>.m3u */
+   snprintf(m3u_filename, sizeof(m3u_filename), "%s.m3u", name);
+   fill_pathname_join_special(m3u_path_out, dir_path, m3u_filename, out_size);
+   if (m3u_file_is_m3u(m3u_path_out))
+      return true;
+
+   /* Try sort-prefix-stripped name: <dir_path>/<stripped>.m3u */
+   stripped = streamlined_strip_sort_prefix(name);
+   if (stripped != name)
+   {
+      snprintf(m3u_filename, sizeof(m3u_filename), "%s.m3u", stripped);
+      fill_pathname_join_special(m3u_path_out, dir_path, m3u_filename, out_size);
+      if (m3u_file_is_m3u(m3u_path_out))
+         return true;
+   }
+
+   m3u_path_out[0] = '\0';
+   return false;
+}
+
+/*
+ * Resolve the actual content path for launching, handling m3u playlists.
+ *
+ * If content_path is not an m3u file, it is copied to resolved_out as-is.
+ * If the core supports m3u (has "m3u" in supported_extensions), the m3u
+ * path is used directly. Otherwise, the m3u is parsed and the first
+ * entry's full path is returned so the core receives a disc image.
+ *
+ * Returns true on success. Returns false only if the m3u file cannot
+ * be parsed when fallback to first entry is needed.
+ */
+static bool streamlined_resolve_m3u_content(
+      const char *content_path, const char *core_path,
+      char *resolved_out, size_t resolved_size)
+{
+   const char *ext;
+
+   if (string_is_empty(content_path))
+      return false;
+
+   ext = path_get_extension(content_path);
+   if (!ext || !string_is_equal_noncase(ext, "m3u"))
+   {
+      strlcpy(resolved_out, content_path, resolved_size);
+      return true;
+   }
+
+   /* Content is m3u — check if core supports it */
+   if (!string_is_empty(core_path))
+   {
+      core_info_t *info = NULL;
+      if (core_info_find(core_path, &info) && info
+            && info->supported_extensions_list
+            && string_list_find_elem_prefix(
+                  info->supported_extensions_list, ".", "m3u"))
+      {
+         /* Core supports m3u natively */
+         strlcpy(resolved_out, content_path, resolved_size);
+         return true;
+      }
+   }
+
+   /* Core does not support m3u — parse and use first entry */
+   {
+      m3u_file_t *m3u = m3u_file_init(content_path);
+      if (m3u)
+      {
+         m3u_file_entry_t *entry = NULL;
+         if (m3u_file_get_size(m3u) > 0
+               && m3u_file_get_entry(m3u, 0, &entry)
+               && entry && !string_is_empty(entry->full_path))
+         {
+            strlcpy(resolved_out, entry->full_path, resolved_size);
+            m3u_file_free(m3u);
+            return true;
+         }
+         m3u_file_free(m3u);
+      }
+   }
+
+   return false;
+}
+
+/*
  * Save the selected core to the folder's core.txt file.
  * Uses the core's base name (without _libretro suffix) for portability.
  */
@@ -2298,22 +2421,42 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
 
          if (attr == RARCH_DIRECTORY)
          {
-            /* Show directories, optionally with leading slash
-             * Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
-            char display_name[256];
-            const char *clean_name = streamlined_strip_sort_prefix(name);
+            char m3u_candidate[PATH_MAX_LENGTH];
 
-            if (show_folder_slash)
-               snprintf(display_name, sizeof(display_name), "/%s", clean_name);
-            else
+            /* Check if this folder is a multi-disc m3u game */
+            if (streamlined_detect_m3u_folder(path, m3u_candidate, sizeof(m3u_candidate)))
+            {
+               /* M3u folder — list as a launchable game, not a directory */
+               char display_name[256];
+               const char *clean_name = streamlined_strip_sort_prefix(name);
                strlcpy(display_name, clean_name, sizeof(display_name));
 
-            menu_entries_append(list,
-                  display_name,     /* Display name (entry->path for rendering) */
-                  path,             /* Full path (entry->label for navigation) */
-                  MSG_UNKNOWN,
-                  FILE_TYPE_DIRECTORY,
-                  0, 0, NULL);
+               menu_entries_append(list,
+                     display_name,        /* Display name */
+                     m3u_candidate,       /* M3u file path (for launching) */
+                     MSG_UNKNOWN,
+                     FILE_TYPE_PLAIN,
+                     0, 0, NULL);
+            }
+            else
+            {
+               /* Regular directory — show with optional leading slash
+                * Strip sort prefix (e.g., "1) Game Boy" -> "Game Boy") */
+               char display_name[256];
+               const char *clean_name = streamlined_strip_sort_prefix(name);
+
+               if (show_folder_slash)
+                  snprintf(display_name, sizeof(display_name), "/%s", clean_name);
+               else
+                  strlcpy(display_name, clean_name, sizeof(display_name));
+
+               menu_entries_append(list,
+                     display_name,     /* Display name (entry->path for rendering) */
+                     path,             /* Full path (entry->label for navigation) */
+                     MSG_UNKNOWN,
+                     FILE_TYPE_DIRECTORY,
+                     0, 0, NULL);
+            }
          }
          else
          {
@@ -2999,10 +3142,21 @@ static void streamlined_request_loading(
       const char *core_path, const char *content_path,
       bool is_resume)
 {
+   char resolved_content[PATH_MAX_LENGTH];
+
    strlcpy(strm->loading_core_path, core_path,
          sizeof(strm->loading_core_path));
-   strlcpy(strm->loading_content_path, content_path,
-         sizeof(strm->loading_content_path));
+
+   /* Resolve m3u playlists: pass the m3u to the core if supported,
+    * otherwise extract and use the first disc entry */
+   if (streamlined_resolve_m3u_content(content_path, core_path,
+         resolved_content, sizeof(resolved_content)))
+      strlcpy(strm->loading_content_path, resolved_content,
+            sizeof(strm->loading_content_path));
+   else
+      strlcpy(strm->loading_content_path, content_path,
+            sizeof(strm->loading_content_path));
+
    strm->loading_is_resume      = is_resume;
    strm->interstitial           = STREAMLINED_INTERSTITIAL_LOADING;
    strm->interstitial_triggered = false;
@@ -3307,17 +3461,55 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   }
                   else if (path_is_valid(item_path))
                   {
-                     /* No core at top level - show core selection */
-                     streamlined_view_t *v;
-                     view->saved_selection = menu_st->selection_ptr;
-                     v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
-                     if (v)
-                        strlcpy(v->data.core_select.content_path, item_path,
-                              sizeof(v->data.core_select.content_path));
-                     streamlined_push_nav_marker();
-                     streamlined_populate_core_selection(strm, item_path);
-                     menu_st->selection_ptr = 0;
-                     return 0;
+                     /* For m3u files (multi-disc games), try to resolve
+                      * the core from the m3u folder's .core.txt */
+                     {
+                        const char *ext = path_get_extension(item_path);
+                        if (ext && string_is_equal_noncase(ext, "m3u"))
+                        {
+                           char m3u_dir[DIR_MAX_LENGTH];
+                           char resolved_core[PATH_MAX_LENGTH];
+
+                           fill_pathname_basedir(m3u_dir, item_path, sizeof(m3u_dir));
+
+                           /* Check game-specific override first, then folder core */
+                           if (streamlined_resolve_core_for_content(
+                                    item_path, "",
+                                    resolved_core, sizeof(resolved_core))
+                                 && path_is_valid(resolved_core))
+                           {
+                              streamlined_push_nav_marker();
+                              streamlined_request_loading(strm,
+                                    resolved_core, item_path, false);
+                              return 0;
+                           }
+
+                           /* Try the m3u folder's own .core.txt */
+                           if (streamlined_read_folder_core(m3u_dir,
+                                    resolved_core, sizeof(resolved_core))
+                                 && path_is_valid(resolved_core))
+                           {
+                              streamlined_push_nav_marker();
+                              streamlined_request_loading(strm,
+                                    resolved_core, item_path, false);
+                              return 0;
+                           }
+                        }
+                     }
+
+                     /* No core resolved - show core selection */
+                     {
+                        streamlined_view_t *v;
+                        view->saved_selection = menu_st->selection_ptr;
+                        v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
+                        if (v)
+                           strlcpy(v->data.core_select.content_path, item_path,
+                                 sizeof(v->data.core_select.content_path));
+                        streamlined_push_nav_marker();
+                        streamlined_populate_core_selection(strm, item_path);
+                        menu_st->selection_ptr = 0;
+                        return 0;
+                     }
                   }
                }
             }

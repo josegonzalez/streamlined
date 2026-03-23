@@ -105,3 +105,26 @@ You can control the order your folders appear by adding a number prefix like `1)
 Each folder can have a hidden file called `.core.txt` that tells the menu which core to use for games in that folder. If this file exists, games in the folder launch immediately without asking you to pick a core. The menu creates this file automatically the first time you pick a core for a folder.
 
 If you need a specific game to use a different core than the rest of its folder, you can create a file called `.core.<game filename>.txt` next to the game. For example, if you have a game called `Special Game.sfc` and you want it to use a different core, create a file named `.core.Special Game.sfc.txt` in the same folder. Put the core name inside the file, just like `.core.txt`. The menu checks for a game-specific core first, and only falls back to the folder's core if one is not found.
+
+## Multi-Disc Games
+
+Some games come on multiple discs (like many PlayStation games). Instead of showing each disc file separately, you can put them all inside a folder with an `.m3u` playlist file. If the folder and the `.m3u` file share the same name, the menu treats the whole folder as a single game.
+
+For example, if you have a game called "Final Fantasy VII" with three discs, set it up like this:
+
+```
+PlayStation/
+  Final Fantasy VII/
+    Final Fantasy VII.m3u
+    Final Fantasy VII (Disc 1).bin
+    Final Fantasy VII (Disc 2).bin
+    Final Fantasy VII (Disc 3).bin
+```
+
+The `.m3u` file is a simple text file that lists the disc files, one per line. When you look at the PlayStation folder, "Final Fantasy VII" will appear as a game you can play — not as a folder you have to open. Press **A** to launch it just like any other game. The menu uses the core set up for the parent folder (PlayStation in this example).
+
+If the folder has a number prefix for sorting (like `3) Final Fantasy VII`), the menu also looks for an `.m3u` file without the prefix (`Final Fantasy VII.m3u`).
+
+If the multi-disc folder is at the very top level (not inside a system folder), you can put a `.core.txt` file inside the folder to tell the menu which core to use.
+
+If you need this particular game to use a different core than the rest of its folder, create a file called `.core.Final Fantasy VII.m3u.txt` inside the game folder (next to the `.m3u` file) with the core name inside it.
