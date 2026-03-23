@@ -291,7 +291,6 @@ typedef struct
 {
    bool active;
    char folder_path[PATH_MAX_LENGTH];
-   char core_path[PATH_MAX_LENGTH];
    size_t selection;
 } streamlined_resume_t;
 
@@ -422,6 +421,12 @@ static void streamlined_launch_content(streamlined_t *strm,
       struct menu_state *menu_st,
       const char *core_path, const char *content_path,
       bool load_auto_savestate);
+static bool streamlined_read_game_core(
+      const char *content_path, char *core_path_out,
+      size_t core_path_size);
+static bool streamlined_resolve_core_for_content(
+      const char *content_path, const char *folder_core_path,
+      char *core_path_out, size_t core_path_size);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -1021,8 +1026,8 @@ static void streamlined_render_menu(streamlined_t *strm,
          strm->auto_save_cache.selection = selection;
          strm->auto_save_cache.has_auto_save = false;
 
-         if (!string_is_empty(view->data.folder.core_path))
          {
+            char resolved_core[PATH_MAX_LENGTH];
             menu_entry_t check_entry;
             MENU_ENTRY_INITIALIZE(check_entry);
             check_entry.flags |= MENU_ENTRY_FLAG_LABEL_ENABLED;
@@ -1030,12 +1035,16 @@ static void streamlined_render_menu(streamlined_t *strm,
 
             if (!string_is_empty(check_entry.label)
                   && path_is_valid(check_entry.label)
-                  && !path_is_directory(check_entry.label))
+                  && !path_is_directory(check_entry.label)
+                  && streamlined_resolve_core_for_content(
+                        check_entry.label,
+                        view->data.folder.core_path,
+                        resolved_core, sizeof(resolved_core)))
             {
                char auto_state_path[PATH_MAX_LENGTH];
                if (streamlined_get_auto_savestate_path(
                         check_entry.label,
-                        view->data.folder.core_path,
+                        resolved_core,
                         auto_state_path,
                         sizeof(auto_state_path)))
                   strm->auto_save_cache.has_auto_save =
@@ -1960,6 +1969,93 @@ static bool streamlined_read_folder_core(const char *folder_path, char *core_pat
 }
 
 /*
+ * Read core path from a game-specific core override file.
+ * Looks for .core.<filename>.txt in the same directory as the game.
+ * Uses the same line-by-line parsing as streamlined_read_folder_core().
+ *
+ * Example: for /roms/SNES/Super Mario World.sfc,
+ *          reads /roms/SNES/.core.Super Mario World.sfc.txt
+ *
+ * Returns true if a valid core path was found and written to core_path_out.
+ */
+static bool streamlined_read_game_core(const char *content_path, char *core_path_out, size_t core_path_size)
+{
+   char dir[DIR_MAX_LENGTH];
+   char game_core_filename[PATH_MAX_LENGTH];
+   char game_core_path[PATH_MAX_LENGTH];
+   const char *basename;
+   RFILE *file;
+   char line[PATH_MAX_LENGTH];
+
+   if (string_is_empty(content_path))
+      return false;
+
+   basename = path_basename(content_path);
+   if (string_is_empty(basename))
+      return false;
+
+   /* Build path: <dir>/.core.<filename>.txt */
+   fill_pathname_basedir(dir, content_path, sizeof(dir));
+   snprintf(game_core_filename, sizeof(game_core_filename),
+         ".core.%s.txt", basename);
+   fill_pathname_join_special(game_core_path, dir,
+         game_core_filename, sizeof(game_core_path));
+
+   if (!path_is_valid(game_core_path))
+      return false;
+
+   file = filestream_open(game_core_path,
+         RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return false;
+
+   while (filestream_gets(file, line, sizeof(line)))
+   {
+      string_trim_whitespace(line);
+
+      if (string_is_empty(line))
+         continue;
+
+      if (line[0] == '#')
+         continue;
+
+      if (streamlined_find_core_by_name(line, core_path_out, core_path_size))
+      {
+         filestream_close(file);
+         return true;
+      }
+   }
+
+   filestream_close(file);
+   return false;
+}
+
+/*
+ * Resolve the effective core for a content file.
+ * Checks for a game-specific core override first (.core.<filename>.txt),
+ * then falls back to the folder's core path.
+ *
+ * Returns true if a core was resolved and written to core_path_out.
+ */
+static bool streamlined_resolve_core_for_content(
+      const char *content_path, const char *folder_core_path,
+      char *core_path_out, size_t core_path_size)
+{
+   /* Try game-specific core first */
+   if (streamlined_read_game_core(content_path, core_path_out, core_path_size))
+      return true;
+
+   /* Fall back to folder core */
+   if (!string_is_empty(folder_core_path))
+   {
+      strlcpy(core_path_out, folder_core_path, core_path_size);
+      return true;
+   }
+
+   return false;
+}
+
+/*
  * Save the selected core to the folder's core.txt file.
  * Uses the core's base name (without _libretro suffix) for portability.
  */
@@ -2782,8 +2878,9 @@ static void streamlined_populate_entries(void *data,
             {
                strlcpy(v->data.folder.folder_path, strm->resume.folder_path,
                      sizeof(v->data.folder.folder_path));
-               strlcpy(v->data.folder.core_path, strm->resume.core_path,
-                     sizeof(v->data.folder.core_path));
+               if (!streamlined_read_folder_core(strm->resume.folder_path,
+                     v->data.folder.core_path, sizeof(v->data.folder.core_path)))
+                  v->data.folder.core_path[0] = '\0';
             }
             streamlined_populate_folder_menu(strm, strm->resume.folder_path, true);
             if (menu_st_local)
@@ -2938,8 +3035,6 @@ static void streamlined_launch_content(streamlined_t *strm,
       strm->resume.active = true;
       strlcpy(strm->resume.folder_path, folder_view->data.folder.folder_path,
             sizeof(strm->resume.folder_path));
-      strlcpy(strm->resume.core_path, core_path,
-            sizeof(strm->resume.core_path));
       /* If launching from folder directly, use current selection.
        * If launching via core selection, use the folder's saved selection. */
       if (streamlined_view_current(&strm->view_stack) == folder_view)
@@ -3277,34 +3372,34 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                }
                else if (path_is_valid(item_path))
                {
-                  /* Launch file */
-                  if (!string_is_empty(view->data.folder.core_path))
+                  /* Launch file - resolve game-specific or folder core */
                   {
-                     if (path_is_valid(view->data.folder.core_path))
-                     {
+                     char resolved_core[PATH_MAX_LENGTH];
+                     if (streamlined_resolve_core_for_content(
+                              item_path, view->data.folder.core_path,
+                              resolved_core, sizeof(resolved_core))
+                           && path_is_valid(resolved_core))
                      {
                         settings_t *settings = config_get_ptr();
                         streamlined_request_loading(strm,
-                              view->data.folder.core_path, item_path,
+                              resolved_core, item_path,
                               strm->auto_save_cache.has_auto_save
                                     && settings->bools.savestate_auto_load);
-                     }
                         return 0;
                      }
-                     return 0;
-                  }
-                  else
-                  {
-                     /* No core - show core selection */
-                     streamlined_view_t *v;
-                     view->saved_selection = menu_st->selection_ptr;
-                     v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
-                     if (v)
-                        strlcpy(v->data.core_select.content_path, item_path,
-                              sizeof(v->data.core_select.content_path));
-                     streamlined_populate_core_selection(strm, item_path);
-                     menu_st->selection_ptr = 0;
-                     return 0;
+                     else
+                     {
+                        /* No core resolved - show core selection */
+                        streamlined_view_t *v;
+                        view->saved_selection = menu_st->selection_ptr;
+                        v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_CORE_SELECT);
+                        if (v)
+                           strlcpy(v->data.core_select.content_path, item_path,
+                                 sizeof(v->data.core_select.content_path));
+                        streamlined_populate_core_selection(strm, item_path);
+                        menu_st->selection_ptr = 0;
+                        return 0;
+                     }
                   }
                }
             }
@@ -3313,17 +3408,22 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* X button (MENU_ACTION_SCAN): launch with auto savestate (Resume) */
          if (action == MENU_ACTION_SCAN && entry)
          {
-            if (strm->auto_save_cache.has_auto_save
-                  && !string_is_empty(view->data.folder.core_path)
-                  && path_is_valid(view->data.folder.core_path))
+            if (strm->auto_save_cache.has_auto_save)
             {
                const char *item_path = entry->label;
                if (!string_is_empty(item_path) && path_is_valid(item_path)
                      && !path_is_directory(item_path))
                {
-                  streamlined_request_loading(strm,
-                        view->data.folder.core_path, item_path, true);
-                  return 0;
+                  char resolved_core[PATH_MAX_LENGTH];
+                  if (streamlined_resolve_core_for_content(
+                           item_path, view->data.folder.core_path,
+                           resolved_core, sizeof(resolved_core))
+                        && path_is_valid(resolved_core))
+                  {
+                     streamlined_request_loading(strm,
+                           resolved_core, item_path, true);
+                     return 0;
+                  }
                }
             }
             return 0;

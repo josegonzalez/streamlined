@@ -103,3 +103,5 @@ When you quit a game and go back to the main screen, the menu remembers where yo
 You can control the order your folders appear by adding a number prefix like `1) `, `2) `, etc. to your folder names. The menu strips these prefixes away, so a folder named `1) Game Boy` will just show as "Game Boy" in the menu, but it will be sorted first.
 
 Each folder can have a hidden file called `.core.txt` that tells the menu which core to use for games in that folder. If this file exists, games in the folder launch immediately without asking you to pick a core. The menu creates this file automatically the first time you pick a core for a folder.
+
+If you need a specific game to use a different core than the rest of its folder, you can create a file called `.core.<game filename>.txt` next to the game. For example, if you have a game called `Special Game.sfc` and you want it to use a different core, create a file named `.core.Special Game.sfc.txt` in the same folder. Put the core name inside the file, just like `.core.txt`. The menu checks for a game-specific core first, and only falls back to the folder's core if one is not found.
