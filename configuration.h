@@ -414,6 +414,7 @@ typedef struct settings
       unsigned smb_client_num_contexts;
       unsigned smb_client_timeout;
 #endif
+      unsigned int streamlined_artwork_type;
    } uints;
 
    struct

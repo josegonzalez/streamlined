@@ -6887,6 +6887,14 @@ MSG_HASH(
    MENU_ENUM_SUBLABEL_MENU_SHOW_SUBLABELS,
    "Show additional information for menu items."
    )
+MSG_HASH(
+   MENU_ENUM_LABEL_VALUE_STREAMLINED_ARTWORK_TYPE,
+   "Artwork Type"
+   )
+MSG_HASH(
+   MENU_ENUM_SUBLABEL_STREAMLINED_ARTWORK_TYPE,
+   "Choose which type of artwork to display: boxart, title screen, or screenshot."
+   )
 MSG_HASH( /* FIXME Not RGUI specific */
    MENU_ENUM_LABEL_VALUE_RGUI_SHOW_START_SCREEN,
    "Display Start Screen"

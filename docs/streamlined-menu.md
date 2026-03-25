@@ -72,6 +72,16 @@ As you move through the list, a short description of the highlighted setting app
 
 Press **B** to go back to the Quick Menu.
 
+## Game Artwork
+
+When you browse games in a folder, artwork can appear on the right side of the screen. This could be a title screen, box art, a screenshot, or a content logo — you choose which type in the settings.
+
+The artwork is matched automatically using the game's identity. When you first open a folder, the menu scans your games in the background and looks them up in the game database. This means your thumbnails are matched by the correct official name, even if your files are named differently.
+
+You can change the artwork type or turn it off in Settings > User Interface > Appearance. Look for **Artwork Type** and choose from Off, Screenshot, Title Screen, Boxart, or Content Logo. The default is Title Screen.
+
+If no artwork is found for a game, nothing is shown — the game list just uses the full screen width as usual.
+
 ## Settings (Main Menu)
 
 Selecting **Settings** from the main screen opens a list of system-wide settings. These let you change things like video output, audio, input, network, and other RetroArch options.

@@ -44,6 +44,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <unistd.h>
 
 #include <string/stdstring.h>
 #include <lists/file_list.h>
@@ -75,6 +76,9 @@
 #include <lists/dir_list.h>
 #include <streams/file_stream.h>
 #include <formats/m3u_file.h>
+#include "../../database_info.h"
+#include <file/archive_file.h>
+#include <encodings/crc32.h>
 
 #if TARGET_OS_TV
 #include <CoreText/CoreText.h>
@@ -295,6 +299,26 @@ typedef struct
    size_t selection;
 } streamlined_resume_t;
 
+/* Artwork name cache: maps filenames to canonical RDB names */
+typedef struct streamlined_name_cache_entry {
+   char filename[256];
+   uint32_t crc32;
+   char canonical_name[256];
+   char system_name[256];
+   struct streamlined_name_cache_entry *next;
+} streamlined_name_cache_entry_t;
+
+/* All state for game artwork display in folder view */
+typedef struct {
+   gfx_thumbnail_path_data_t *path_data;
+   gfx_thumbnail_t thumbnail;
+   char thumbnail_path[PATH_MAX_LENGTH];
+   size_t selection;
+   streamlined_name_cache_entry_t *cache;
+   char cache_folder[PATH_MAX_LENGTH];
+   retro_task_t *scan_task;
+} streamlined_artwork_t;
+
 typedef struct
 {
    /* Font */
@@ -341,6 +365,9 @@ typedef struct
    char loading_core_path[PATH_MAX_LENGTH];
    char loading_content_path[PATH_MAX_LENGTH];
    bool loading_is_resume;
+
+   /* Game artwork display */
+   streamlined_artwork_t artwork;
 
 } streamlined_t;
 
@@ -433,6 +460,36 @@ static bool streamlined_detect_m3u_folder(
 static bool streamlined_resolve_m3u_content(
       const char *content_path, const char *core_path,
       char *resolved_out, size_t resolved_size);
+
+/* Artwork forward declarations */
+static const char *streamlined_get_artwork_type_dir(unsigned artwork_type);
+static streamlined_name_cache_entry_t *streamlined_artwork_cache_find(
+      streamlined_name_cache_entry_t *cache, const char *filename);
+static void streamlined_artwork_cache_add(
+      streamlined_name_cache_entry_t **cache, const char *filename,
+      uint32_t crc32, const char *canonical_name, const char *system_name);
+static void streamlined_artwork_cache_free(streamlined_name_cache_entry_t **cache);
+static void streamlined_artwork_cache_read(
+      streamlined_artwork_t *art, const char *cache_path);
+static void streamlined_artwork_cache_write(
+      streamlined_artwork_t *art, const char *cache_path);
+static uint32_t streamlined_compute_file_crc32(const char *filepath);
+static void streamlined_artwork_scan_task_handler(retro_task_t *task);
+static bool streamlined_try_thumbnail_extensions(
+      char *thumb_path, bool allow_non_png,
+      char *out_path, size_t out_size);
+static bool streamlined_resolve_artwork_path(
+      streamlined_artwork_t *art, const char *display_name,
+      const char *content_path, const char *core_path,
+      char *out_path, size_t out_size);
+static void streamlined_load_artwork_thumbnails(
+      streamlined_t *strm);
+static void streamlined_draw_folder_artwork(
+      streamlined_t *strm, gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height);
+static void streamlined_artwork_start_scan(
+      streamlined_t *strm, const char *folder_path, const char *core_path);
+static void streamlined_artwork_reset(streamlined_artwork_t *art);
 
 static void streamlined_draw_text(streamlined_t *strm,
       gfx_display_t *p_disp,
@@ -782,6 +839,845 @@ static void streamlined_sublabel_wrap(
 }
 
 /* ======================================================================
+ * GAME ARTWORK DISPLAY
+ * ====================================================================== */
+
+/* Map artwork_type uint to RetroArch thumbnail type directory name.
+ * Values match gfx_thumbnail_get_type(): 0=Off, 1=Snaps, 2=Titles, 3=Boxarts, 4=Logos */
+static const char *streamlined_get_artwork_type_dir(unsigned artwork_type)
+{
+   switch (artwork_type)
+   {
+      case 1: return "Named_Snaps";
+      case 2: return "Named_Titles";
+      case 3: return "Named_Boxarts";
+      case 4: return "Named_Logos";
+      default: return NULL;  /* 0 = Off */
+   }
+}
+
+/* Look up a filename in the in-memory name cache */
+static streamlined_name_cache_entry_t *streamlined_artwork_cache_find(
+      streamlined_name_cache_entry_t *cache, const char *filename)
+{
+   streamlined_name_cache_entry_t *e;
+   for (e = cache; e; e = e->next)
+   {
+      if (string_is_equal(e->filename, filename))
+         return e;
+   }
+   return NULL;
+}
+
+/* Add an entry to the in-memory name cache (prepend to linked list) */
+static void streamlined_artwork_cache_add(
+      streamlined_name_cache_entry_t **cache, const char *filename,
+      uint32_t crc32, const char *canonical_name, const char *system_name)
+{
+   streamlined_name_cache_entry_t *e =
+         (streamlined_name_cache_entry_t*)calloc(1, sizeof(*e));
+   if (!e)
+      return;
+   strlcpy(e->filename, filename, sizeof(e->filename));
+   e->crc32 = crc32;
+   if (canonical_name)
+      strlcpy(e->canonical_name, canonical_name, sizeof(e->canonical_name));
+   if (system_name)
+      strlcpy(e->system_name, system_name, sizeof(e->system_name));
+   e->next = *cache;
+   *cache = e;
+}
+
+/* Free all entries in the name cache */
+static void streamlined_artwork_cache_free(streamlined_name_cache_entry_t **cache)
+{
+   streamlined_name_cache_entry_t *e = *cache;
+   while (e)
+   {
+      streamlined_name_cache_entry_t *next = e->next;
+      free(e);
+      e = next;
+   }
+   *cache = NULL;
+}
+
+/*
+ * Read a cache file from disk into the in-memory linked list.
+ * Format: one entry per line, pipe-separated:
+ *   filename|crc32_hex|canonical_name|system_name
+ * If canonical_name is empty, the RDB lookup found no match.
+ */
+static void streamlined_artwork_cache_read(
+      streamlined_artwork_t *art, const char *cache_path)
+{
+   RFILE *file;
+   char line[1024];
+
+   if (!cache_path)
+      return;
+
+   file = filestream_open(cache_path,
+         RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return;
+
+   while (filestream_gets(file, line, sizeof(line)))
+   {
+      char *p1, *p2, *p3;
+      uint32_t crc;
+
+      string_trim_whitespace(line);
+      if (string_is_empty(line) || line[0] == '#')
+         continue;
+
+      /* Parse: filename|crc32|canonical_name|system_name */
+      p1 = strchr(line, '|');
+      if (!p1) continue;
+      *p1++ = '\0';
+
+      p2 = strchr(p1, '|');
+      if (!p2) continue;
+      *p2++ = '\0';
+
+      p3 = strchr(p2, '|');
+      if (!p3) continue;
+      *p3++ = '\0';
+
+      crc = (uint32_t)strtoul(p1, NULL, 16);
+      streamlined_artwork_cache_add(&art->cache, line, crc, p2, p3);
+   }
+
+   filestream_close(file);
+}
+
+/*
+ * Write the in-memory cache to disk atomically (mkstemp + rename).
+ * Cache directory is created if needed.
+ */
+static void streamlined_artwork_cache_write(
+      streamlined_artwork_t *art, const char *cache_path)
+{
+   char cache_dir[PATH_MAX_LENGTH];
+   char tmp_path[PATH_MAX_LENGTH];
+   int fd;
+   FILE *fp;
+   streamlined_name_cache_entry_t *e;
+
+   if (!cache_path || !art->cache)
+      return;
+
+   /* Ensure cache directory exists */
+   fill_pathname_basedir(cache_dir, cache_path, sizeof(cache_dir));
+   if (!path_is_directory(cache_dir))
+      path_mkdir(cache_dir);
+
+   /* Create temp file in same directory for atomic rename */
+   snprintf(tmp_path, sizeof(tmp_path), "%s.XXXXXX", cache_path);
+   fd = mkstemp(tmp_path);
+   if (fd < 0)
+      return;
+
+   fp = fdopen(fd, "w");
+   if (!fp)
+   {
+      close(fd);
+      remove(tmp_path);
+      return;
+   }
+
+   {
+      unsigned count = 0;
+      for (e = art->cache; e; e = e->next)
+      {
+         fprintf(fp, "%s|%08X|%s|%s\n",
+               e->filename, e->crc32,
+               e->canonical_name, e->system_name);
+         count++;
+      }
+
+      fclose(fp);
+
+      /* Atomic replace */
+      rename(tmp_path, cache_path);
+
+      RARCH_LOG("[streamlined artwork] Cache written: %s (%u entries)\n",
+            cache_path, count);
+   }
+}
+
+/*
+ * Build the cache file path for a given folder.
+ * Path: <thumbnails_dir>/streamlined_cache/<CRC32_of_folder_path>.cache
+ */
+static void streamlined_artwork_get_cache_path(
+      const char *thumbnails_dir, const char *folder_path,
+      char *out_path, size_t out_size)
+{
+   char cache_dir[PATH_MAX_LENGTH];
+   uint32_t hash;
+
+   hash = encoding_crc32(0,
+         (const uint8_t*)folder_path, strlen(folder_path));
+
+   fill_pathname_join_special(cache_dir, thumbnails_dir,
+         "streamlined_cache", sizeof(cache_dir));
+
+   snprintf(out_path, out_size, "%s/%08X.cache", cache_dir, hash);
+}
+
+/* Data passed to the background scan task */
+typedef struct {
+   char folder_path[PATH_MAX_LENGTH];
+   char core_path[PATH_MAX_LENGTH];
+   char cache_path[PATH_MAX_LENGTH];
+   char content_database_dir[PATH_MAX_LENGTH];
+   streamlined_name_cache_entry_t *cache;      /* in-memory cache snapshot */
+   streamlined_name_cache_entry_t *new_entries; /* newly discovered entries */
+   streamlined_artwork_t *artwork;              /* pointer back to artwork state */
+} streamlined_scan_task_data_t;
+
+/*
+ * Compute CRC32 for a plain (non-archive) file by reading it in chunks.
+ * Returns 0 on failure.
+ */
+static uint32_t streamlined_compute_file_crc32(const char *filepath)
+{
+   RFILE *file;
+   uint32_t crc = 0;
+   uint8_t buf[65536];
+   int64_t bytes_read;
+
+   file = filestream_open(filepath,
+         RETRO_VFS_FILE_ACCESS_READ,
+         RETRO_VFS_FILE_ACCESS_HINT_NONE);
+   if (!file)
+      return 0;
+
+   while ((bytes_read = filestream_read(file, buf, sizeof(buf))) > 0)
+      crc = encoding_crc32(crc, buf, (size_t)bytes_read);
+
+   filestream_close(file);
+   return crc;
+}
+
+/*
+ * Background task handler: scan files in a folder, compute CRC32s,
+ * look up canonical names in RDB databases associated with the core.
+ */
+static void streamlined_artwork_scan_task_handler(retro_task_t *task)
+{
+   streamlined_scan_task_data_t *data =
+         (streamlined_scan_task_data_t*)task->state;
+   struct string_list *file_list;
+   unsigned file_idx;
+   core_info_t *core_info = NULL;
+
+   if (!data)
+   {
+      task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
+      return;
+   }
+
+   /* Check for cancellation */
+   if (task->flags & RETRO_TASK_FLG_CANCELLED)
+   {
+      task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
+      return;
+   }
+
+   /* Get core info for database list */
+   if (!string_is_empty(data->core_path))
+      core_info_find(data->core_path, &core_info);
+
+   RARCH_LOG("[streamlined artwork] Scanning folder: %s\n", data->folder_path);
+   RARCH_LOG("[streamlined artwork] Core: %s\n",
+         string_is_empty(data->core_path) ? "(none)" : data->core_path);
+   RARCH_LOG("[streamlined artwork] Database dir: %s\n",
+         string_is_empty(data->content_database_dir) ? "(empty)" : data->content_database_dir);
+
+   if (core_info && core_info->databases_list)
+   {
+      size_t j;
+      for (j = 0; j < core_info->databases_list->size; j++)
+         RARCH_LOG("[streamlined artwork] Core database[%u]: %s\n",
+               (unsigned)j, core_info->databases_list->elems[j].data);
+   }
+   else
+      RARCH_LOG("[streamlined artwork] No databases_list on core_info\n");
+
+   /* List all files in the folder */
+   file_list = dir_list_new(data->folder_path, NULL, false, false, true, false);
+   if (!file_list)
+   {
+      RARCH_LOG("[streamlined artwork] Failed to list folder\n");
+      task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
+      return;
+   }
+
+   for (file_idx = 0; file_idx < file_list->size; file_idx++)
+   {
+      const char *filepath = file_list->elems[file_idx].data;
+      const char *filename;
+      uint32_t crc;
+      bool found = false;
+
+      /* Check for cancellation periodically */
+      if (task->flags & RETRO_TASK_FLG_CANCELLED)
+         break;
+
+      if (!filepath || file_list->elems[file_idx].attr.i == RARCH_DIRECTORY)
+         continue;
+
+      filename = path_basename(filepath);
+      if (!filename || filename[0] == '.')
+         continue;
+
+      /* Skip if already in cache */
+      if (streamlined_artwork_cache_find(data->cache, filename))
+         continue;
+      if (streamlined_artwork_cache_find(data->new_entries, filename))
+         continue;
+
+      /* Compute CRC32: try archive first, fall back to plain file read */
+      crc = file_archive_get_file_crc32(filepath);
+      if (crc == 0)
+         crc = streamlined_compute_file_crc32(filepath);
+
+      RARCH_LOG("[streamlined artwork] %s -> CRC32: %08lX\n",
+            filename, (unsigned long)crc);
+
+      if (crc == 0)
+      {
+         /* Still add to cache so we don't re-scan */
+         streamlined_artwork_cache_add(&data->new_entries, filename, 0, "", "");
+         continue;
+      }
+
+      /* Query each database associated with the core */
+      if (core_info && core_info->databases_list)
+      {
+         size_t db_idx;
+         for (db_idx = 0; db_idx < core_info->databases_list->size; db_idx++)
+         {
+            char rdb_path[PATH_MAX_LENGTH];
+            char query[256];
+            database_info_list_t *db_list;
+            const char *db_name =
+                  core_info->databases_list->elems[db_idx].data;
+
+            if (string_is_empty(db_name))
+               continue;
+
+            snprintf(rdb_path, sizeof(rdb_path), "%s/%s.rdb",
+                  data->content_database_dir, db_name);
+
+            if (!path_is_valid(rdb_path))
+            {
+               RARCH_LOG("[streamlined artwork] RDB not found: %s\n", rdb_path);
+               continue;
+            }
+
+            snprintf(query, sizeof(query),
+                  "{crc:b\"%08lX\"}", (unsigned long)crc);
+
+            RARCH_LOG("[streamlined artwork] Querying %s with %s\n",
+                  db_name, query);
+
+            db_list = database_info_list_new(rdb_path, query);
+            if (db_list && db_list->count > 0 && db_list->list)
+            {
+               const char *canonical = db_list->list[0].name;
+               RARCH_LOG("[streamlined artwork] RDB match: \"%s\"\n",
+                     canonical ? canonical : "(null)");
+               if (!string_is_empty(canonical))
+               {
+                  streamlined_artwork_cache_add(&data->new_entries,
+                        filename, crc, canonical, db_name);
+                  found = true;
+               }
+               database_info_list_free(db_list);
+               break;
+            }
+            else
+               RARCH_LOG("[streamlined artwork] No RDB match for CRC %08lX in %s\n",
+                     (unsigned long)crc, db_name);
+
+            if (db_list)
+               database_info_list_free(db_list);
+         }
+      }
+
+      if (!found)
+         streamlined_artwork_cache_add(&data->new_entries,
+               filename, crc, "", "");
+   }
+
+   string_list_free(file_list);
+
+   /* Merge new entries into the artwork's in-memory cache and write to disk.
+    * The task handler runs on the main thread (RetroArch's task queue is
+    * single-threaded), so the pointer update here is safe without locks. */
+   if (data->new_entries && data->artwork)
+   {
+      streamlined_name_cache_entry_t *e;
+      streamlined_name_cache_entry_t *last = NULL;
+
+      /* Find the end of new_entries list */
+      for (e = data->new_entries; e; e = e->next)
+         last = e;
+
+      /* Prepend new entries to artwork cache */
+      if (last)
+      {
+         last->next = data->artwork->cache;
+         data->artwork->cache = data->new_entries;
+         data->new_entries = NULL;  /* ownership transferred */
+      }
+
+      /* Write merged cache to disk */
+      streamlined_artwork_cache_write(data->artwork, data->cache_path);
+   }
+
+   task_set_flags(task, RETRO_TASK_FLG_FINISHED, true);
+}
+
+/* Cleanup function for the scan task */
+static void streamlined_artwork_scan_task_cleanup(retro_task_t *task)
+{
+   streamlined_scan_task_data_t *data =
+         (streamlined_scan_task_data_t*)task->state;
+   if (data)
+   {
+      /* Clear the scan_task pointer so nobody dereferences freed memory */
+      if (data->artwork)
+         data->artwork->scan_task = NULL;
+
+      /* Free any remaining new_entries that weren't merged */
+      streamlined_artwork_cache_free(&data->new_entries);
+      free(data);
+      task->state = NULL;
+   }
+}
+
+/*
+ * Start a background scan task for the given folder.
+ * Loads existing cache from disk, then scans for uncached files.
+ */
+static void streamlined_artwork_start_scan(
+      streamlined_t *strm, const char *folder_path, const char *core_path)
+{
+   settings_t *settings = config_get_ptr();
+   const char *thumbnails_dir = settings->paths.directory_thumbnails;
+   streamlined_artwork_t *art = &strm->artwork;
+   streamlined_scan_task_data_t *task_data;
+   retro_task_t *task;
+   char cache_path[PATH_MAX_LENGTH];
+
+   if (string_is_empty(thumbnails_dir) || string_is_empty(folder_path))
+      return;
+
+   /* Cancel any existing scan */
+   if (art->scan_task)
+   {
+      task_queue_cancel_task(art->scan_task);
+      art->scan_task = NULL;
+   }
+
+   /* Free old cache if folder changed */
+   if (!string_is_equal(art->cache_folder, folder_path))
+   {
+      streamlined_artwork_cache_free(&art->cache);
+      strlcpy(art->cache_folder, folder_path, sizeof(art->cache_folder));
+   }
+
+   /* Build cache file path */
+   streamlined_artwork_get_cache_path(thumbnails_dir, folder_path,
+         cache_path, sizeof(cache_path));
+
+   /* Read existing cache from disk */
+   streamlined_artwork_cache_read(art, cache_path);
+
+   /* Allocate task data */
+   task_data = (streamlined_scan_task_data_t*)calloc(1, sizeof(*task_data));
+   if (!task_data)
+      return;
+
+   strlcpy(task_data->folder_path, folder_path, sizeof(task_data->folder_path));
+   if (core_path)
+      strlcpy(task_data->core_path, core_path, sizeof(task_data->core_path));
+   strlcpy(task_data->cache_path, cache_path, sizeof(task_data->cache_path));
+   strlcpy(task_data->content_database_dir,
+         settings->paths.path_content_database,
+         sizeof(task_data->content_database_dir));
+   task_data->cache = art->cache;       /* snapshot for read-only checks */
+   task_data->new_entries = NULL;
+   task_data->artwork = art;
+
+   /* Create and push task */
+   task = task_init();
+   if (!task)
+   {
+      free(task_data);
+      return;
+   }
+
+   task->handler  = streamlined_artwork_scan_task_handler;
+   task->cleanup  = streamlined_artwork_scan_task_cleanup;
+   task->state    = task_data;
+   task->flags   |= RETRO_TASK_FLG_MUTE;  /* No progress UI */
+   task->title    = strdup("Scanning artwork cache");
+
+   art->scan_task = task;
+   task_queue_push(task);
+}
+
+/*
+ * Try alternate thumbnail image extensions after .png fails.
+ * thumb_path must already end in ".png". If allow_non_png is true,
+ * tries .jpg, .jpeg, .bmp, .tga in order, writing the first existing
+ * path to out_path. Returns true if a valid file was found.
+ */
+static bool streamlined_try_thumbnail_extensions(
+      char *thumb_path, bool allow_non_png,
+      char *out_path, size_t out_size)
+{
+   static const char * const extensions[] = { ".jpg", ".jpeg", ".bmp", ".tga" };
+   int i;
+
+   if (path_is_valid(thumb_path))
+   {
+      strlcpy(out_path, thumb_path, out_size);
+      return true;
+   }
+
+   if (allow_non_png)
+   {
+      for (i = 0; i < 4; i++)
+      {
+         char *ext_ptr = path_get_extension_mutable(thumb_path);
+         if (ext_ptr)
+         {
+            strlcpy(ext_ptr, extensions[i], 6);
+            if (path_is_valid(thumb_path))
+            {
+               strlcpy(out_path, thumb_path, out_size);
+               return true;
+            }
+         }
+      }
+   }
+
+   return false;
+}
+
+/*
+ * Try to find a thumbnail image path for a given game.
+ * Searches across all databases associated with the core,
+ * trying content_img, content_img_full, and content_img_short
+ * for each database, with multiple image extensions.
+ *
+ * Returns true if a valid thumbnail file was found.
+ */
+static bool streamlined_resolve_artwork_path(
+      streamlined_artwork_t *art, const char *display_name,
+      const char *content_path, const char *core_path,
+      char *out_path, size_t out_size)
+{
+   settings_t *settings = config_get_ptr();
+   const char *thumbnails_dir = settings->paths.directory_thumbnails;
+   unsigned artwork_type = settings->uints.streamlined_artwork_type;
+   const char *type_dir;
+   core_info_t *core_info = NULL;
+   const char *filename;
+   streamlined_name_cache_entry_t *cached;
+   const char *name_to_use = NULL;
+   const char *system_to_use = NULL;
+   bool allow_non_png = settings->bools.playlist_allow_non_png;
+
+   if (string_is_empty(thumbnails_dir) || string_is_empty(core_path))
+      return false;
+
+   type_dir = streamlined_get_artwork_type_dir(artwork_type);
+   if (!type_dir)
+      return false;  /* Off */
+
+   /* Get core info for database list */
+   if (!core_info_find(core_path, &core_info) || !core_info)
+      return false;
+
+   /* Get filename from content path */
+   filename = path_basename(content_path);
+
+   /* Check in-memory cache for a canonical name */
+   cached = streamlined_artwork_cache_find(art->cache, filename);
+   if (cached && !string_is_empty(cached->canonical_name))
+   {
+      name_to_use = cached->canonical_name;
+      system_to_use = cached->system_name;
+   }
+
+   /* If cache hit with canonical name and system, try that first */
+   if (name_to_use && system_to_use && !string_is_empty(system_to_use))
+   {
+      char base_path[PATH_MAX_LENGTH];
+      char type_path[PATH_MAX_LENGTH];
+      char content_img[PATH_MAX_LENGTH];
+      char thumb_path[PATH_MAX_LENGTH];
+
+      /* Build: <thumbnails_dir>/<system>/<type_dir> */
+      fill_pathname_join_special(base_path, thumbnails_dir,
+            system_to_use, sizeof(base_path));
+      fill_pathname_join_special(type_path, base_path,
+            type_dir, sizeof(type_path));
+
+      /* Scrub the name into a thumbnail filename */
+      gfx_thumbnail_fill_content_img(content_img, sizeof(content_img),
+            name_to_use, false);
+
+      fill_pathname_join_special(thumb_path, type_path,
+            content_img, sizeof(thumb_path));
+
+      if (streamlined_try_thumbnail_extensions(
+               thumb_path, allow_non_png, out_path, out_size))
+         return true;
+   }
+
+   /* Fall back: try display name against each database */
+   if (core_info->databases_list)
+   {
+      size_t db_idx;
+      /* Use display_name if provided, otherwise strip extension from filename */
+      const char *label = display_name;
+      char label_buf[256];
+
+      if (string_is_empty(label) && filename)
+      {
+         strlcpy(label_buf, filename, sizeof(label_buf));
+         path_remove_extension(label_buf);
+         label = label_buf;
+      }
+
+      if (string_is_empty(label))
+         return false;
+
+      for (db_idx = 0; db_idx < core_info->databases_list->size; db_idx++)
+      {
+         const char *db_name =
+               core_info->databases_list->elems[db_idx].data;
+         char base_path[PATH_MAX_LENGTH];
+         char type_path[PATH_MAX_LENGTH];
+         char content_img[PATH_MAX_LENGTH];
+         char content_img_full[PATH_MAX_LENGTH];
+         char content_img_short[PATH_MAX_LENGTH];
+         char thumb_path[PATH_MAX_LENGTH];
+         const char *img_variants[3];
+         int v;
+
+         if (string_is_empty(db_name))
+            continue;
+
+         /* Build: <thumbnails_dir>/<db_name>/<type_dir> */
+         fill_pathname_join_special(base_path, thumbnails_dir,
+               db_name, sizeof(base_path));
+         fill_pathname_join_special(type_path, base_path,
+               type_dir, sizeof(type_path));
+
+         /* Generate the three content_img variants */
+         gfx_thumbnail_fill_content_img(content_img, sizeof(content_img),
+               label, false);
+         /* content_img_full: filename with extension, scrubbed */
+         if (filename)
+            gfx_thumbnail_fill_content_img(content_img_full,
+                  sizeof(content_img_full), filename, false);
+         else
+            content_img_full[0] = '\0';
+         /* content_img_short: shortened name (up to first bracket) */
+         gfx_thumbnail_fill_content_img(content_img_short,
+               sizeof(content_img_short), label, true);
+
+         img_variants[0] = content_img;
+         img_variants[1] = content_img_full;
+         img_variants[2] = content_img_short;
+
+         for (v = 0; v < 3; v++)
+         {
+            if (string_is_empty(img_variants[v]))
+               continue;
+
+            fill_pathname_join_special(thumb_path, type_path,
+                  img_variants[v], sizeof(thumb_path));
+
+            if (streamlined_try_thumbnail_extensions(
+                     thumb_path, allow_non_png, out_path, out_size))
+               return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+/*
+ * Load artwork thumbnails for the currently selected game in FOLDER view.
+ * Called when selection changes. Resolves artwork path and autosave screenshot.
+ */
+static void streamlined_load_artwork_thumbnails(
+      streamlined_t *strm)
+{
+   struct menu_state *menu_st = menu_state_get_ptr();
+   streamlined_artwork_t *art = &strm->artwork;
+   settings_t *settings = config_get_ptr();
+   menu_list_t *menu_list;
+   file_list_t *list;
+   menu_entry_t entry;
+   size_t selection;
+   const char *content_path;
+   char display_name[256];
+   char artwork_path[PATH_MAX_LENGTH];
+   char resolved_core[PATH_MAX_LENGTH];
+   streamlined_view_t *view;
+
+   if (settings->uints.streamlined_artwork_type == 0)
+      return;
+
+   if (!menu_st)
+      return;
+
+   menu_list = menu_st->entries.list;
+   if (!menu_list)
+      return;
+
+   list = MENU_LIST_GET_SELECTION(menu_list, 0);
+   if (!list || list->size == 0)
+      return;
+
+   selection = menu_st->selection_ptr;
+   if (selection >= list->size)
+      return;
+
+   /* Skip if selection hasn't changed */
+   if (selection == art->selection)
+      return;
+
+   art->selection = selection;
+
+   /* Only show artwork for files (not directories) */
+   if (list->list[selection].type != FILE_TYPE_PLAIN)
+   {
+      /* Reset thumbnails for directories */
+      if (art->thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN)
+      {
+         gfx_thumbnail_reset(&art->thumbnail);
+         art->thumbnail_path[0] = '\0';
+      }
+      return;
+   }
+
+   /* Get entry info */
+   MENU_ENTRY_INITIALIZE(entry);
+   entry.flags |= MENU_ENTRY_FLAG_LABEL_ENABLED;
+   menu_entry_get(&entry, 0, (unsigned)selection, NULL, true);
+
+   content_path = entry.label;
+   if (string_is_empty(content_path))
+      return;
+
+   /* Get display name (entry.path has extension stripped) */
+   strlcpy(display_name, entry.path, sizeof(display_name));
+
+   /* Resolve effective core for this content */
+   view = streamlined_view_current(&strm->view_stack);
+   if (!view || view->type != STREAMLINED_VIEW_FOLDER)
+      return;
+
+   if (!streamlined_resolve_core_for_content(
+            content_path, view->data.folder.core_path,
+            resolved_core, sizeof(resolved_core)))
+      return;
+
+   /* Resolve and load artwork thumbnail */
+   if (streamlined_resolve_artwork_path(
+            art, display_name, content_path, resolved_core,
+            artwork_path, sizeof(artwork_path)))
+   {
+      if (!string_is_equal(artwork_path, art->thumbnail_path))
+      {
+         strlcpy(art->thumbnail_path, artwork_path,
+               sizeof(art->thumbnail_path));
+         gfx_thumbnail_reset(&art->thumbnail);
+         gfx_thumbnail_request_file(artwork_path, &art->thumbnail,
+               settings->uints.gfx_thumbnail_upscale_threshold);
+      }
+   }
+   else
+   {
+      if (art->thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN
+            && art->thumbnail.status != GFX_THUMBNAIL_STATUS_MISSING)
+      {
+         gfx_thumbnail_reset(&art->thumbnail);
+         art->thumbnail_path[0] = '\0';
+      }
+      else if (art->thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+      {
+         /* Mark as missing so we don't keep re-checking */
+         art->thumbnail.status = GFX_THUMBNAIL_STATUS_MISSING;
+         art->thumbnail_path[0] = '\0';
+      }
+   }
+}
+
+/* Reset artwork state (thumbnails, selection tracker) */
+static void streamlined_artwork_reset(streamlined_artwork_t *art)
+{
+   gfx_thumbnail_reset(&art->thumbnail);
+   art->thumbnail_path[0] = '\0';
+   art->selection = (size_t)-1;
+}
+/*
+ * Draw game artwork on the right side of the screen.
+ * Shows the main artwork thumbnail (boxart/title/screenshot).
+ */
+static void streamlined_draw_folder_artwork(
+      streamlined_t *strm, gfx_display_t *p_disp, void *userdata,
+      unsigned video_width, unsigned video_height)
+{
+   streamlined_artwork_t *art = &strm->artwork;
+   float draw_w, draw_h;
+   int art_area_x, art_area_y;
+   int art_area_w, art_area_h;
+   int offset_x;
+
+   if (art->thumbnail.status != GFX_THUMBNAIL_STATUS_AVAILABLE)
+      return;
+
+   /* Artwork area: right half of screen, below title, above footer */
+   art_area_x = (int)(video_width / 2) + strm->margin_x / 2;
+   art_area_y = strm->margin_y + (int)(strm->font_size_title * STREAMLINED_TITLE_AREA_RATIO);
+   art_area_w = (int)video_width - art_area_x - strm->margin_x;
+   art_area_h = (int)video_height - art_area_y
+         - (int)(STREAMLINED_FOOTER_HEIGHT_BASE * strm->scale_factor)
+         - strm->margin_y;
+
+   if (art_area_w <= 0 || art_area_h <= 0)
+      return;
+
+   gfx_thumbnail_get_draw_dimensions(
+         &art->thumbnail,
+         (unsigned)art_area_w, (unsigned)art_area_h, 1.0f,
+         &draw_w, &draw_h);
+
+   /* Center horizontally in the art area, top-aligned */
+   offset_x = (art_area_w - (int)draw_w) / 2;
+
+   gfx_thumbnail_draw(userdata, video_width, video_height,
+         &art->thumbnail,
+         (float)(art_area_x + offset_x),
+         (float)art_area_y,
+         (unsigned)draw_w, (unsigned)draw_h,
+         GFX_THUMBNAIL_ALIGN_CENTRE, 1.0f, 1.0f, NULL);
+}
+
+/* ======================================================================
  * SAVE SLOT SELECTOR
  * ====================================================================== */
 
@@ -960,6 +1856,7 @@ static void streamlined_render_menu(streamlined_t *strm,
       unsigned video_width, unsigned video_height)
 {
    struct menu_state *menu_st = menu_state_get_ptr();
+   settings_t *settings;
    menu_list_t *menu_list;
    file_list_t *list;
    size_t list_size, selection, i, start_idx, max_visible;
@@ -967,9 +1864,13 @@ static void streamlined_render_menu(streamlined_t *strm,
    char title_buf[256];
    streamlined_view_t *view;
    streamlined_view_type_t vtype;
+   bool artwork_visible = false;
+   int content_width;
 
    if (!strm->font.font || !p_disp || !menu_st)
       return;
+
+   settings = config_get_ptr();
 
    menu_list = menu_st->entries.list;
    if (!menu_list)
@@ -1005,7 +1906,6 @@ static void streamlined_render_menu(streamlined_t *strm,
       /* When selection changes to save/load, load the current slot's thumbnail */
       if (strm->show_slot_selector && (!was_showing || selection != strm->last_selection))
       {
-         settings_t *settings = config_get_ptr();
          int state_slot = settings->ints.state_slot;
 
          /* Convert state_slot to preview_slot: state_slot -1 = preview 0 (Auto) */
@@ -1073,6 +1973,25 @@ static void streamlined_render_menu(streamlined_t *strm,
       strm->auto_save_cache.selection = (size_t)-1;
       strm->auto_save_cache.has_auto_save = false;
    }
+
+   /* Load artwork for selected game in FOLDER views */
+   if (vtype == STREAMLINED_VIEW_FOLDER && view)
+   {
+      if (settings->uints.streamlined_artwork_type != 0)
+         streamlined_load_artwork_thumbnails(strm);
+   }
+
+   /* Compute artwork visibility and content width for layout */
+   if (vtype == STREAMLINED_VIEW_FOLDER
+         && settings->uints.streamlined_artwork_type != 0)
+   {
+      streamlined_artwork_t *art = &strm->artwork;
+      artwork_visible =
+            (art->thumbnail.status == GFX_THUMBNAIL_STATUS_AVAILABLE);
+   }
+   content_width = artwork_visible
+         ? (int)(video_width / 2) - strm->margin_x
+         : (int)video_width - strm->margin_x * 2;
 
    /* Calculate visible items: screen height minus title area and button legend area */
    {
@@ -1154,7 +2073,7 @@ static void streamlined_render_menu(streamlined_t *strm,
 
    /* Draw title with ticker-based scrolling for long titles */
    {
-      int max_title_width = video_width - strm->margin_x * 2;
+      int max_title_width = content_width;
       int title_y = strm->margin_y + (int)(strm->font_size_title * 0.9f);
       char title_ticker[256];
       unsigned x_offset = 0;
@@ -1257,11 +2176,11 @@ static void streamlined_render_menu(streamlined_t *strm,
          show_value = !string_is_empty(entry.value)
                         && !string_is_equal(entry.value, "...")
                         && !streamlined_should_hide_value(entry.value);
-         max_value_width = (video_width - strm->margin_x * 2) * STREAMLINED_VALUE_WIDTH_PCT / 100;
+         max_value_width = content_width * STREAMLINED_VALUE_WIDTH_PCT / 100;
          value_gap = (int)(STREAMLINED_DOT_SPACING_BASE * strm->scale_factor);
          max_label_width = show_value
-               ? (video_width - strm->margin_x * 2 - max_value_width - value_gap)
-               : (video_width - strm->margin_x * 2);
+               ? (content_width - max_value_width - value_gap)
+               : content_width;
 
       if (is_selected)
       {
@@ -1274,7 +2193,7 @@ static void streamlined_render_menu(streamlined_t *strm,
           * - Without value: fits snugly around label text with symmetric padding
           */
          if (show_value)
-            pill_width = video_width - strm->margin_x * 2 + strm->pill_padding * 2;
+            pill_width = content_width + strm->pill_padding * 2;
          else
             pill_width = (text_width > max_label_width ? max_label_width : text_width)
                   + strm->pill_padding * 2;
@@ -1331,7 +2250,7 @@ static void streamlined_render_menu(streamlined_t *strm,
             value_width = streamlined_get_text_width(strm, truncated_value, false);
 
             streamlined_draw_text(strm, p_disp, video_width, video_height,
-                  video_width - strm->margin_x - value_width, text_y,
+                  strm->margin_x + content_width - value_width, text_y,
                   truncated_value, streamlined_color_text_dark, false);
          }
       }
@@ -1357,7 +2276,7 @@ static void streamlined_render_menu(streamlined_t *strm,
             value_width = streamlined_get_text_width(strm, truncated_value, false);
 
             streamlined_draw_text(strm, p_disp, video_width, video_height,
-                  video_width - strm->margin_x - value_width, text_y,
+                  strm->margin_x + content_width - value_width, text_y,
                   truncated_value, streamlined_color_text, false);
          }
       }
@@ -1369,6 +2288,10 @@ static void streamlined_render_menu(streamlined_t *strm,
    /* Draw save slot selector if on Save/Load State entry */
    if (strm->show_slot_selector)
       streamlined_draw_slot_selector(strm, p_disp, userdata, video_width, video_height);
+
+   /* Draw game artwork on right side when in folder view */
+   if (artwork_visible)
+      streamlined_draw_folder_artwork(strm, p_disp, userdata, video_width, video_height);
 
    /* Footer - Back on left, OK on right, white pills with black letter + white label */
    {
@@ -1400,9 +2323,8 @@ static void streamlined_render_menu(streamlined_t *strm,
       {
          bool show_resume = strm->auto_save_cache.has_auto_save
                && vtype == STREAMLINED_VIEW_FOLDER;
-         settings_t *footer_settings = show_resume ? config_get_ptr() : NULL;
-         bool auto_load_on = footer_settings
-               && footer_settings->bools.savestate_auto_load;
+         bool auto_load_on = show_resume
+               && settings->bools.savestate_auto_load;
 
          if (show_resume && auto_load_on)
          {
@@ -2602,6 +3524,10 @@ static void *streamlined_init(void **userdata, bool video_is_threaded)
    *userdata = strm;
    strm->view_stack.top = -1;
 
+   /* Initialize artwork state */
+   strm->artwork.path_data = gfx_thumbnail_path_init();
+   strm->artwork.selection = (size_t)-1;
+
    p_disp->framebuf_width = 0;
    p_disp->framebuf_height = 0;
 
@@ -2616,6 +3542,19 @@ static void streamlined_free(void *data)
       strm->font.font = NULL;
       strm->font_small.font = NULL;
       strm->font_title.font = NULL;
+
+      /* Free artwork state */
+      if (strm->artwork.scan_task)
+      {
+         task_queue_cancel_task(strm->artwork.scan_task);
+         strm->artwork.scan_task = NULL;
+      }
+      if (strm->artwork.path_data)
+      {
+         free(strm->artwork.path_data);
+         strm->artwork.path_data = NULL;
+      }
+      streamlined_artwork_cache_free(&strm->artwork.cache);
    }
 }
 
@@ -2743,6 +3682,9 @@ static void streamlined_context_reset(void *data, bool is_threaded)
    strm->item_ticker_start = 0;
    strm->item_ticker_selection = (size_t)-1;
 
+   /* Reset artwork thumbnails */
+   streamlined_artwork_reset(&strm->artwork);
+
    gfx_display_init_white_texture();
 
 }
@@ -2758,6 +3700,8 @@ static void streamlined_context_destroy(void *data)
       /* Clean up save slot thumbnail */
       gfx_thumbnail_reset(&strm->savestate_thumbnail);
 
+      /* Clean up artwork thumbnail */
+      gfx_thumbnail_reset(&strm->artwork.thumbnail);
    }
 
    gfx_display_deinit_white_texture();
@@ -3032,6 +3976,10 @@ static void streamlined_populate_entries(void *data,
                   v->data.folder.core_path[0] = '\0';
             }
             streamlined_populate_folder_menu(strm, strm->resume.folder_path, true);
+            /* Start artwork scan for resumed folder */
+            if (v)
+               streamlined_artwork_start_scan(strm,
+                     v->data.folder.folder_path, v->data.folder.core_path);
             if (menu_st_local)
                menu_st_local->selection_ptr = strm->resume.selection;
             strm->resume.active = false;
@@ -3456,6 +4404,12 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      }
                      streamlined_push_nav_marker();
                      streamlined_populate_folder_menu(strm, item_path, true);
+                     /* Start artwork scan for new folder */
+                     if (v)
+                        streamlined_artwork_start_scan(strm,
+                              v->data.folder.folder_path,
+                              v->data.folder.core_path);
+                     streamlined_artwork_reset(&strm->artwork);
                      menu_st->selection_ptr = 0;
                      return 0;
                   }
@@ -3529,12 +4483,19 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          /* Cancel: pop to parent view */
          if (action == MENU_ACTION_CANCEL)
          {
+            streamlined_artwork_reset(&strm->artwork);
             streamlined_view_pop(&strm->view_stack);
             view = streamlined_view_current(&strm->view_stack);
             if (view)
             {
                if (view->type == STREAMLINED_VIEW_FOLDER)
+               {
                   streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
+                  /* Re-start scan for parent folder */
+                  streamlined_artwork_start_scan(strm,
+                        view->data.folder.folder_path,
+                        view->data.folder.core_path);
+               }
                else if (view->type == STREAMLINED_VIEW_MAIN_MENU)
                {
                   streamlined_pop_nav_marker();
@@ -3565,6 +4526,12 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                         v->data.folder.core_path[0] = '\0';
                   }
                   streamlined_populate_folder_menu(strm, item_path, true);
+                  /* Start artwork scan for subfolder */
+                  if (v)
+                     streamlined_artwork_start_scan(strm,
+                           v->data.folder.folder_path,
+                           v->data.folder.core_path);
+                  streamlined_artwork_reset(&strm->artwork);
                   menu_st->selection_ptr = 0;
                   return 0;
                }
