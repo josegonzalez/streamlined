@@ -4,12 +4,23 @@ The Streamlined Menu is a simple, clean way to browse your game collection and p
 
 ## The Main Screen
 
-When you open RetroArch with the Streamlined Menu, you see a list of your game folders. Each folder usually holds games for one system (like "Game Boy" or "Super Nintendo"). At the bottom of the list, you will also see:
+When you open RetroArch with the Streamlined Menu, you see a list of your game folders. Each folder usually holds games for one system (like "Game Boy" or "Super Nintendo"). If you have played games before, a **History** entry appears at the very top. At the bottom of the list, you will also see:
 
+- **History** - Shows games you have played recently (only shown if you have play history)
 - **Settings** - Opens system settings
 - **Quit** - Closes RetroArch (not shown on Apple TV)
 
 Use **Up** and **Down** to move through the list. The item you have selected is highlighted with a white pill shape.
+
+## History
+
+Selecting **History** from the main screen shows a list of games you have played recently, with the most recent game at the top. You can play any game from the History list just like you would from a folder: highlight it and press **A**.
+
+If a game has saved progress (an auto save), you will see **X Resume** at the bottom of the screen. Artwork is shown on the right side, just like when browsing folders.
+
+When you quit a game launched from History, the menu takes you right back to the History list and highlights the same game you were playing.
+
+If a game uses multiple discs, History shows the game name instead of the individual disc file name.
 
 ## Opening a Folder
 

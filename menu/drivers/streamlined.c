@@ -77,6 +77,8 @@
 #include <streams/file_stream.h>
 #include <formats/m3u_file.h>
 #include "../../database_info.h"
+#include "../../playlist.h"
+#include "../../defaults.h"
 #include <file/archive_file.h>
 #include <encodings/crc32.h>
 
@@ -247,6 +249,7 @@ static const streamlined_quick_item_t streamlined_main_settings_items[] = {
 typedef enum
 {
    STREAMLINED_VIEW_MAIN_MENU,      /* Top-level folder list */
+   STREAMLINED_VIEW_HISTORY,        /* Play history list */
    STREAMLINED_VIEW_FOLDER,         /* Inside a folder (games list) */
    STREAMLINED_VIEW_CORE_SELECT,    /* Core selection screen */
    STREAMLINED_VIEW_QUICK_MENU,     /* In-game pause menu */
@@ -295,6 +298,7 @@ typedef struct
 typedef struct
 {
    bool active;
+   bool from_history;
    char folder_path[PATH_MAX_LENGTH];
    size_t selection;
 } streamlined_resume_t;
@@ -460,6 +464,10 @@ static bool streamlined_detect_m3u_folder(
 static bool streamlined_resolve_m3u_content(
       const char *content_path, const char *core_path,
       char *resolved_out, size_t resolved_size);
+static void streamlined_populate_history_menu(streamlined_t *strm);
+static bool streamlined_get_entry_core_path(
+      streamlined_t *strm, const char *content_path,
+      size_t entry_idx, char *core_out, size_t core_size);
 
 /* Artwork forward declarations */
 static const char *streamlined_get_artwork_type_dir(unsigned artwork_type);
@@ -1587,11 +1595,12 @@ static void streamlined_load_artwork_thumbnails(
 
    /* Resolve effective core for this content */
    view = streamlined_view_current(&strm->view_stack);
-   if (!view || view->type != STREAMLINED_VIEW_FOLDER)
+   if (!view || (view->type != STREAMLINED_VIEW_FOLDER
+             && view->type != STREAMLINED_VIEW_HISTORY))
       return;
 
-   if (!streamlined_resolve_core_for_content(
-            content_path, view->data.folder.core_path,
+   if (!streamlined_get_entry_core_path(strm,
+            content_path, list->list[selection].entry_idx,
             resolved_core, sizeof(resolved_core)))
       return;
 
@@ -1924,8 +1933,9 @@ static void streamlined_render_menu(streamlined_t *strm,
       strm->last_selection = selection;
    }
 
-   /* Detect auto savestate for current selection in FOLDER views */
-   if (vtype == STREAMLINED_VIEW_FOLDER && view)
+   /* Detect auto savestate for current selection in FOLDER/HISTORY views */
+   if ((vtype == STREAMLINED_VIEW_FOLDER
+         || vtype == STREAMLINED_VIEW_HISTORY) && view)
    {
       if (selection != strm->auto_save_cache.selection)
       {
@@ -1942,9 +1952,8 @@ static void streamlined_render_menu(streamlined_t *strm,
             if (!string_is_empty(check_entry.label)
                   && path_is_valid(check_entry.label)
                   && !path_is_directory(check_entry.label)
-                  && streamlined_resolve_core_for_content(
-                        check_entry.label,
-                        view->data.folder.core_path,
+                  && streamlined_get_entry_core_path(strm,
+                        check_entry.label, check_entry.entry_idx,
                         resolved_core, sizeof(resolved_core)))
             {
                char auto_state_path[PATH_MAX_LENGTH];
@@ -1974,15 +1983,17 @@ static void streamlined_render_menu(streamlined_t *strm,
       strm->auto_save_cache.has_auto_save = false;
    }
 
-   /* Load artwork for selected game in FOLDER views */
-   if (vtype == STREAMLINED_VIEW_FOLDER && view)
+   /* Load artwork for selected game in FOLDER/HISTORY views */
+   if ((vtype == STREAMLINED_VIEW_FOLDER
+         || vtype == STREAMLINED_VIEW_HISTORY) && view)
    {
       if (settings->uints.streamlined_artwork_type != 0)
          streamlined_load_artwork_thumbnails(strm);
    }
 
    /* Compute artwork visibility and content width for layout */
-   if (vtype == STREAMLINED_VIEW_FOLDER
+   if ((vtype == STREAMLINED_VIEW_FOLDER
+         || vtype == STREAMLINED_VIEW_HISTORY)
          && settings->uints.streamlined_artwork_type != 0)
    {
       streamlined_artwork_t *art = &strm->artwork;
@@ -2014,6 +2025,9 @@ static void streamlined_render_menu(streamlined_t *strm,
          break;
       case STREAMLINED_VIEW_MAIN_SETTINGS:
          strlcpy(title_buf, "Settings", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_HISTORY:
+         strlcpy(title_buf, "History", sizeof(title_buf));
          break;
       case STREAMLINED_VIEW_FOLDER:
       {
@@ -2322,7 +2336,8 @@ static void streamlined_render_menu(streamlined_t *strm,
        * - no auto save: (A) Play for game files, (A) OK otherwise */
       {
          bool show_resume = strm->auto_save_cache.has_auto_save
-               && vtype == STREAMLINED_VIEW_FOLDER;
+               && (vtype == STREAMLINED_VIEW_FOLDER
+                   || vtype == STREAMLINED_VIEW_HISTORY);
          bool auto_load_on = show_resume
                && settings->bools.savestate_auto_load;
 
@@ -2335,7 +2350,8 @@ static void streamlined_render_menu(streamlined_t *strm,
          {
             ok_key = "A";
             if ((vtype == STREAMLINED_VIEW_MAIN_MENU
-                  || vtype == STREAMLINED_VIEW_FOLDER)
+                  || vtype == STREAMLINED_VIEW_FOLDER
+                  || vtype == STREAMLINED_VIEW_HISTORY)
                   && selection < list_size
                   && list->list[selection].type == FILE_TYPE_PLAIN)
                ok_str = "Play";
@@ -2382,7 +2398,8 @@ static void streamlined_render_menu(streamlined_t *strm,
       /* Right side hint(s) */
       {
          bool show_resume_hint = strm->auto_save_cache.has_auto_save
-               && vtype == STREAMLINED_VIEW_FOLDER;
+               && (vtype == STREAMLINED_VIEW_FOLDER
+                   || vtype == STREAMLINED_VIEW_HISTORY);
          int ok_label_w = font_driver_get_message_width(
                strm->font_small.font, ok_str, strlen(ok_str), 1.0f);
          ok_pill_x = (float)video_width - footer_margin
@@ -3107,6 +3124,46 @@ static bool streamlined_resolve_m3u_content(
 }
 
 /*
+ * Unified core path resolution for any view type.
+ * FOLDER: delegates to streamlined_resolve_core_for_content (game override + folder core)
+ * HISTORY: looks up core_path from the playlist entry at entry_idx
+ * Returns true if a valid core was resolved.
+ */
+static bool streamlined_get_entry_core_path(
+      streamlined_t *strm, const char *content_path,
+      size_t entry_idx, char *core_out, size_t core_size)
+{
+   streamlined_view_t *view = streamlined_view_current(&strm->view_stack);
+   if (!view)
+      return false;
+
+   if (view->type == STREAMLINED_VIEW_HISTORY)
+   {
+      playlist_t *history = g_defaults.content_history;
+      const struct playlist_entry *pl_entry = NULL;
+
+      if (!history || entry_idx >= playlist_size(history))
+         return false;
+
+      playlist_get_index(history, entry_idx, &pl_entry);
+      if (!pl_entry || !playlist_entry_has_core(pl_entry))
+         return false;
+
+      strlcpy(core_out, pl_entry->core_path, core_size);
+      /* Resolve abbreviated iOS/tvOS paths */
+      playlist_resolve_path(PLAYLIST_LOAD, true, core_out, core_size);
+      return true;
+   }
+
+   if (view->type == STREAMLINED_VIEW_FOLDER)
+      return streamlined_resolve_core_for_content(
+            content_path, view->data.folder.core_path,
+            core_out, core_size);
+
+   return false;
+}
+
+/*
  * Save the selected core to the folder's core.txt file.
  * Uses the core's base name (without _libretro suffix) for portability.
  */
@@ -3322,6 +3379,20 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
    if (!list)
       return;
 
+   /* Show History at top of main menu when enabled */
+   if (!show_folder_slash
+         && settings->bools.menu_content_show_history
+         && g_defaults.content_history
+         && playlist_size(g_defaults.content_history) > 0)
+   {
+      menu_entries_append(list,
+            "History",
+            "streamlined_history",
+            MENU_ENUM_LABEL_HISTORY_TAB,
+            MENU_SETTING_ACTION,
+            0, 0, NULL);
+   }
+
    /* Scan directory for folders and files */
    str_list = dir_list_new(directory, NULL, true,
          settings->bools.show_hidden_files, true, false);
@@ -3429,6 +3500,136 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
             MENU_SETTING_ACTION,
             0, 0, NULL);
 #endif
+   }
+}
+
+/*
+ * Populate the history view from g_defaults.content_history.
+ * Entries whose content files are missing are skipped.
+ * Disc files inside m3u folders are displayed as the game name
+ * and deduplicated (only the most recent occurrence shown).
+ */
+static void streamlined_populate_history_menu(streamlined_t *strm)
+{
+   file_list_t *list;
+   playlist_t *history;
+   size_t history_size, i;
+   /* Dedup m3u games by CRC32 hash of their m3u path */
+   uint32_t seen_hashes[64];
+   size_t seen_count = 0;
+
+   list = streamlined_get_and_clear_menu_list();
+   if (!list)
+      return;
+
+   history = g_defaults.content_history;
+   if (!history)
+      return;
+
+   history_size = playlist_size(history);
+
+   for (i = 0; i < history_size; i++)
+   {
+      const struct playlist_entry *pl_entry = NULL;
+      char display_name[256];
+      char resolved_path[PATH_MAX_LENGTH];
+      const char *content_path;
+
+      playlist_get_index(history, i, &pl_entry);
+      if (!pl_entry || string_is_empty(pl_entry->path))
+         continue;
+
+      /* Resolve abbreviated paths (iOS/tvOS stores ~/... in playlists) */
+      strlcpy(resolved_path, pl_entry->path, sizeof(resolved_path));
+      playlist_resolve_path(PLAYLIST_LOAD, false,
+            resolved_path, sizeof(resolved_path));
+      content_path = resolved_path;
+
+      /* Skip entries with missing content */
+      if (!path_is_valid(content_path))
+         continue;
+
+      /* Check if content is a disc file inside an m3u folder */
+      {
+         char parent_dir[PATH_MAX_LENGTH];
+         char m3u_path[PATH_MAX_LENGTH];
+         size_t parent_len;
+
+         fill_pathname_basedir(parent_dir, content_path, sizeof(parent_dir));
+
+         /* Strip trailing slash so path_basename works in detect_m3u_folder */
+         parent_len = strlen(parent_dir);
+         if (parent_len > 1 && parent_dir[parent_len - 1] == '/')
+            parent_dir[parent_len - 1] = '\0';
+
+         if (streamlined_detect_m3u_folder(parent_dir,
+                  m3u_path, sizeof(m3u_path)))
+         {
+            size_t j;
+            bool already_seen = false;
+            uint32_t hash = encoding_crc32(0,
+                  (const uint8_t*)m3u_path, strlen(m3u_path));
+
+            /* Deduplicate: skip if this m3u was already added */
+            for (j = 0; j < seen_count; j++)
+            {
+               if (seen_hashes[j] == hash)
+               {
+                  already_seen = true;
+                  break;
+               }
+            }
+
+            if (already_seen)
+               continue;
+
+            if (seen_count < 64)
+               seen_hashes[seen_count++] = hash;
+
+            {
+               const char *folder_name = path_basename(parent_dir);
+               const char *clean = streamlined_strip_sort_prefix(
+                     folder_name ? folder_name : "");
+               strlcpy(display_name, clean, sizeof(display_name));
+            }
+
+            menu_entries_append(list,
+                  display_name,
+                  m3u_path,
+                  MSG_UNKNOWN,
+                  FILE_TYPE_PLAIN,
+                  0, i, NULL);
+            continue;
+         }
+      }
+
+      /* Use playlist label, otherwise strip extension from filename */
+      if (!string_is_empty(pl_entry->label))
+         strlcpy(display_name, pl_entry->label, sizeof(display_name));
+      else
+      {
+         const char *basename = path_basename(content_path);
+         strlcpy(display_name, basename ? basename : content_path,
+               sizeof(display_name));
+         path_remove_extension(display_name);
+      }
+
+      menu_entries_append(list,
+            display_name,
+            content_path,
+            MSG_UNKNOWN,
+            FILE_TYPE_PLAIN,
+            0, i, NULL);
+   }
+
+   if (list->size == 0)
+   {
+      menu_entries_append(list,
+            "No history",
+            "",
+            MSG_UNKNOWN,
+            FILE_TYPE_NONE,
+            0, 0, NULL);
    }
 }
 
@@ -3957,7 +4158,24 @@ static void streamlined_populate_entries(void *data,
             view = streamlined_view_current(&strm->view_stack);
          }
 
-         if (strm->resume.active)
+         if (strm->resume.active && strm->resume.from_history)
+         {
+            /* Returning from game launched via history */
+            streamlined_view_t *v;
+            strm->view_stack.top = -1;
+            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
+            if (v)
+               strlcpy(v->data.main_menu.folder_path, start_dir,
+                     sizeof(v->data.main_menu.folder_path));
+            streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_HISTORY);
+            streamlined_push_nav_marker();
+            streamlined_populate_history_menu(strm);
+            if (menu_st_local)
+               menu_st_local->selection_ptr = strm->resume.selection;
+            strm->resume.active = false;
+            strm->resume.from_history = false;
+         }
+         else if (strm->resume.active)
          {
             /* Returning from game - rebuild stack with folder state */
             streamlined_view_t *v;
@@ -4001,6 +4219,11 @@ static void streamlined_populate_entries(void *data,
          {
             /* Already in a folder - just ensure list is populated */
             streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
+         }
+         else if (view && view->type == STREAMLINED_VIEW_HISTORY)
+         {
+            /* Already in history - re-populate */
+            streamlined_populate_history_menu(strm);
          }
          else
          {
@@ -4128,7 +4351,7 @@ static void streamlined_launch_content(streamlined_t *strm,
    content_info.args        = NULL;
    content_info.environ_get = NULL;
 
-   /* Find the nearest FOLDER view on the stack to save resume state */
+   /* Find the nearest FOLDER or HISTORY view on the stack to save resume state */
    for (idx = strm->view_stack.top; idx >= 0; idx--)
    {
       if (strm->view_stack.entries[idx].type == STREAMLINED_VIEW_FOLDER)
@@ -4136,11 +4359,26 @@ static void streamlined_launch_content(streamlined_t *strm,
          folder_view = &strm->view_stack.entries[idx];
          break;
       }
+      if (strm->view_stack.entries[idx].type == STREAMLINED_VIEW_HISTORY)
+      {
+         /* Save history resume state */
+         strm->resume.active = true;
+         strm->resume.from_history = true;
+         strm->resume.folder_path[0] = '\0';
+         if (streamlined_view_current(&strm->view_stack)
+               == &strm->view_stack.entries[idx])
+            strm->resume.selection = menu_st->selection_ptr;
+         else
+            strm->resume.selection = strm->view_stack.entries[idx].saved_selection;
+         folder_view = NULL;
+         break;
+      }
    }
 
    if (folder_view)
    {
       strm->resume.active = true;
+      strm->resume.from_history = false;
       strlcpy(strm->resume.folder_path, folder_view->data.folder.folder_path,
             sizeof(strm->resume.folder_path));
       /* If launching from folder directly, use current selection.
@@ -4321,6 +4559,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             view = streamlined_view_current(&strm->view_stack);
             if (view && view->type == STREAMLINED_VIEW_FOLDER)
                streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
+            else if (view && view->type == STREAMLINED_VIEW_HISTORY)
+               streamlined_populate_history_menu(strm);
             else if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
                streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
             if (view)
@@ -4380,6 +4620,18 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_SETTINGS);
                streamlined_push_nav_marker();
                streamlined_populate_main_settings_submenu();
+               menu_st->selection_ptr = 0;
+               return 0;
+            }
+
+            /* History entry */
+            if (entry->enum_idx == MENU_ENUM_LABEL_HISTORY_TAB)
+            {
+               view->saved_selection = menu_st->selection_ptr;
+               streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_HISTORY);
+               streamlined_push_nav_marker();
+               streamlined_populate_history_menu(strm);
+               streamlined_artwork_reset(&strm->artwork);
                menu_st->selection_ptr = 0;
                return 0;
             }
@@ -4478,8 +4730,11 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
          break;
       }
 
+      case STREAMLINED_VIEW_HISTORY:
       case STREAMLINED_VIEW_FOLDER:
       {
+         streamlined_view_type_t cur_type = view->type;
+
          /* Cancel: pop to parent view */
          if (action == MENU_ACTION_CANCEL)
          {
@@ -4488,7 +4743,14 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             view = streamlined_view_current(&strm->view_stack);
             if (view)
             {
-               if (view->type == STREAMLINED_VIEW_FOLDER)
+               if (cur_type == STREAMLINED_VIEW_HISTORY)
+               {
+                  /* Returning from history to main menu */
+                  streamlined_pop_nav_marker();
+                  if (view->type == STREAMLINED_VIEW_MAIN_MENU)
+                     streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+               }
+               else if (view->type == STREAMLINED_VIEW_FOLDER)
                {
                   streamlined_populate_folder_menu(strm, view->data.folder.folder_path, true);
                   /* Re-start scan for parent folder */
@@ -4511,6 +4773,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             const char *item_path = entry->label;
             if (!string_is_empty(item_path))
             {
+               /* Subfolder navigation (FOLDER only, history has no directories) */
                if (path_is_directory(item_path))
                {
                   /* Enter subfolder - push new FOLDER view */
@@ -4537,11 +4800,11 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                }
                else if (path_is_valid(item_path))
                {
-                  /* Launch file - resolve game-specific or folder core */
+                  /* Launch file - resolve core via unified helper */
                   {
                      char resolved_core[PATH_MAX_LENGTH];
-                     if (streamlined_resolve_core_for_content(
-                              item_path, view->data.folder.core_path,
+                     if (streamlined_get_entry_core_path(strm,
+                              item_path, entry->entry_idx,
                               resolved_core, sizeof(resolved_core))
                            && path_is_valid(resolved_core))
                      {
@@ -4580,8 +4843,8 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                      && !path_is_directory(item_path))
                {
                   char resolved_core[PATH_MAX_LENGTH];
-                  if (streamlined_resolve_core_for_content(
-                           item_path, view->data.folder.core_path,
+                  if (streamlined_get_entry_core_path(strm,
+                           item_path, entry->entry_idx,
                            resolved_core, sizeof(resolved_core))
                         && path_is_valid(resolved_core))
                   {
