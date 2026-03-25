@@ -268,6 +268,7 @@ typedef struct
       struct { char folder_path[PATH_MAX_LENGTH]; } main_menu;
       struct { char folder_path[PATH_MAX_LENGTH]; char core_path[PATH_MAX_LENGTH]; } folder;
       struct { char content_path[PATH_MAX_LENGTH]; } core_select;
+      struct { char game_title[256]; } quick_menu;
    } data;
 } streamlined_view_t;
 
@@ -2061,19 +2062,9 @@ static void streamlined_render_menu(streamlined_t *strm,
          break;
       case STREAMLINED_VIEW_QUICK_MENU:
       {
-         const char *content_path = path_get(RARCH_PATH_CONTENT);
-         if (!string_is_empty(content_path))
-         {
-            const char *game_name = path_basename(content_path);
-            if (!string_is_empty(game_name))
-            {
-               char *ext;
-               strlcpy(title_buf, game_name, sizeof(title_buf));
-               ext = strrchr(title_buf, '.');
-               if (ext)
-                  *ext = '\0';
-            }
-         }
+         if (!string_is_empty(view->data.quick_menu.game_title))
+            strlcpy(title_buf, view->data.quick_menu.game_title,
+                  sizeof(title_buf));
          if (title_buf[0] == '\0')
             strlcpy(title_buf, "Quick Menu", sizeof(title_buf));
          break;
@@ -4323,6 +4314,59 @@ static void streamlined_populate_entries(void *data,
          strm->view_stack.top = -1;
          streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_QUICK_MENU);
          view = streamlined_view_current(&strm->view_stack);
+
+         /* Derive game title from content path, preferring m3u game name */
+         if (view)
+         {
+            const char *content_path = path_get(RARCH_PATH_CONTENT);
+            view->data.quick_menu.game_title[0] = '\0';
+            if (!string_is_empty(content_path))
+            {
+               const char *basename = path_basename(content_path);
+               if (!string_is_empty(basename))
+               {
+                  char *ext;
+                  strlcpy(view->data.quick_menu.game_title, basename,
+                        sizeof(view->data.quick_menu.game_title));
+                  ext = strrchr(view->data.quick_menu.game_title, '.');
+                  if (ext)
+                     *ext = '\0';
+
+                  /* If content is a disc image (not .m3u), check if it's
+                   * inside an m3u folder and use the m3u name instead */
+                  {
+                     const char *cext = path_get_extension(content_path);
+                     if (cext && !string_is_equal_noncase(cext, "m3u"))
+                     {
+                        char parent_dir[PATH_MAX_LENGTH];
+                        char m3u_path[PATH_MAX_LENGTH];
+                        size_t parent_len;
+                        fill_pathname_basedir(parent_dir, content_path,
+                              sizeof(parent_dir));
+                        /* Strip trailing slash so path_basename works
+                         * in detect_m3u_folder */
+                        parent_len = strlen(parent_dir);
+                        if (parent_len > 1 && parent_dir[parent_len - 1] == '/')
+                           parent_dir[parent_len - 1] = '\0';
+                        if (streamlined_detect_m3u_folder(parent_dir,
+                                 m3u_path, sizeof(m3u_path)))
+                        {
+                           const char *m3u_name = path_basename(m3u_path);
+                           if (!string_is_empty(m3u_name))
+                           {
+                              strlcpy(view->data.quick_menu.game_title,
+                                    m3u_name,
+                                    sizeof(view->data.quick_menu.game_title));
+                              ext = strrchr(view->data.quick_menu.game_title, '.');
+                              if (ext)
+                                 *ext = '\0';
+                           }
+                        }
+                     }
+                  }
+               }
+            }
+         }
       }
 
       if (view && view->type == STREAMLINED_VIEW_ADVANCED)
