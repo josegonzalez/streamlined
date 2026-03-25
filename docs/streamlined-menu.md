@@ -4,10 +4,11 @@ The Streamlined Menu is a simple, clean way to browse your game collection and p
 
 ## The Main Screen
 
-When you open RetroArch with the Streamlined Menu, you see a list of your game folders. Each folder usually holds games for one system (like "Game Boy" or "Super Nintendo"). If you have played games before, a **History** entry appears near the top. If you have favorited games, a **Favorites** entry also appears. At the bottom of the list, you will also see:
+When you open RetroArch with the Streamlined Menu, you see a list of your game folders. Each folder usually holds games for one system (like "Game Boy" or "Super Nintendo"). If you have played games before, a **History** entry appears near the top. If you have favorited games, a **Favorites** entry also appears. If you have playlists, a **Playlists** entry also appears. At the bottom of the list, you will also see:
 
 - **History** - Shows games you have played recently (only shown if you have play history)
 - **Favorites** - Shows games you have added to your favorites (only shown if you have favorites)
+- **Playlists** - Shows your playlists (only shown if Show Playlists is enabled)
 - **Settings** - Opens system settings
 - **Quit** - Closes RetroArch (not shown on Apple TV)
 
@@ -32,6 +33,18 @@ If a game has saved progress (an auto save), you will see **X Resume** at the bo
 When you quit a game launched from Favorites, the menu takes you right back to the Favorites list and highlights the same game you were playing.
 
 If a game uses multiple discs, Favorites shows the game name instead of the individual disc file name.
+
+## Playlists
+
+If you have playlists set up in RetroArch, you will see a **Playlists** entry on the main screen (below History and Favorites). Selecting it shows all your playlists.
+
+Pick a playlist to see the games inside it. You can play any game from a playlist just like you would from a folder: highlight it and press **A**.
+
+If a game has saved progress (an auto save), you will see **X Resume** at the bottom of the screen. Artwork is shown on the right side, just like when browsing folders.
+
+When you quit a game launched from a playlist, the menu takes you right back to that playlist and highlights the same game you were playing.
+
+Press **B** to go back to the playlists list, and **B** again to return to the main screen.
 
 ## Opening a Folder
 

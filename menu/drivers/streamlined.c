@@ -32,8 +32,8 @@
  * Navigation:
  * - Uses a view stack (streamlined_view_stack_t) for hierarchical navigation
  * - Push a view to navigate deeper, pop to go back
- * - View types: MAIN_MENU, FOLDER, HISTORY, FAVORITES, CORE_SELECT,
- *   QUICK_MENU, ADVANCED, MAIN_SETTINGS, RA_SETTINGS
+ * - View types: MAIN_MENU, FOLDER, HISTORY, FAVORITES, PLAYLISTS, PLAYLIST,
+ *   CORE_SELECT, QUICK_MENU, ADVANCED, MAIN_SETTINGS, RA_SETTINGS
  * - Resume state persists across content load/unload for folder return
  */
 
@@ -79,6 +79,7 @@
 #include "../../database_info.h"
 #include "../../playlist.h"
 #include "../../defaults.h"
+#include "../../file_path_special.h"
 #include <file/archive_file.h>
 #include <encodings/crc32.h>
 
@@ -256,7 +257,9 @@ typedef enum
    STREAMLINED_VIEW_QUICK_MENU,     /* In-game pause menu */
    STREAMLINED_VIEW_ADVANCED,       /* Quick menu Advanced submenu */
    STREAMLINED_VIEW_MAIN_SETTINGS,  /* Main menu Settings submenu */
-   STREAMLINED_VIEW_RA_SETTINGS     /* Delegated to RA generic handler */
+   STREAMLINED_VIEW_RA_SETTINGS,    /* Delegated to RA generic handler */
+   STREAMLINED_VIEW_PLAYLISTS,      /* List of user playlists */
+   STREAMLINED_VIEW_PLAYLIST        /* Games within a specific playlist */
 } streamlined_view_type_t;
 
 /* Per-view data stored in a tagged union */
@@ -269,6 +272,7 @@ typedef struct
       struct { char folder_path[PATH_MAX_LENGTH]; char core_path[PATH_MAX_LENGTH]; } folder;
       struct { char content_path[PATH_MAX_LENGTH]; } core_select;
       struct { char game_title[256]; } quick_menu;
+      struct { char playlist_path[PATH_MAX_LENGTH]; } playlist;
    } data;
 } streamlined_view_t;
 
@@ -301,7 +305,8 @@ typedef enum
 {
    STREAMLINED_RESUME_FOLDER,
    STREAMLINED_RESUME_HISTORY,
-   STREAMLINED_RESUME_FAVORITES
+   STREAMLINED_RESUME_FAVORITES,
+   STREAMLINED_RESUME_PLAYLIST
 } streamlined_resume_source_t;
 
 /* Resume state: persists across content load/unload to restore folder view */
@@ -383,6 +388,9 @@ typedef struct
    /* Game artwork display */
    streamlined_artwork_t artwork;
 
+   /* User playlist (loaded on demand when browsing a playlist) */
+   playlist_t *user_playlist;
+
 } streamlined_t;
 
 /* Number of save slots to display (Auto + slots 0-7) */
@@ -423,7 +431,8 @@ static INLINE bool streamlined_is_game_view(streamlined_view_type_t vtype)
 {
    return vtype == STREAMLINED_VIEW_FOLDER
        || vtype == STREAMLINED_VIEW_HISTORY
-       || vtype == STREAMLINED_VIEW_FAVORITES;
+       || vtype == STREAMLINED_VIEW_FAVORITES
+       || vtype == STREAMLINED_VIEW_PLAYLIST;
 }
 
 /*
@@ -487,6 +496,13 @@ static void streamlined_populate_playlist_view(
 static bool streamlined_get_entry_core_path(
       streamlined_t *strm, const char *content_path,
       size_t entry_idx, char *core_out, size_t core_size);
+static void streamlined_populate_playlists_list(streamlined_t *strm);
+static void streamlined_user_playlist_free(streamlined_t *strm);
+static bool streamlined_load_user_playlist(
+      streamlined_t *strm, const char *playlist_path);
+static bool streamlined_resolve_playlist_artwork(
+      streamlined_t *strm, size_t entry_idx,
+      char *out_path, size_t out_size);
 
 /* Artwork forward declarations */
 static const char *streamlined_get_artwork_type_dir(unsigned artwork_type);
@@ -1398,6 +1414,90 @@ static bool streamlined_try_thumbnail_extensions(
 }
 
 /*
+ * Resolve artwork for a playlist entry using its db_name and label directly.
+ * Playlist entries store the canonical game name and database name, which
+ * map directly to thumbnail paths without needing CRC32 lookups.
+ * Returns true if a valid thumbnail file was found.
+ */
+static bool streamlined_resolve_playlist_artwork(
+      streamlined_t *strm, size_t entry_idx,
+      char *out_path, size_t out_size)
+{
+   settings_t *settings = config_get_ptr();
+   const char *thumbnails_dir = settings->paths.directory_thumbnails;
+   unsigned artwork_type = settings->uints.streamlined_artwork_type;
+   const char *type_dir;
+   bool allow_non_png = settings->bools.playlist_allow_non_png;
+   streamlined_view_t *view;
+   playlist_t *playlist;
+   const struct playlist_entry *pl_entry = NULL;
+   const char *db_name;
+   const char *label;
+   char base_path[PATH_MAX_LENGTH];
+   char type_path[PATH_MAX_LENGTH];
+   char content_img[PATH_MAX_LENGTH];
+   char thumb_path[PATH_MAX_LENGTH];
+
+   if (string_is_empty(thumbnails_dir))
+      return false;
+
+   type_dir = streamlined_get_artwork_type_dir(artwork_type);
+   if (!type_dir)
+      return false;
+
+   view = streamlined_view_current(&strm->view_stack);
+   if (!view)
+      return false;
+
+   /* Get the playlist for this view */
+   if (view->type == STREAMLINED_VIEW_HISTORY)
+      playlist = g_defaults.content_history;
+   else if (view->type == STREAMLINED_VIEW_FAVORITES)
+      playlist = g_defaults.content_favorites;
+   else if (view->type == STREAMLINED_VIEW_PLAYLIST)
+      playlist = strm->user_playlist;
+   else
+      return false;
+
+   if (!playlist || entry_idx >= playlist_size(playlist))
+      return false;
+
+   playlist_get_index(playlist, entry_idx, &pl_entry);
+   if (!pl_entry)
+      return false;
+
+   db_name = pl_entry->db_name;
+   label   = pl_entry->label;
+
+   if (string_is_empty(db_name) || string_is_empty(label))
+      return false;
+
+   /* Strip .lpl extension from db_name if present */
+   {
+      char db_name_clean[256];
+      strlcpy(db_name_clean, db_name, sizeof(db_name_clean));
+      path_remove_extension(db_name_clean);
+
+      /* Build: <thumbnails_dir>/<db_name>/<type_dir> */
+      fill_pathname_join_special(base_path, thumbnails_dir,
+            db_name_clean, sizeof(base_path));
+   }
+
+   fill_pathname_join_special(type_path, base_path,
+         type_dir, sizeof(type_path));
+
+   /* Scrub the label into a thumbnail filename */
+   gfx_thumbnail_fill_content_img(content_img, sizeof(content_img),
+         label, false);
+
+   fill_pathname_join_special(thumb_path, type_path,
+         content_img, sizeof(thumb_path));
+
+   return streamlined_try_thumbnail_extensions(
+         thumb_path, allow_non_png, out_path, out_size);
+}
+
+/*
  * Try to find a thumbnail image path for a given game.
  * Searches across all databases associated with the core,
  * trying content_img, content_img_full, and content_img_short
@@ -1617,38 +1717,68 @@ static void streamlined_load_artwork_thumbnails(
    if (!view || !streamlined_is_game_view(view->type))
       return;
 
-   if (!streamlined_get_entry_core_path(strm,
-            content_path, list->list[selection].entry_idx,
-            resolved_core, sizeof(resolved_core)))
-      return;
+   /* For playlist-based views, try direct db_name+label lookup first */
+   {
+      bool found = false;
 
-   /* Resolve and load artwork thumbnail */
-   if (streamlined_resolve_artwork_path(
-            art, display_name, content_path, resolved_core,
-            artwork_path, sizeof(artwork_path)))
-   {
-      if (!string_is_equal(artwork_path, art->thumbnail_path))
+      if (view->type == STREAMLINED_VIEW_HISTORY
+            || view->type == STREAMLINED_VIEW_FAVORITES
+            || view->type == STREAMLINED_VIEW_PLAYLIST)
+         found = streamlined_resolve_playlist_artwork(strm,
+               list->list[selection].entry_idx,
+               artwork_path, sizeof(artwork_path));
+
+      /* Fall back to core-based resolution */
+      if (!found)
       {
-         strlcpy(art->thumbnail_path, artwork_path,
-               sizeof(art->thumbnail_path));
-         gfx_thumbnail_reset(&art->thumbnail);
-         gfx_thumbnail_request_file(artwork_path, &art->thumbnail,
-               settings->uints.gfx_thumbnail_upscale_threshold);
+         if (!streamlined_get_entry_core_path(strm,
+                  content_path, list->list[selection].entry_idx,
+                  resolved_core, sizeof(resolved_core)))
+         {
+            /* No core and no playlist artwork — mark as missing */
+            if (art->thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN
+                  && art->thumbnail.status != GFX_THUMBNAIL_STATUS_MISSING)
+            {
+               gfx_thumbnail_reset(&art->thumbnail);
+               art->thumbnail_path[0] = '\0';
+            }
+            else if (art->thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+            {
+               art->thumbnail.status = GFX_THUMBNAIL_STATUS_MISSING;
+               art->thumbnail_path[0] = '\0';
+            }
+            return;
+         }
+         found = streamlined_resolve_artwork_path(
+               art, display_name, content_path, resolved_core,
+               artwork_path, sizeof(artwork_path));
       }
-   }
-   else
-   {
-      if (art->thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN
-            && art->thumbnail.status != GFX_THUMBNAIL_STATUS_MISSING)
+
+      if (found)
       {
-         gfx_thumbnail_reset(&art->thumbnail);
-         art->thumbnail_path[0] = '\0';
+         if (!string_is_equal(artwork_path, art->thumbnail_path))
+         {
+            strlcpy(art->thumbnail_path, artwork_path,
+                  sizeof(art->thumbnail_path));
+            gfx_thumbnail_reset(&art->thumbnail);
+            gfx_thumbnail_request_file(artwork_path, &art->thumbnail,
+                  settings->uints.gfx_thumbnail_upscale_threshold);
+         }
       }
-      else if (art->thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+      else
       {
-         /* Mark as missing so we don't keep re-checking */
-         art->thumbnail.status = GFX_THUMBNAIL_STATUS_MISSING;
-         art->thumbnail_path[0] = '\0';
+         if (art->thumbnail.status != GFX_THUMBNAIL_STATUS_UNKNOWN
+               && art->thumbnail.status != GFX_THUMBNAIL_STATUS_MISSING)
+         {
+            gfx_thumbnail_reset(&art->thumbnail);
+            art->thumbnail_path[0] = '\0';
+         }
+         else if (art->thumbnail.status == GFX_THUMBNAIL_STATUS_UNKNOWN)
+         {
+            /* Mark as missing so we don't keep re-checking */
+            art->thumbnail.status = GFX_THUMBNAIL_STATUS_MISSING;
+            art->thumbnail_path[0] = '\0';
+         }
       }
    }
 }
@@ -2047,6 +2177,21 @@ static void streamlined_render_menu(streamlined_t *strm,
       case STREAMLINED_VIEW_FAVORITES:
          strlcpy(title_buf, "Favorites", sizeof(title_buf));
          break;
+      case STREAMLINED_VIEW_PLAYLISTS:
+         strlcpy(title_buf, "Playlists", sizeof(title_buf));
+         break;
+      case STREAMLINED_VIEW_PLAYLIST:
+      {
+         const char *pl_name = path_basename(view->data.playlist.playlist_path);
+         if (!string_is_empty(pl_name))
+         {
+            strlcpy(title_buf, pl_name, sizeof(title_buf));
+            path_remove_extension(title_buf);
+         }
+         else
+            strlcpy(title_buf, "Playlist", sizeof(title_buf));
+         break;
+      }
       case STREAMLINED_VIEW_FOLDER:
       {
          const char *folder_name = path_basename(view->data.folder.folder_path);
@@ -3143,24 +3288,49 @@ static bool streamlined_get_entry_core_path(
       return false;
 
    if (view->type == STREAMLINED_VIEW_HISTORY
-         || view->type == STREAMLINED_VIEW_FAVORITES)
+         || view->type == STREAMLINED_VIEW_FAVORITES
+         || view->type == STREAMLINED_VIEW_PLAYLIST)
    {
-      playlist_t *playlist = (view->type == STREAMLINED_VIEW_HISTORY)
-            ? g_defaults.content_history
-            : g_defaults.content_favorites;
+      playlist_t *playlist;
       const struct playlist_entry *pl_entry = NULL;
+
+      if (view->type == STREAMLINED_VIEW_HISTORY)
+         playlist = g_defaults.content_history;
+      else if (view->type == STREAMLINED_VIEW_FAVORITES)
+         playlist = g_defaults.content_favorites;
+      else
+         playlist = strm->user_playlist;
 
       if (!playlist || entry_idx >= playlist_size(playlist))
          return false;
 
       playlist_get_index(playlist, entry_idx, &pl_entry);
-      if (!pl_entry || !playlist_entry_has_core(pl_entry))
+      if (!pl_entry)
          return false;
 
-      strlcpy(core_out, pl_entry->core_path, core_size);
-      /* Resolve abbreviated iOS/tvOS paths */
-      playlist_resolve_path(PLAYLIST_LOAD, true, core_out, core_size);
-      return true;
+      if (playlist_entry_has_core(pl_entry))
+      {
+         strlcpy(core_out, pl_entry->core_path, core_size);
+         /* Resolve abbreviated iOS/tvOS paths */
+         playlist_resolve_path(PLAYLIST_LOAD, true, core_out, core_size);
+         return true;
+      }
+
+      /* Core is DETECT/empty — fall back to .core.txt in content's directory */
+      {
+         char content_dir[DIR_MAX_LENGTH];
+         char resolved_path[PATH_MAX_LENGTH];
+
+         /* Resolve content path for iOS/tvOS abbreviations */
+         strlcpy(resolved_path, content_path, sizeof(resolved_path));
+         playlist_resolve_path(PLAYLIST_LOAD, false,
+               resolved_path, sizeof(resolved_path));
+
+         if (streamlined_read_game_core(resolved_path, core_out, core_size))
+            return true;
+         fill_pathname_basedir(content_dir, resolved_path, sizeof(content_dir));
+         return streamlined_read_folder_core(content_dir, core_out, core_size);
+      }
    }
 
    if (view->type == STREAMLINED_VIEW_FOLDER)
@@ -3421,6 +3591,14 @@ static void streamlined_populate_folder_menu(streamlined_t *strm, const char *di
                MENU_ENUM_LABEL_FAVORITES_TAB,
                MENU_SETTING_ACTION,
                0, 0, NULL);
+
+      if (settings->bools.menu_content_show_playlists)
+         menu_entries_append(list,
+               "Playlists",
+               "streamlined_playlists",
+               MENU_ENUM_LABEL_PLAYLISTS_TAB,
+               MENU_SETTING_ACTION,
+               0, 0, NULL);
    }
 
    /* Scan directory for folders and files */
@@ -3662,6 +3840,106 @@ static void streamlined_populate_playlist_view(
    }
 }
 
+/* Free the currently loaded user playlist */
+static void streamlined_user_playlist_free(streamlined_t *strm)
+{
+   if (strm->user_playlist)
+   {
+      playlist_free(strm->user_playlist);
+      strm->user_playlist = NULL;
+   }
+}
+
+/* Load a user playlist from a .lpl file */
+static bool streamlined_load_user_playlist(
+      streamlined_t *strm, const char *playlist_path)
+{
+   settings_t *settings = config_get_ptr();
+   playlist_config_t config;
+
+   streamlined_user_playlist_free(strm);
+
+   memset(&config, 0, sizeof(config));
+   config.capacity            = COLLECTION_SIZE;
+   config.old_format          = settings->bools.playlist_use_old_format;
+   config.compress            = settings->bools.playlist_compression;
+   config.fuzzy_archive_match = settings->bools.playlist_fuzzy_archive_match;
+   playlist_config_set_base_content_directory(&config,
+         settings->bools.playlist_portable_paths
+         ? settings->paths.directory_menu_content : NULL);
+   playlist_config_set_path(&config, playlist_path);
+
+   strm->user_playlist = playlist_init(&config);
+   return strm->user_playlist != NULL;
+}
+
+/*
+ * Populate the menu with a list of user playlists (.lpl files)
+ * from the playlist directory. Filters out history, favorites,
+ * and other special playlists.
+ */
+static void streamlined_populate_playlists_list(streamlined_t *strm)
+{
+   settings_t *settings = config_get_ptr();
+   const char *dir_playlist = settings->paths.directory_playlist;
+   file_list_t *list;
+   struct string_list *str_list;
+   unsigned i;
+
+   list = streamlined_get_and_clear_menu_list();
+   if (!list)
+      return;
+
+   if (string_is_empty(dir_playlist))
+   {
+      menu_entries_append(list, "No playlist directory configured", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE, 0, 0, NULL);
+      return;
+   }
+
+   str_list = dir_list_new(dir_playlist, "lpl", false, false, false, false);
+
+   if (str_list && str_list->size)
+   {
+      dir_list_sort(str_list, true);
+
+      for (i = 0; i < str_list->size; i++)
+      {
+         const char *path = str_list->elems[i].data;
+         const char *filename = path_basename(path);
+         char display_name[256];
+
+         if (!filename || filename[0] == '.')
+            continue;
+
+         /* Skip history playlists */
+         if (string_ends_with_size(path, "_history.lpl",
+                  strlen(path), STRLEN_CONST("_history.lpl")))
+            continue;
+
+         /* Skip favorites playlist */
+         if (string_is_equal(filename, FILE_PATH_CONTENT_FAVORITES))
+            continue;
+
+         /* Display name: strip .lpl extension */
+         strlcpy(display_name, filename, sizeof(display_name));
+         path_remove_extension(display_name);
+
+         menu_entries_append(list, display_name, path,
+               MSG_UNKNOWN, FILE_TYPE_PLAYLIST_COLLECTION, 0, 0, NULL);
+      }
+   }
+
+   if (str_list)
+      string_list_free(str_list);
+
+   if (list->size == 0)
+   {
+      menu_entries_append(list, "No playlists found", "",
+            MSG_UNKNOWN, FILE_TYPE_NONE, 0, 0, NULL);
+   }
+}
+
 /* ======================================================================
  * MENU DRIVER INTERFACE
  * ====================================================================== */
@@ -3772,6 +4050,9 @@ static void streamlined_free(void *data)
       strm->font.font = NULL;
       strm->font_small.font = NULL;
       strm->font_title.font = NULL;
+
+      /* Free user playlist */
+      streamlined_user_playlist_free(strm);
 
       /* Free artwork state */
       if (strm->artwork.scan_task)
@@ -4188,37 +4469,50 @@ static void streamlined_populate_entries(void *data,
          }
 
          if (strm->resume.active
-               && strm->resume.source == STREAMLINED_RESUME_HISTORY)
+               && (strm->resume.source == STREAMLINED_RESUME_HISTORY
+                   || strm->resume.source == STREAMLINED_RESUME_FAVORITES
+                   || strm->resume.source == STREAMLINED_RESUME_PLAYLIST))
          {
-            /* Returning from game launched via history */
+            /* Returning from game launched via history/favorites/playlist */
             streamlined_view_t *v;
+            playlist_t *pl;
+            const char *empty_msg;
+            streamlined_view_type_t view_type;
+
             strm->view_stack.top = -1;
             v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
             if (v)
                strlcpy(v->data.main_menu.folder_path, start_dir,
                      sizeof(v->data.main_menu.folder_path));
-            streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_HISTORY);
+
+            switch (strm->resume.source)
+            {
+               case STREAMLINED_RESUME_HISTORY:
+                  view_type = STREAMLINED_VIEW_HISTORY;
+                  pl        = g_defaults.content_history;
+                  empty_msg = "No history";
+                  break;
+               case STREAMLINED_RESUME_FAVORITES:
+                  view_type = STREAMLINED_VIEW_FAVORITES;
+                  pl        = g_defaults.content_favorites;
+                  empty_msg = "No favorites";
+                  break;
+               default: /* STREAMLINED_RESUME_PLAYLIST */
+                  view_type = STREAMLINED_VIEW_PLAYLIST;
+                  /* Push intermediate PLAYLISTS view on the stack */
+                  streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_PLAYLISTS);
+                  streamlined_load_user_playlist(strm, strm->resume.folder_path);
+                  pl        = strm->user_playlist;
+                  empty_msg = "No games in playlist";
+                  break;
+            }
+
+            v = streamlined_view_push(&strm->view_stack, view_type);
+            if (v && view_type == STREAMLINED_VIEW_PLAYLIST)
+               strlcpy(v->data.playlist.playlist_path, strm->resume.folder_path,
+                     sizeof(v->data.playlist.playlist_path));
             streamlined_push_nav_marker();
-            streamlined_populate_playlist_view(strm,
-                  g_defaults.content_history, "No history");
-            if (menu_st_local)
-               menu_st_local->selection_ptr = strm->resume.selection;
-            strm->resume.active = false;
-         }
-         else if (strm->resume.active
-               && strm->resume.source == STREAMLINED_RESUME_FAVORITES)
-         {
-            /* Returning from game launched via favorites */
-            streamlined_view_t *v;
-            strm->view_stack.top = -1;
-            v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_MAIN_MENU);
-            if (v)
-               strlcpy(v->data.main_menu.folder_path, start_dir,
-                     sizeof(v->data.main_menu.folder_path));
-            streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_FAVORITES);
-            streamlined_push_nav_marker();
-            streamlined_populate_playlist_view(strm,
-                  g_defaults.content_favorites, "No favorites");
+            streamlined_populate_playlist_view(strm, pl, empty_msg);
             if (menu_st_local)
                menu_st_local->selection_ptr = strm->resume.selection;
             strm->resume.active = false;
@@ -4279,6 +4573,15 @@ static void streamlined_populate_entries(void *data,
             /* Already in favorites - re-populate */
             streamlined_populate_playlist_view(strm,
                   g_defaults.content_favorites, "No favorites");
+         }
+         else if (view && view->type == STREAMLINED_VIEW_PLAYLISTS)
+         {
+            streamlined_populate_playlists_list(strm);
+         }
+         else if (view && view->type == STREAMLINED_VIEW_PLAYLIST)
+         {
+            streamlined_populate_playlist_view(strm,
+                  strm->user_playlist, "No games in playlist");
          }
          else
          {
@@ -4468,14 +4771,25 @@ static void streamlined_launch_content(streamlined_t *strm,
          break;
       }
       if (strm->view_stack.entries[idx].type == STREAMLINED_VIEW_HISTORY
-            || strm->view_stack.entries[idx].type == STREAMLINED_VIEW_FAVORITES)
+            || strm->view_stack.entries[idx].type == STREAMLINED_VIEW_FAVORITES
+            || strm->view_stack.entries[idx].type == STREAMLINED_VIEW_PLAYLIST)
       {
-         /* Save history/favorites resume state */
+         /* Save history/favorites/playlist resume state */
+         streamlined_view_type_t vt = strm->view_stack.entries[idx].type;
          strm->resume.active = true;
-         strm->resume.source =
-               (strm->view_stack.entries[idx].type == STREAMLINED_VIEW_HISTORY)
-               ? STREAMLINED_RESUME_HISTORY : STREAMLINED_RESUME_FAVORITES;
-         strm->resume.folder_path[0] = '\0';
+         if (vt == STREAMLINED_VIEW_HISTORY)
+            strm->resume.source = STREAMLINED_RESUME_HISTORY;
+         else if (vt == STREAMLINED_VIEW_FAVORITES)
+            strm->resume.source = STREAMLINED_RESUME_FAVORITES;
+         else
+         {
+            strm->resume.source = STREAMLINED_RESUME_PLAYLIST;
+            strlcpy(strm->resume.folder_path,
+                  strm->view_stack.entries[idx].data.playlist.playlist_path,
+                  sizeof(strm->resume.folder_path));
+         }
+         if (vt != STREAMLINED_VIEW_PLAYLIST)
+            strm->resume.folder_path[0] = '\0';
          if (streamlined_view_current(&strm->view_stack)
                == &strm->view_stack.entries[idx])
             strm->resume.selection = menu_st->selection_ptr;
@@ -4676,6 +4990,9 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             else if (view && view->type == STREAMLINED_VIEW_FAVORITES)
                streamlined_populate_playlist_view(strm,
                      g_defaults.content_favorites, "No favorites");
+            else if (view && view->type == STREAMLINED_VIEW_PLAYLIST)
+               streamlined_populate_playlist_view(strm,
+                     strm->user_playlist, "No games in playlist");
             else if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
                streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
             if (view)
@@ -4761,6 +5078,17 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                streamlined_populate_playlist_view(strm,
                      g_defaults.content_favorites, "No favorites");
                streamlined_artwork_reset(&strm->artwork);
+               menu_st->selection_ptr = 0;
+               return 0;
+            }
+
+            /* Playlists entry */
+            if (entry->enum_idx == MENU_ENUM_LABEL_PLAYLISTS_TAB)
+            {
+               view->saved_selection = menu_st->selection_ptr;
+               streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_PLAYLISTS);
+               streamlined_push_nav_marker();
+               streamlined_populate_playlists_list(strm);
                menu_st->selection_ptr = 0;
                return 0;
             }
@@ -4861,6 +5189,7 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
 
       case STREAMLINED_VIEW_FAVORITES:
       case STREAMLINED_VIEW_HISTORY:
+      case STREAMLINED_VIEW_PLAYLIST:
       case STREAMLINED_VIEW_FOLDER:
       {
          streamlined_view_type_t cur_type = view->type;
@@ -4880,6 +5209,13 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
                   streamlined_pop_nav_marker();
                   if (view->type == STREAMLINED_VIEW_MAIN_MENU)
                      streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+               }
+               else if (cur_type == STREAMLINED_VIEW_PLAYLIST)
+               {
+                  /* Returning from playlist to playlists list */
+                  streamlined_user_playlist_free(strm);
+                  if (view->type == STREAMLINED_VIEW_PLAYLISTS)
+                     streamlined_populate_playlists_list(strm);
                }
                else if (view->type == STREAMLINED_VIEW_FOLDER)
                {
@@ -5021,6 +5357,57 @@ static int streamlined_entry_action(void *userdata, menu_entry_t *entry,
             streamlined_pop_nav_marker();  /* Remove marker before RA pushes its entries */
             return generic_menu_entry_action(userdata, entry, i, action);
          }
+         break;
+      }
+
+      case STREAMLINED_VIEW_PLAYLISTS:
+      {
+         /* Back: return to main menu */
+         if (action == MENU_ACTION_CANCEL)
+         {
+            streamlined_view_pop(&strm->view_stack);
+            view = streamlined_view_current(&strm->view_stack);
+            if (view && view->type == STREAMLINED_VIEW_MAIN_MENU)
+            {
+               streamlined_pop_nav_marker();
+               streamlined_populate_folder_menu(strm, view->data.main_menu.folder_path, false);
+            }
+            if (view)
+               menu_st->selection_ptr = view->saved_selection;
+            return 0;
+         }
+
+         /* OK: open selected playlist */
+         if (action == MENU_ACTION_OK && entry)
+         {
+            const char *playlist_path = entry->label;
+            if (!string_is_empty(playlist_path)
+                  && path_is_valid(playlist_path))
+            {
+               streamlined_view_t *v;
+
+               if (!streamlined_load_user_playlist(strm, playlist_path))
+                  return 0;
+
+               view->saved_selection = menu_st->selection_ptr;
+               v = streamlined_view_push(&strm->view_stack, STREAMLINED_VIEW_PLAYLIST);
+               if (v)
+                  strlcpy(v->data.playlist.playlist_path, playlist_path,
+                        sizeof(v->data.playlist.playlist_path));
+               streamlined_populate_playlist_view(strm,
+                     strm->user_playlist, "No games in playlist");
+               streamlined_artwork_reset(&strm->artwork);
+               menu_st->selection_ptr = 0;
+               return 0;
+            }
+         }
+
+         /* Block non-navigation actions */
+         if (action == MENU_ACTION_SCAN
+               || action == MENU_ACTION_SEARCH
+               || action == MENU_ACTION_INFO)
+            return 0;
+
          break;
       }
 
